@@ -41,7 +41,7 @@ export async function waitChecks({ context, worker, daemon, url, pass }: {
     assert.equal(await page.evaluate(() => document.hidden), true, 'focus emulation cleaned after wait');
     assert.equal((await call('chrome.active')).id, foreground.id, 'wait never activates tab');
   }
-  const outline = (await call('chrome.read', { tab })).outline;
+  await call('chrome.read', { tab });
   // Both CSS and look references use the same isolated-world nodes.
   await page.evaluate(() => { document.body.insertAdjacentHTML('beforeend', '<button id="remove">Remove me</button>'); });
   const ref = (await call('chrome.read', { tab })).outline.match(/button "Remove me" (\S+)/)![1];
@@ -63,8 +63,8 @@ export async function waitChecks({ context, worker, daemon, url, pass }: {
   assert.equal(timeout.met, false, 'ASSERT_WAIT_TIMEOUT');
   assert.ok(timeout.ms >= 330 && timeout.ms < 800);
   console.log(`WAIT_TIMEOUT ${JSON.stringify(timeout)}`);
-  await page.evaluate(() => setTimeout(() => document.body.insertAdjacentHTML('beforeend', '<span>late arrival</span>'), 180));
-  assert.equal((await wait({ text: 'late arrival', timeout: 200 })).met, true, 'ASSERT_WAIT_FINAL_CHECK');
+  // The final deadline check is exercised with controlled timer/frame ordering
+  // in wait-clock.ts; a hidden page's independent180ms timer can arrive after200ms.
   for (const params of [{}, { text: 'x', selector: 'div' }, { text: '' }, { text: 'x', timeout: 20001 }, { url: 'x', gone: true }, { selector: '[' }]) {
     assert.ok((await daemon.request('chrome.wait', { tab, ...params })).error, `invalid wait: ${JSON.stringify(params)}`);
   }

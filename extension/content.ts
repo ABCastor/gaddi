@@ -451,7 +451,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     if (activeElement() !== el) throw new Error('Sign-in refused');
     return { selector: selectorFor(el), signature: signinSignature(), combobox: false } satisfies PageResults['signinFocus'];
   }
-  if (params.version && ['describe', 'snapshot', 'pressCheck', 'scroll', 'select', 'upload', 'typeFocus', 'typeCheck', 'clickPoint', 'hoverPoint'].includes(action)
+  if (params.version && ['describe', 'snapshot', 'pressCheck', 'scroll', 'select', 'upload', 'typeFocus', 'typeCheck', 'clickPoint', 'clickCheck', 'hoverPoint'].includes(action)
     && params.version !== pageVersion()) {
     throw Object.assign(new Error('the page changed since you looked'), { code: 'stale' });
   }
@@ -479,17 +479,23 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
       return textCache.includes(needle!); /* WAIT_TEXT_END */
     }
     return await new Promise<PageResults['wait']>((resolve, reject) => {
-      let debounce: ReturnType<typeof setTimeout> | undefined;
+      let debounce: ReturnType<typeof setTimeout> | undefined, frame = 0, done = false;
+      const end = performance.now() + (params.timeout ?? 500);
       const observer = new MutationObserver(() => { textCache = undefined; debounce ??= setTimeout(() => { debounce = undefined; check(); }, 40); });
       const finish = (met: boolean, error?: unknown) => {
-        observer.disconnect(); clearInterval(backstop); clearTimeout(timer); clearTimeout(debounce);
+        if (done) return; done = true;
+        observer.disconnect(); clearInterval(backstop); clearTimeout(timer); clearTimeout(debounce); cancelAnimationFrame(frame);
         if (error) reject(error); else resolve({ met });
       };
       const check = () => {
         try { if (matches() !== !!params.gone) finish(true); } catch (error) { finish(false, error); }
       };
       const backstop = setInterval(check, 250);
-      const timer = setTimeout(() => { textCache = undefined; check(); finish(false); }, params.timeout ?? 500);
+      const finalCheck = () => { textCache = undefined; check(); finish(false); };
+      // Focus emulation supplies frames even when Chrome postpones hidden-tab timers.
+      const tick = () => { if (performance.now() >= end) finalCheck(); else frame = requestAnimationFrame(tick); };
+      const timer = setTimeout(finalCheck, params.timeout ?? 500);
+      frame = requestAnimationFrame(tick);
       observer.observe(document, { subtree: true, childList: true, characterData: true, attributes: true });
       check();
     });
@@ -810,17 +816,18 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
       ...(params.mode === 'append' && el.tagName === 'INPUT' && ['email', 'number'].includes(el.type || '') ? { appendNeedsEnd: true } : {}),
       combobox: el.getAttribute('role') === 'combobox' || el.tagName === 'INPUT' && ['aria-controls', 'aria-owns', 'list'].some(key => el.hasAttribute(key)) } satisfies PageResults['typeFocus' | 'typeCheck'];
   }
-  if (action === 'clickPoint' || action === 'hoverPoint') {
+  if (action === 'clickPoint' || action === 'clickCheck' || action === 'hoverPoint') {
     if (!visible(el) || action !== 'hoverPoint' && (el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true')) throw new Error('Element is not interactable');
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-    const before = signature();
+    const before = action === 'clickCheck' ? '' : signature();
     const rect = el.getBoundingClientRect();
     const x = (Math.max(0, rect.left) + Math.min(innerWidth, rect.right)) / 2;
     const y = (Math.max(0, rect.top) + Math.min(innerHeight, rect.bottom)) / 2;
     let hit = document.elementFromPoint(x, y);
     while (hit?.shadowRoot?.elementFromPoint(x, y) && hit.shadowRoot.elementFromPoint(x, y) !== hit) hit = hit.shadowRoot.elementFromPoint(x, y);
     if (!hit || (hit !== el && !el.contains(hit))) throw new Error('Element centre is obscured');
-    if (action === 'clickPoint') checkDescription(el);
+    if (action !== 'hoverPoint') checkDescription(el);
+    if (action === 'clickCheck') return { x, y } satisfies PageResults['clickCheck'];
     return { x, y, signature: before } satisfies PageResults['clickPoint' | 'hoverPoint'];
   }
   throw new Error('Unknown page operation');

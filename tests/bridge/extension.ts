@@ -30,7 +30,7 @@ import { versionPage, instrumentVersion } from './version-page.ts';
 import { pageStateRead, pageStateInput } from './page-state.ts';
 import { pageRecovery } from './page-recovery.ts';
 import { nativeInput, typeReplacement } from './native-input.ts';
-import { largeFixture, largePage, instrumentLargeSignature } from './large-page.ts';
+import { largeFixture, largePage, instrumentLargeSignature, guardedBenchmark } from './large-page.ts';
 import { restartDeadline, restartInstrumentation } from './restart-deadline.ts';
 import { requireHeadless, watchHeadless } from './background.ts';
 import { foreignFrame, writeForeignExtension } from './foreign-frame.ts';
@@ -99,10 +99,10 @@ try {
   }
   if (process.env.GADDI_BRIDGE_BREAK_PRE_SCROLL_SIGNATURE === '1') {
     const source = fs.readFileSync(contentFile, 'utf8');
-    const order = "el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });\n            const before = signature();";
+    const order = "el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });\n            const before = action === 'clickCheck' ? '' : signature();";
     assert.ok(source.includes(order), 'pre-scroll mutation point exists');
     fs.writeFileSync(contentFile, source.replace(order,
-      "const before = signature();\n            el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });"));
+      "const before = action === 'clickCheck' ? '' : signature();\n            el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });"));
   }
   const bg = path.join(extension, 'dist/extension/bg.js');
   fs.writeFileSync(bg, fs.readFileSync(bg, 'utf8').replace("const NATIVE_HOST = 'com.abcastor.gaddi.bridge';", `const NATIVE_HOST = '${hostName}';`));
@@ -669,6 +669,9 @@ try {
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${devtoolsPort}`, { noDefaults: true });
     context = browser.contexts()[0];
     worker = await waitFor(() => context!.serviceWorkers().find(w => w.url().startsWith(`chrome-extension://${id}/`)), 'native-visibility worker');
+    if (process.env.GADDI_GUARDED_BENCHMARK_ONLY === '1') {
+      await guardedBenchmark({ context, daemon, url });
+    } else {
     await approvalPicture({ context, daemon, url, pass, captureDirectory: path.join(repo, 'tests/.state/context-captures-native') });
     await typeReplacement({ context, daemon, url, pass });
     await autonomousSetup({ context, daemon, url, pass });
@@ -681,6 +684,7 @@ try {
     await pageRecovery({ context, worker, daemon, url, blockedCount: () => blocked, pass });
     await foreignFrame({ context, worker, daemon, url, pass });
     await uploadChecks({ context, daemon, url, pass });
+    }
     await browser.close();
     context = undefined;
   }

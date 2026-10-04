@@ -513,7 +513,7 @@ export async function pageTask(action, params = {}) {
                 throw new Error('Sign-in refused');
             return { selector: selectorFor(el), signature: signinSignature(), combobox: false };
         }
-        if (params.version && ['describe', 'snapshot', 'pressCheck', 'scroll', 'select', 'upload', 'typeFocus', 'typeCheck', 'clickPoint', 'hoverPoint'].includes(action)
+        if (params.version && ['describe', 'snapshot', 'pressCheck', 'scroll', 'select', 'upload', 'typeFocus', 'typeCheck', 'clickPoint', 'clickCheck', 'hoverPoint'].includes(action)
             && params.version !== pageVersion()) {
             throw Object.assign(new Error('the page changed since you looked'), { code: 'stale' });
         }
@@ -542,13 +542,18 @@ export async function pageTask(action, params = {}) {
                 return textCache.includes(needle); /* WAIT_TEXT_END */
             }
             return await new Promise((resolve, reject) => {
-                let debounce;
+                let debounce, frame = 0, done = false;
+                const end = performance.now() + (params.timeout ?? 500);
                 const observer = new MutationObserver(() => { textCache = undefined; debounce ??= setTimeout(() => { debounce = undefined; check(); }, 40); });
                 const finish = (met, error) => {
+                    if (done)
+                        return;
+                    done = true;
                     observer.disconnect();
                     clearInterval(backstop);
                     clearTimeout(timer);
                     clearTimeout(debounce);
+                    cancelAnimationFrame(frame);
                     if (error)
                         reject(error);
                     else
@@ -564,7 +569,14 @@ export async function pageTask(action, params = {}) {
                     }
                 };
                 const backstop = setInterval(check, 250);
-                const timer = setTimeout(() => { textCache = undefined; check(); finish(false); }, params.timeout ?? 500);
+                const finalCheck = () => { textCache = undefined; check(); finish(false); };
+                // Focus emulation supplies frames even when Chrome postpones hidden-tab timers.
+                const tick = () => { if (performance.now() >= end)
+                    finalCheck();
+                else
+                    frame = requestAnimationFrame(tick); };
+                const timer = setTimeout(finalCheck, params.timeout ?? 500);
+                frame = requestAnimationFrame(tick);
                 observer.observe(document, { subtree: true, childList: true, characterData: true, attributes: true });
                 check();
             });
@@ -961,11 +973,11 @@ export async function pageTask(action, params = {}) {
                 ...(params.mode === 'append' && el.tagName === 'INPUT' && ['email', 'number'].includes(el.type || '') ? { appendNeedsEnd: true } : {}),
                 combobox: el.getAttribute('role') === 'combobox' || el.tagName === 'INPUT' && ['aria-controls', 'aria-owns', 'list'].some(key => el.hasAttribute(key)) };
         }
-        if (action === 'clickPoint' || action === 'hoverPoint') {
+        if (action === 'clickPoint' || action === 'clickCheck' || action === 'hoverPoint') {
             if (!visible(el) || action !== 'hoverPoint' && (el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true'))
                 throw new Error('Element is not interactable');
             el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
-            const before = signature();
+            const before = action === 'clickCheck' ? '' : signature();
             const rect = el.getBoundingClientRect();
             const x = (Math.max(0, rect.left) + Math.min(innerWidth, rect.right)) / 2;
             const y = (Math.max(0, rect.top) + Math.min(innerHeight, rect.bottom)) / 2;
@@ -974,8 +986,10 @@ export async function pageTask(action, params = {}) {
                 hit = hit.shadowRoot.elementFromPoint(x, y);
             if (!hit || (hit !== el && !el.contains(hit)))
                 throw new Error('Element centre is obscured');
-            if (action === 'clickPoint')
+            if (action !== 'hoverPoint')
                 checkDescription(el);
+            if (action === 'clickCheck')
+                return { x, y };
             return { x, y, signature: before };
         }
         throw new Error('Unknown page operation');

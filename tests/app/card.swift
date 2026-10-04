@@ -321,6 +321,11 @@ import AppKit
             check(!descendants(card).compactMap { $0 as? PanelButton }.contains { $0.title == "Always allow on this site" }, "ineligible actions have no Always control")
         }
         let disabledSend = RememberedSendList([send.sendPermission!], enabled: false) { _ in fatalError("disabled send revoke ran") }
+        let emptySignin = RememberedSigninList([], enabled: true) { _ in fatalError("empty sign-in revoke ran") }
+        let emptySend = RememberedSendList([], enabled: true) { _ in fatalError("empty send revoke ran") }
+        check(descendants(emptySignin).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "No sites are remembered. Sign-ins wait for your approval." }, "empty sign-in list explains approval")
+        check(descendants(emptySend).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "No sends are remembered. Sending waits for your approval." }, "empty send list explains approval")
+        check(descendants(emptySignin).compactMap { $0 as? PanelButton }.isEmpty && descendants(emptySend).compactMap { $0 as? PanelButton }.isEmpty, "empty permission lists have no revoke controls")
         check(descendants(disabledSend).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }, "busy/disconnected send revoke is disabled")
 
         let disabled = ApprovalCard(signin, enabled: false) { _ in fatalError("disabled decision ran") }

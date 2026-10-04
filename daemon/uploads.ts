@@ -7,7 +7,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { GateError } from './approvals.ts';
 
-export const UPLOAD_LIMIT = 20 * 1024 * 1024;
+const UPLOAD_LIMIT = 20 * 1024 * 1024;
 // Chrome caps a native message to the extension at 1 MiB; base64 adds a third. A multiple
 // of 3 bytes, so the extension can join the base64 pieces as they are.
 export const UPLOAD_CHUNK = 510 * 1024;

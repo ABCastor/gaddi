@@ -1,8 +1,9 @@
 import type { BrokerParams, BrokerResult, BrokerRequest } from '../shared/protocol.ts';
-import { errorMessage, isRecord, parseJSON, versionParam } from '../shared/protocol.ts';
+import { errorMessage, isRecord, versionParam } from '../shared/protocol.ts';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 // Stdio adapter for the tab broker. All authorization stays in the broker and approval app.
 import net from 'node:net';
+import { socketRequest, SocketError } from '../shared/socket.ts';
 import crypto from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import os from 'node:os';
@@ -17,37 +18,8 @@ const SOCK = process.env.GADDI_SOCKET || path.join(os.homedir(), 'Library/Applic
 const HARNESS = process.env.GADDI_HARNESS || 'unknown';
 const SESSION = crypto.randomUUID();
 const RPC_TIMEOUT_MS = Number(process.env.GADDI_RPC_TIMEOUT_MS || 120000);
-class SocketError extends Error {
-  raw: unknown;
-  constructor(raw: unknown) { super(isRecord(raw) && typeof raw.message === 'string' ? raw.message : undefined); this.raw = raw; }
-}
 function rpc<M extends string>(method: M, params: BrokerParams = {}): Promise<BrokerResult<M>> {
-  return new Promise<BrokerResult<M>>((resolve, reject) => {
-    const id = crypto.randomUUID(), sock = net.connect(SOCK);
-    let buf = '', done = false;
-    const finish = (complete: () => void) => { if (done) return; done = true; clearTimeout(timer); sock.destroy(); complete(); };
-    const fail = (message: string) => finish(() => reject(new SocketError({ message })));
-    const timer = setTimeout(() => fail(`daemon timed out on ${method}`), RPC_TIMEOUT_MS);
-    sock.setEncoding('utf8');
-    sock.on('connect', () => sock.write(JSON.stringify({ id, method, params: { ...params, caller: HARNESS, session: SESSION } } satisfies BrokerRequest) + '\n'));
-    sock.on('error', e => fail(`daemon connection failed: ${e.message}`));
-    sock.on('data', chunk => {
-      buf += chunk;
-      // Bounded response and matching request ID prevent an unrelated or malformed reply being accepted.
-      if (Buffer.byteLength(buf) > 32 * 1024 * 1024) return fail('daemon response exceeds 32 MiB');
-      const end = buf.indexOf('\n');
-      if (end < 0) return;
-      let msg: unknown;
-      try { msg = parseJSON(buf.slice(0, end)); } catch { return fail('malformed response from daemon'); }
-      if (!isRecord(msg) || msg.id !== id) return fail('daemon response ID mismatch');
-      if (msg.error) return finish(() => reject(new SocketError(msg.error)));
-      if (!Object.hasOwn(msg, 'result')) return fail('daemon response has no result');
-      // Broker producers check this method's result against the shared contract.
-      const result = msg.result as BrokerResult<M>;
-      finish(() => resolve(result));
-    });
-    sock.on('end', () => fail('daemon closed the connection without a response'));
-  });
+  return socketRequest(SOCK, { id: crypto.randomUUID(), method, params: { ...params, caller: HARNESS, session: SESSION } }, RPC_TIMEOUT_MS);
 }
 interface Field { type: string; description?: string; minimum?: number; maximum?: number; exclusiveMinimum?: number; enum?: string[]; items?: Field; minItems?: number; maxItems?: number; maxLength?: number; pattern?: string }
 interface ToolDefinition extends Tool {

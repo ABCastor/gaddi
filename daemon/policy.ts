@@ -6,7 +6,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { isRecord, parseJSON, errorMessage } from '../shared/protocol.ts';
 
-export interface PolicyData {
+interface PolicyData {
  version: number; comment?: string;
  hold: { verbs: string[]; url_patterns: string[]; keys: { url: string; keys: string[] }[]; uploads?: boolean; extensions?: { disable?: boolean; uninstall?: boolean } };
  deny: { comment?: string; verbs_on_hosts: { host: string; verbs: string[] }[]; type_into: string[]; eval_patterns: string[] };
@@ -198,12 +198,12 @@ export function hostOf(url: string) {
   try { return new URL(url).hostname.toLowerCase().replace(/\.$/, ''); } catch { return ''; }
 }
 // Fold accents, lowercase, collapse whitespace: "Procedi  al PAGAMENTO" -> "procedi al pagamento"
-export function fold(s: unknown) {
+function fold(s: unknown) {
   return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // whole word / phrase match of a folded verb inside a folded name
-export function phraseIn(name: unknown, verb: unknown) {
+function phraseIn(name: unknown, verb: unknown) {
   const n = fold(name), v = fold(verb);
   if (!n || !v) return false;
   return new RegExp(`(^|[^a-z0-9])${esc(v)}([^a-z0-9]|$)`).test(n);

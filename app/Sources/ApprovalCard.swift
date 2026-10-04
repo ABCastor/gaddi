@@ -296,24 +296,22 @@ final class ApprovalCard: NSStackView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 }
 
-final class RememberedSigninList: NSStackView {
-    init(_ sites: [String], enabled: Bool, revoke: @escaping (String) -> Void) {
+final class RememberedPermissionList<Item>: NSStackView {
+    init(_ items: [Item], title: String, explanation: String, enabled: Bool, label: (Item) -> String, revoke: @escaping (Item) -> Void) {
         super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 12
-        let heading = NSTextField(labelWithString: "Remembered sign-ins")
+        let heading = NSTextField(labelWithString: title)
         heading.font = Typeface.heading(18); heading.textColor = Palette.ink
         addArrangedSubview(heading)
-        let explanation = NSTextField(wrappingLabelWithString: sites.isEmpty
-            ? "No sites are remembered. Sign-ins wait for your approval."
-            : "Sign-ins on these exact sites run without asking. Revoke to require approval again.")
+        let explanation = NSTextField(wrappingLabelWithString: explanation)
         explanation.font = Typeface.interface(13); explanation.textColor = Palette.inkSoft
         addArrangedSubview(explanation)
         explanation.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        for site in sites {
-            let label = NSTextField(wrappingLabelWithString: site)
+        for item in items {
+            let label = NSTextField(wrappingLabelWithString: label(item))
             label.font = Typeface.interface(13); label.textColor = Palette.ink; label.isSelectable = true
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            let button = PanelButton("Revoke", kind: .secondary) { revoke(site) }
+            let button = PanelButton("Revoke", kind: .secondary) { revoke(item) }
             button.isEnabled = enabled
             let row = NSStackView(views: [label, button]); row.spacing = 12; row.alignment = .centerY
             addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
@@ -321,31 +319,22 @@ final class RememberedSigninList: NSStackView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 }
-
-final class RememberedSendList: NSStackView {
-    init(_ rules: [SendPermission], enabled: Bool, revoke: @escaping (SendPermission) -> Void) {
-        super.init(frame: .zero)
-        orientation = .vertical; alignment = .leading; spacing = 12
-        let heading = NSTextField(labelWithString: "Remembered sends")
-        heading.font = Typeface.heading(18); heading.textColor = Palette.ink
-        addArrangedSubview(heading)
-        let explanation = NSTextField(wrappingLabelWithString: rules.isEmpty
-            ? "No sends are remembered. Sending waits for your approval."
-            : "Only these send actions on these exact sites run without asking. Revoke to require approval again.")
-        explanation.font = Typeface.interface(13); explanation.textColor = Palette.inkSoft
-        addArrangedSubview(explanation)
-        explanation.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        for rule in rules {
-            let label = NSTextField(wrappingLabelWithString: "\(rule.site)\n\(rule.label) (\(rule.reason.components(separatedBy: ":").last ?? "send"))")
-            label.font = Typeface.interface(13); label.textColor = Palette.ink; label.isSelectable = true
-            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            let button = PanelButton("Revoke", kind: .secondary) { revoke(rule) }
-            button.isEnabled = enabled
-            let row = NSStackView(views: [label, button]); row.spacing = 12; row.alignment = .centerY
-            addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
-        }
+typealias RememberedSigninList = RememberedPermissionList<String>
+typealias RememberedSendList = RememberedPermissionList<SendPermission>
+extension RememberedPermissionList where Item == String {
+    convenience init(_ sites: [String], enabled: Bool, revoke: @escaping (String) -> Void) {
+        self.init(sites, title: "Remembered sign-ins", explanation: sites.isEmpty
+            ? "No sites are remembered. Sign-ins wait for your approval."
+            : "Sign-ins on these exact sites run without asking. Revoke to require approval again.", enabled: enabled, label: { $0 }, revoke: revoke)
     }
-    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+}
+extension RememberedPermissionList where Item == SendPermission {
+    convenience init(_ rules: [SendPermission], enabled: Bool, revoke: @escaping (SendPermission) -> Void) {
+        self.init(rules, title: "Remembered sends", explanation: rules.isEmpty
+            ? "No sends are remembered. Sending waits for your approval."
+            : "Only these send actions on these exact sites run without asking. Revoke to require approval again.", enabled: enabled,
+            label: { "\($0.site)\n\($0.label) (\($0.reason.components(separatedBy: ":").last ?? "send"))" }, revoke: revoke)
+    }
 }
 
 /// The same pending-action body serves the live panel and the offscreen harness.

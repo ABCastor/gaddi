@@ -5,6 +5,8 @@
     "lib": ["ES2023", "DOM", "DOM.Iterable"],
     "types": ["node", "chrome"],
     "strict": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
     "erasableSyntaxOnly": true,
     "verbatimModuleSyntax": true,
     "allowImportingTsExtensions": true,

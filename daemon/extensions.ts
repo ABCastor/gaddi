@@ -6,7 +6,7 @@ import { checkExtension } from './policy.ts';
 import type { Policy, PolicyCheck } from './policy.ts';
 import { validateUnpackedExtension, installUnpackedExtension } from './extensions-install.ts';
 
-export function extensionInfo(value: unknown): ExtensionInfo {
+function extensionInfo(value: unknown): ExtensionInfo {
   if (!isRecord(value) || !/^[a-p]{32}$/.test(String(value.id))
     || !['name', 'version', 'installType', 'type'].every(k => typeof value[k] === 'string')
     || !['enabled', 'mayDisable', 'self'].every(k => typeof value[k] === 'boolean')

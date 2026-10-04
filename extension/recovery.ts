@@ -2,7 +2,6 @@ import { isRecord } from '../shared/protocol.ts';
 import type { SelfHeal } from '../shared/protocol.ts';
 
 export type RecoveryReason = 'native-disconnect' | 'broker-unresponsive' | 'broker-requested';
-export type { SelfHeal } from '../shared/protocol.ts';
 interface RecoveryState { failures: number; reloadTimes: number[]; lastSelfHeal?: SelfHeal }
 export const RECOVERY_KEY = 'gaddiBridgeRecovery';
 export const RELOAD_COOLDOWN_MS = 10 * 60 * 1000;

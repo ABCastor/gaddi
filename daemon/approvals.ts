@@ -43,7 +43,7 @@ export function publicView({ actionHash, targetSelector, ...record }: StoredAppr
   return site ? { ...record, site } : record;
 }
 export function approvalRef(a: StoredApproval) { return { id: a.id, reason: a.reason, expires: a.expiresAt }; }
-export function actionHash(action: ApprovalAction) { return crypto.createHash('sha256').update(JSON.stringify(action)).digest('hex'); }
+function actionHash(action: ApprovalAction) { return crypto.createHash('sha256').update(JSON.stringify(action)).digest('hex'); }
 
 export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = () => {}, imageRoot, log = () => {} }:
   { ttlMinutes?: number; onChange?: () => void; emit?: Emit; imageRoot?: string; log?: (...args: unknown[]) => void }) {

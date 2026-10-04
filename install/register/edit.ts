@@ -7,7 +7,6 @@
 // kinds: claude-json | claude-settings | desktop-json | codex-toml | opencode-jsonc
 
 import fs from 'node:fs';
-import path from 'node:path';
 import { parseJSON } from '../../shared/protocol.ts';
 
 // Config editors historically accept object-valued fields, including arrays.

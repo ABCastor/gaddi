@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { isRecord, isBrokerResult, isTabInfo, parseJSON } from '../../shared/protocol.ts';
-import type { BrokerResult, BrokerResults, Reply, TabInfo, ChromeRequest } from '../../shared/protocol.ts';
+import type { BrokerResult, Reply, TabInfo, ChromeRequest } from '../../shared/protocol.ts';
 import type { ApprovalRecord } from '../../daemon/approvals.ts';
 export type PublicApproval = Omit<ApprovalRecord, 'actionHash'>;
 export interface AuditEntry { method: string; outcome: string; caller: string; tab: number | null; url: string; changed?: boolean; tabs?: { tab: number; url: string }[] }

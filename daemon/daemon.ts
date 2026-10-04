@@ -13,7 +13,6 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { spawn } from 'node:child_process';
 import { loadPolicy, setSigninRemember, setSendRemember, sendRule, checkRememberedSend, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from './policy.ts';
 import { signinSite, listLogins, chooseLogin, runSignin } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';

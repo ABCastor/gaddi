@@ -1,4 +1,4 @@
-import type { ChromeParams, Reply, WireError } from '../../shared/protocol.ts';
+import type { ChromeParams, Reply } from '../../shared/protocol.ts';
 import { isRecord, waitParams, versionParam, hasErrorCode } from '../../shared/protocol.ts';
 import type { PageResult } from '../../extension/content.ts';
 import type { ChromeResults, FixtureTab } from './extension-types.ts';
@@ -81,7 +81,7 @@ const tab: FixtureTabRecord = { id: 42, windowId: 1, index: 0, active: true, tit
 const tabRecords = new Map([[42, { ...tab }]]);
 const frameRecords = new Map<number, Frame>();
 let navigationMode = 'complete', loaderNumber = 0;
-function completeNavigation(id: number, url: string, { old = false, redirected = false, ready = true } = {}) {
+function completeNavigation(id: number, url: string, { old = false, redirected: _redirected = false, ready = true } = {}) {
   const frame = { id: `frame:${id}`, loaderId: old ? `old:${id}` : `loader:${++loaderNumber}`, url };
   frameRecords.set(id, frame);
   Object.assign(tabRecords.get(id)!, { url, status: 'complete' });
@@ -666,7 +666,7 @@ pass('expired click continuation sends no input and cannot detach the next task 
 
 await request('chrome.emulate', { tab: recoveryTab, width: 400 });
 let releaseMotion!: (result: PageResult) => void;
-pageResult = (action, params) => params.reset ? {} : new Promise(resolve => { releaseMotion = resolve; });
+pageResult = (_action, params) => params.reset ? {} : new Promise(resolve => { releaseMotion = resolve; });
 const expiredEmulation = request('chrome.emulate', { tab: recoveryTab, width: 480, animationSpeed: 0.5 });
 await waitFor(() => releaseMotion, 'partial emulation stalls after viewport override');
 timers.findLast(timer => timer.delay >= 24000 && timer.delay <= 25000 && !timer.cleared)!.fn();
@@ -853,7 +853,7 @@ chrome.debugger.sendCommand = async (target, method, params) => {
   if (method === 'Input.dispatchMouseEvent' && params.type === 'mouseMoved') movedOverGate = true;
   return result;
 };
-pageResult = action => action === 'clickPoint' && movedOverGate
+pageResult = action => action === 'clickCheck' && movedOverGate
   ? { __gaddiError: 'Element changed since it was checked; look again' } : { signature: 'before', x: 10, y: 20 };
 marker = calls.length;
 assert.match((await request('chrome.click', { tab: recoveryTab, selector: '#button', checkedDescription: { name: 'Continue', href: '' } })).error!.message,
@@ -960,7 +960,7 @@ const versionActions = [
   ['select', { selector: '#select', value: 'b' }], ['scroll', { dy: 20 }], ['scroll', { selector: '#bottom' }],
 ] as const;
 for (const [method, params] of versionActions) {
-  pageResult = (action, params) => params.version === 'v1-old'
+  pageResult = (_action, params) => params.version === 'v1-old'
     ? { __gaddiError: 'the page changed since you looked', __gaddiCode: 'stale' }
     : { signature: 'before', selector: '#input', x: 10, y: 20 };
   marker = calls.length;
@@ -983,12 +983,12 @@ pass('ASSERT_VERSION_AFTER');
 for (const [method, params, stage] of [
   ['type', { selector: '#input', text: 'text' }, 'typeCheck'],
   ['type', { selector: '#email', text: 'text', mode: 'append' }, 'typeCheck'],
-  ['click', { selector: '#button' }, 'clickPoint'],
+  ['click', { selector: '#button' }, 'clickCheck'],
 ] as const) {
   let points = 0;
   const nativeEnd = 'mode' in params;
   pageResult = (action, params) => {
-    if (action === stage && (++points === (method === 'type' && !nativeEnd ? 1 : 2)) && params.version === 'v1-before')
+    if (action === stage && (++points === (method === 'click' || !nativeEnd ? 1 : 2)) && params.version === 'v1-before')
       return { __gaddiError: 'the page changed since you looked', __gaddiCode: 'stale' };
     return { signature: 'before', selector: '#input', x: 10, y: 20, ...(nativeEnd ? { appendNeedsEnd: true } : {}) };
   };

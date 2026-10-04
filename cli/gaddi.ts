@@ -3,6 +3,7 @@
 import type { BrokerParams, BrokerResult, BrokerRequest } from '../shared/protocol.ts';
 import { isRecord, parseJSON, errorMessage, waitParams } from '../shared/protocol.ts';
 import net from 'node:net';
+import { socketRequest, SocketError } from '../shared/socket.ts';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
@@ -127,43 +128,22 @@ switch (cmd) {
   default: die(usage, 2);
 }
 if (args.length) die(`unexpected arguments: ${args.join(' ')}`, 2);
-if (cmd === 'read') {
-  const { readBrowser } = await import('../mcp/reader.ts');
-  const rpc = <M extends string>(method: M, arguments_: BrokerParams = {}): Promise<BrokerResult<M>> => new Promise((resolve, reject) => {
-    const connection = net.connect(socket); let buffer = '', settled = false;
-    const done = (error: unknown, value?: unknown) => {
-      if (settled) return; settled = true; clearTimeout(timer); connection.destroy();
-      if (error) reject(error);
-      // Preserve the reader's own result checks and error messages.
-      else resolve(value as BrokerResult<M>);
-    };
-    const timer = setTimeout(() => done(new Error('daemon response timed out')), 60000);
-    connection.setEncoding('utf8');
-    connection.on('connect', () => connection.write(JSON.stringify({ id: 1, method, params: { caller: params.caller, ...(params.harness ? { harness: params.harness } : {}), ...arguments_ } } satisfies BrokerRequest) + '\n'));
-    connection.on('error', error => done(error));
-    connection.on('end', () => done(new Error('daemon closed without a response')));
-    connection.on('data', data => {
-      buffer += data; const end = buffer.indexOf('\n'); if (end < 0) return;
-      try { const message = parseJSON(buffer.slice(0, end));
-        if (!isRecord(message)) throw new Error('malformed response');
-        if (message.error) done(Object.assign(new Error(errorMessage(message.error)), { daemonError: message.error }));
-        else done(null, message.result);
-      } catch (error) { done(error); }
-    });
-  });
+const rpc = <M extends string>(method: M, arguments_: BrokerParams = {}): Promise<BrokerResult<M>> =>
+  socketRequest(socket, { id: 1, method, params: { caller: params.caller, ...(params.harness ? { harness: params.harness } : {}), ...arguments_ } }, 60000);
+if (cmd !== 'events') {
   try {
-    const result = await readBrowser(params, rpc);
-    process.stdout.write(JSON.stringify(json ? { result } : result, null, json ? 0 : 2) + '\n');
+    const result = cmd === 'read' ? await (await import('../mcp/reader.ts')).readBrowser(params, rpc) : await rpc(method, params);
+    process.stdout.write((cmd === 'screenshot' && !json ? (isRecord(result) ? result.path : undefined)
+      : JSON.stringify(json ? { result } : result, null, json ? 0 : 2)) + '\n');
   } catch (error) {
-    const failure = isRecord(error) && isRecord(error.daemonError) ? error.daemonError : { code: 'error', message: errorMessage(error) };
+    const failure = error instanceof SocketError && isRecord(error.raw) ? error.raw : { code: 'error', message: errorMessage(error) };
     if (json) process.stdout.write(JSON.stringify({ error: failure }) + '\n'); else process.stderr.write(`gaddi: ${failure.message}\n`);
     await exit(failure.code === 'held' ? 4 : failure.code === 'denied' ? 5 : 1);
   }
   await exit(0);
 }
-const conn = net.connect(socket); let buffer = '', received = false;
+const conn = net.connect(socket); let buffer = '';
 const fail = async (message: string) => { process.stderr.write(message + '\n'); await exit(1); };
-const timer = cmd === 'events' ? null : setTimeout(() => fail('gaddi: daemon response timed out'), 60000);
 conn.setEncoding('utf8');
 conn.on('connect', () => conn.write(JSON.stringify({ id: 1, method, params } satisfies BrokerRequest) + '\n'));
 conn.on('error', error => fail(`gaddi: daemon not reachable at ${socket} (${(isRecord(error) ? error.code : undefined) || error.message})`));
@@ -173,20 +153,12 @@ conn.on('data', async data => {
     let message: Record<string, unknown>;
     try { const parsed = parseJSON(buffer.slice(0, end)); if (!isRecord(parsed)) throw new Error('malformed response'); message = parsed; } catch { return await fail('gaddi: malformed response'); }
     buffer = buffer.slice(end + 1);
-    if (cmd === 'events' && !message.error) { if (message.event) process.stdout.write(JSON.stringify(message) + '\n'); continue; }
-    received = true; if (timer) clearTimeout(timer); conn.destroy();
-    if (message.error) {
-      const failure = isRecord(message.error) ? message.error : {};
-      const code = failure.code === 'held' ? 4 : failure.code === 'denied' ? 5 : 1;
-      if (json) process.stdout.write(JSON.stringify({ error: message.error }) + '\n');
-      else process.stderr.write(`gaddi: ${failure.message}\n`);
-      await exit(code);
-    }
-    process.stdout.write((cmd === 'screenshot' && !json ? (isRecord(message.result) ? message.result.path : undefined)
-      : JSON.stringify(json ? { result: message.result } : message.result, null, json ? 0 : 2)) + '\n');
-    await exit(0);
+    if (!message.error) { if (message.event) process.stdout.write(JSON.stringify(message) + '\n'); continue; }
+    const failure = isRecord(message.error) ? message.error : {};
+    if (json) process.stdout.write(JSON.stringify({ error: message.error }) + '\n'); else process.stderr.write(`gaddi: ${failure.message}\n`);
+    await exit(failure.code === 'held' ? 4 : failure.code === 'denied' ? 5 : 1);
   }
 });
-conn.on('end', async () => { if (cmd === 'events') await exit(0); if (!received) await fail('gaddi: connection closed without a response'); });
+conn.on('end', async () => { await exit(0); });
 }
 await main().catch(async (error: unknown) => { process.stderr.write(errorMessage(error) + '\n'); await exit(isRecord(error) && typeof error.exitCode === 'number' ? error.exitCode : 1); });

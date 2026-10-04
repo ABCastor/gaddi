@@ -10,6 +10,7 @@ import type { BrokerRequest } from '../../shared/protocol.ts';
 
 // Exercise production CLI argument parsing and outgoing JSON without opening
 // an OS socket (the sandbox prohibits listening on a Unix socket).
+const socketSource = stripTypeScriptTypes(fs.readFileSync(new URL('../../shared/socket.ts', import.meta.url), 'utf8')).replace(/^import .*;$/gm, '').replace(/^export /gm, '');
 const source = stripTypeScriptTypes(fs.readFileSync(new URL('../../cli/gaddi.ts', import.meta.url), 'utf8')).replace(/^#!.*$/m, '').replace(/^import .*;$/gm, '');
 async function run(args: string[]) {
   let request: BrokerRequest | undefined, stderr = '';
@@ -23,7 +24,7 @@ async function run(args: string[]) {
     queueMicrotask(() => socket.emit('connect')); return socket;
   } };
   const processDouble = { argv: ['node', 'gaddi', ...args], env: {}, stdout: stream(), stderr: stream(true), exit: complete };
-  await vm.runInNewContext(`(async () => { ${source}\n })()`, { process: processDouble, net, os, path, isRecord, parseJSON, errorMessage, waitParams, setTimeout, clearTimeout, Buffer });
+  await vm.runInNewContext(`(async () => { ${socketSource}\n${source}\n })()`, { process: processDouble, net, os, path, isRecord, parseJSON, errorMessage, waitParams, setTimeout, clearTimeout, Buffer });
   const code = await finished;
   return { request, code, stderr };
 }

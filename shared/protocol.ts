@@ -1,6 +1,6 @@
 // Shared wire contracts. Parsed JSON stays unknown until a consumer checks its fields.
 export type RequestId = string | number | null;
-export interface SignedProof { ts: number; sig: string }
+interface SignedProof { ts: number; sig: string }
 export interface SelfHeal { at: number; reason: 'native-disconnect' | 'broker-unresponsive' | 'broker-requested'; action: 'reconnect' | 'reload' }
 export interface ChromeParams {
   operation?: ExtensionOperation | 'get'; extensionId?: string;
@@ -27,7 +27,7 @@ export interface BrokerParams extends ChromeParams {
   kind?: string; n?: number; path?: string; item?: string;
   remember?: boolean; site?: string; reason?: string;
 }
-export type ExtensionOperation = 'list' | 'reload' | 'enable' | 'disable' | 'uninstall' | 'install';
+type ExtensionOperation = 'list' | 'reload' | 'enable' | 'disable' | 'uninstall' | 'install';
 export interface ExtensionInfo {
   id: string; name: string; version: string; enabled: boolean; installType: string;
   mayDisable: boolean; mayEnable?: boolean; type: string; self: boolean;
@@ -50,7 +50,7 @@ export function extensionParams(params: { operation?: unknown; extensionId?: unk
 export type IncomingParams = { [K in keyof BrokerParams]?: unknown };
 export interface BrokerRequest { id: RequestId; method: string; params?: BrokerParams }
 export interface ChromeRequest { id: string | number; method: string; params: ChromeParams; deadline?: number }
-export interface ApprovalRef { id: string; reason: string; expires: string }
+interface ApprovalRef { id: string; reason: string; expires: string }
 export interface WireError { code?: string; message: string; approval?: ApprovalRef }
 export interface Reply<T = unknown> { id: RequestId; result?: T; error?: WireError }
 export interface TabInfo { id?: number; tabId?: number; tab?: number; url?: string; title?: string; active?: boolean; group?: string; groupId?: number; windowId?: number; index?: number; frozen?: boolean; discarded?: boolean }
@@ -88,6 +88,7 @@ export interface PageResults {
   typeCleanup: Record<string, never>;
   typeLanded: { landed: boolean };
   clickPoint: PageResults['snapshot'] & { x: number; y: number };
+  clickCheck: { x: number; y: number };
   upload: PageResults['snapshot'] & { via: 'input' | 'drop' };
   hoverPoint: PageResults['clickPoint'];
 }
@@ -115,10 +116,10 @@ export function isTabInfo(value: unknown): value is TabInfo {
 
 export interface HTMLPage { tab: number; url: string; html: string; truncated?: boolean }
 export interface TextPage { tab: number; url: string; text: string; version?: string; note?: string; outline?: string; offscreen?: { above: number; below: number }; title?: unknown; untrusted?: boolean; length?: number; truncated?: boolean; scroll?: { y: number; height: number } }
-export interface InputResult { tab: number; url: string; changed: boolean; version?: string; navigating?: boolean; note?: string }
+interface InputResult { tab: number; url: string; changed: boolean; version?: string; navigating?: boolean; note?: string }
 export interface CloseResult { closed: number[]; failed: { tab: number; reason: string }[] }
-export interface BookmarkInfo { path: string; title: string; url: string }
-export interface ScreenshotResult { path: string; mimeType: string; tab?: number; url?: string }
+interface BookmarkInfo { path: string; title: string; url: string }
+interface ScreenshotResult { path: string; mimeType: string; tab?: number; url?: string }
 export interface BrokerResults {
   signin: SigninResult;
   tabs: { tabs: TabInfo[] };

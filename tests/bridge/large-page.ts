@@ -38,6 +38,30 @@ export function instrumentLargeSignature(source: string) {
     .replace(end, `if (location.pathname === '/large.html') globalThis.largeTiming.signatures.push({action, ms: performance.now() - signatureStart});\n${end}`);
 }
 
+export async function guardedBenchmark({ context, daemon, url }: { context: BrowserContext; daemon: FakeDaemon; url: string }) {
+  const call = callsFor(daemon), active = await call('chrome.active');
+  const tab = (await call('chrome.open', { url: `${url}large.html#guarded-benchmark` })).id;
+  const page = await waitFor(() => context.pages().find(p => p.url().endsWith('#guarded-benchmark')), 'guarded benchmark fixture');
+  const checked = await call('chrome.describe', { tab, selector: '#noop' });
+  const samples: number[] = [];
+  try {
+    assert.equal(await page.evaluate(() => document.hidden), true);
+    for (let i = 0; i < 24; i++) {
+      const start = performance.now();
+      const reply = await call('chrome.click', { tab, selector: '#noop', checkedDescription: { name: checked.name, href: checked.href } });
+      const ms = performance.now() - start;
+      assert.equal(reply.changed, false, 'guarded no-op must remain unchanged');
+      if (i >= 4) samples.push(ms);
+    }
+    assert.equal((await call('chrome.active')).id, active.id, 'guarded benchmark never activates the target');
+    assert.equal(await page.evaluate(() => document.hidden), true);
+    const events = await page.evaluate('window.largeEvents');
+    assert.ok(Array.isArray(events));
+    assert.equal(events.length, 24, 'each click executes exactly once');
+    console.log(`GUARDED_BENCHMARK ${JSON.stringify({ samples, median: [...samples].sort((a,b)=>a-b)[10], count: 20 })}`);
+  } finally { await call('chrome.close', { tabs: [tab] }); }
+}
+
 export async function largePage({ context, worker, daemon, url, pass }: {
   context: BrowserContext; worker: Worker; daemon: FakeDaemon; url: string; pass: (label: string) => void;
 }) {

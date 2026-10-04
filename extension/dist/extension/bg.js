@@ -1101,7 +1101,7 @@ async function dispatchAction({ method, params = {} }, scope) {
                 if (action === 'click') {
                     // Pointer movement can run handlers that change the gated name or href.
                     if (params.checkedDescription || params.version) {
-                        const { x, y } = await onPage(tab, 'clickPoint', params, check);
+                        const { x, y } = await onPage(tab, 'clickCheck', params, check);
                         Object.assign(point, { x, y });
                     }
                     // Both halves go to Chrome at once, so a menu that opens on the press (a password
