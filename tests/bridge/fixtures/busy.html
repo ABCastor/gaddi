@@ -1,0 +1,10 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Busy page fixture</title>
+<main><h1>Recoverable page</h1></main>
+<script>
+window.blockMainThread = milliseconds => {
+  navigator.sendBeacon('/blocked-started');
+  const end = performance.now() + milliseconds;
+  while (performance.now() < end) { /* Deliberately block the renderer, not the extension. */ }
+};
+</script></html>

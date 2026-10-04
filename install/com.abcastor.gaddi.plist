@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.abcastor.gaddi</string>
+  <key>ProgramArguments</key><array><string>__NODE__</string><string>__REPO__/daemon/daemon.mjs</string></array>
+  <key>WorkingDirectory</key><string>__REPO__</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>EnvironmentVariables</key><dict>
+    <key>GADDI_HOME</key><string>__STATE__</string>
+    <key>GADDI_APPROVER_PUB</key><string>__APPROVER__</string>
+    <key>GADDI_EXTENSION_INSTALL</key><string>__EXTENSION_INSTALL__</string>
+  </dict>
+  <key>StandardOutPath</key><string>__STATE__/daemon.stdout.log</string>
+  <key>StandardErrorPath</key><string>__STATE__/daemon.stderr.log</string>
+</dict></plist>

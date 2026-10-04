@@ -1,0 +1,160 @@
+{
+  "version": 3,
+  "comment": "Tab-scoped action gates. Hold requires a signed app approval; deny has no approval path. Verbs match accessible names; URL patterns match the full action URL.",
+  "hold": {
+    "verbs": [
+      "send",
+      "send now",
+      "invia",
+      "invia ora",
+      "pay",
+      "pay now",
+      "paga",
+      "paga ora",
+      "procedi al pagamento",
+      "vai al pagamento",
+      "conferma pagamento",
+      "buy",
+      "buy now",
+      "acquista",
+      "acquista ora",
+      "compra",
+      "compra ora",
+      "place order",
+      "place your order",
+      "confirm order",
+      "complete purchase",
+      "checkout",
+      "proceed to checkout",
+      "ordina",
+      "conferma ordine",
+      "concludi ordine",
+      "concludi l'ordine",
+      "concludi acquisto",
+      "procedi all'acquisto",
+      "vai alla cassa",
+      "transfer",
+      "make transfer",
+      "confirm transfer",
+      "bonifico",
+      "esegui bonifico",
+      "conferma bonifico",
+      "trasferisci",
+      "disponi",
+      "conferma disposizione",
+      "withdraw",
+      "deposit",
+      "preleva",
+      "versa",
+      "ricarica",
+      "delete",
+      "delete forever",
+      "delete permanently",
+      "remove",
+      "elimina",
+      "elimina definitivamente",
+      "cancella",
+      "rimuovi",
+      "close account",
+      "delete account",
+      "chiudi conto",
+      "chiudi account",
+      "elimina account",
+      "change password",
+      "update password",
+      "reset password",
+      "cambia password",
+      "modifica password",
+      "reimposta password",
+      "turn off 2-step verification",
+      "remove phone",
+      "add recovery",
+      "disattiva verifica in due passaggi",
+      "unsubscribe",
+      "cancel subscription",
+      "disdici",
+      "annulla abbonamento",
+      "annulla iscrizione",
+      "post",
+      "publish",
+      "pubblica",
+      "share",
+      "condividi"
+    ],
+    "url_patterns": [
+      "/checkout",
+      "/cassa",
+      "/pagament",
+      "/payment",
+      "/pay\\b",
+      "/carrello/conferma",
+      "/order/confirm",
+      "/ordine/conferma",
+      "/conferma-ordine",
+      "/bonific",
+      "/transfer",
+      "/trasferiment",
+      "/disposizion",
+      "/ricaric",
+      "/prelev",
+      "/settings/security",
+      "/security",
+      "/sicurezza",
+      "myaccount\\.google\\.com/(security|signinoptions|intro/security|deleteservices|delete)",
+      "accounts\\.google\\.com/.*(password|signinoptions|security|deleteaccount)",
+      "/delete-account",
+      "/close-account",
+      "/elimina-account",
+      "/chiudi-conto",
+      "/unsubscribe",
+      "/disdett"
+    ],
+    "uploads": true,
+    "keys": [
+      {
+        "url": "mail\\.google\\.com",
+        "keys": [
+          "Meta+Enter",
+          "Control+Enter"
+        ]
+      }
+    ]
+  },
+  "deny": {
+    "comment": "No approval path. Gmail send actions and password access are denied.",
+    "verbs_on_hosts": [
+      {
+        "host": "mail\\.google\\.com",
+        "verbs": [
+          "send",
+          "invia",
+          "send now",
+          "invia ora",
+          "schedule send",
+          "programma invio"
+        ]
+      }
+    ],
+    "type_into": [
+      "input[type=password]",
+      "input[autocomplete=current-password]",
+      "input[autocomplete=new-password]"
+    ],
+    "eval_patterns": [
+      "type\\s*=\\s*[\"']?password",
+      "\\[type=password\\]",
+      "\\.password\\b",
+      "\\.type\\s*=\\s*[\"']",
+      "setAttribute\\s*\\(\\s*[\"']type[\"']"
+    ]
+  },
+  "signin": {
+    "remember": []
+  },
+  "sends": {
+    "remember": []
+  },
+  "approvals": {
+    "ttl_minutes": 10
+  }
+}

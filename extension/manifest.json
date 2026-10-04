@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Gaddi",
+  "version": "0.4.0",
+  "minimum_chrome_version": "120",
+  "description": "Your Chrome, shared with your AI agents.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAycgqBZ8jHlW9iqrq35/Oc5PkGgMUubLkibptZpSxlCXgv36yOtttKfXzfsT0KpW8ySi7JT7fJsKCB0sWqsK8Cg+epD6TICvraPT0pBvWfOypP1dPbpBWw1owWoPJsnEwwCFUQ3iSydIFPYmoq6QYzgn6A3Z75lKhgk08u5vCw53+T4iTfLQdkXtDlR+uomQha6p43iQUxBP0QeLnTPqCGb7yWEMiYZQftknCaNu2BHfIhkW3ZNjp8ph0z3UZ2atKAHmsGA2x4KF47IzDHcesbxEZkHm96bOnDkR9+x/wwXDuSogwFOmUCyjf9T6sv4TG5i/1Fd9dJxVSr8mZYrkcrwIDAQAB",
+  "permissions": [
+    "tabs",
+    "scripting",
+    "debugger",
+    "nativeMessaging",
+    "tabGroups",
+    "bookmarks",
+    "alarms",
+    "storage",
+    "management"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "dist/extension/bg.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Your Chrome, shared with your AI agents.",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png"
+    }
+  },
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  }
+}

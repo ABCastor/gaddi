@@ -1,0 +1,31 @@
+<!doctype html>
+<title>Aura sign-in fixture</title>
+<!-- SCC Events' public salesforceIdentity:loginForm2 uses divs and ui:inputText,
+     with updateOn="change" and an Enter keyup handler reading component state. -->
+<div id="login">
+  <label for="23:0" hidden>Email-Adresse</label>
+  <input id="23:0" type="text" placeholder="Email-Adresse" required>
+  <label for="24:0" hidden>Passwort</label>
+  <input id="24:0" type="password" placeholder="Passwort" required data-menu>
+  <button type="button">Sign in</button>
+</div>
+<script>
+  const usernameField = document.getElementById('23:0');
+  const passwordField = document.getElementById('24:0');
+  const model = { username: '', password: '' };
+  window.signinEvents = [];
+  for (const field of [usernameField, passwordField]) {
+    const kind = field === usernameField ? 'username' : 'password';
+    for (const type of ['input', 'change', 'blur', 'focus', 'keyup']) field.addEventListener(type, event => {
+      window.signinEvents.push({ type, field: kind, trusted: event.isTrusted });
+      if (type === 'change') model[kind] = field.value;
+    });
+    field.addEventListener('keyup', event => { if (event.key === 'Enter') submit(); });
+  }
+  function submit() {
+    sessionStorage.setItem('signinEvents', JSON.stringify(window.signinEvents));
+    fetch(location.href, { method: 'POST', body: new URLSearchParams(model) })
+      .then(() => location.reload());
+  }
+  document.querySelector('button').addEventListener('click', submit);
+</script>

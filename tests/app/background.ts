@@ -1,0 +1,28 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+
+const controller = fs.readFileSync(new URL('../../app/Sources/AppController.swift', import.meta.url), 'utf8');
+const main = fs.readFileSync(new URL('../../app/Sources/main.swift', import.meta.url), 'utf8');
+const body = (start: string, end: string) => controller.slice(controller.indexOf(start), controller.indexOf(end, controller.indexOf(start)));
+const notify = body('private func notify(', 'func userNotificationCenter');
+assert.match(notify, /UNUserNotificationCenter.current\(\).add/);
+assert.doesNotMatch(notify, /openApprovals|activate|makeKeyAndOrderFront/);
+assert.doesNotMatch(body('private func render()', '@objc private func quit()'), /openApprovals\(\)|NSApp\.activate|makeKeyAndOrderFront/);
+assert.doesNotMatch(body('private func renderApprovals()', 'private func notify('), /openApprovals\(\)|NSApp\.activate|makeKeyAndOrderFront/);
+const error = body('private func showError(', 'private func authenticated(');
+assert.match(error, /errorText =/);
+assert.match(error, /render\(\)/);
+assert.doesNotMatch(error, /NSAlert|runModal|openApprovals|activate|makeKeyAndOrderFront/);
+assert.equal((controller.match(/NSApp.activate\(/g) || []).length, 1);
+assert.match(body('@objc private func openApprovals(', 'private func renderApprovals('), /NSApp.activate/);
+assert.match(body('didReceive response:', 'private func showError('), /self.requestApproval\(id\)/);
+assert.match(controller, /#selector\(openApprovals\)/);
+assert.doesNotMatch(body('private func requestApproval(', 'func applicationDidFinishLaunching'), /openApprovals|activate|authenticate/);
+const pending = body('private func presentPendingApprovals()', '@objc private func openApprovals()');
+assert.match(pending, /snapshot.approvals.contains\(where: \{ \$0.id == id && !\$0.expired \}\)/);
+assert.match(pending, /visibility.shouldPresent\(snapshot.approvals, busy: busy\)/);
+assert.doesNotMatch(pending, /authenticate|authenticated|decide\(/);
+assert.match(body('model.onSnapshot =', 'model.onPending ='), /presentPendingApprovals\(\)/);
+assert.doesNotMatch(main, /existing.activate/);
+assert.ok(main.indexOf('if arguments == ["--headless-check"]') < main.indexOf('let application = NSApplication.shared'));
+console.log('PASS app background: live pending snapshots raise UI without authenticating; notifications and errors never independently take focus');

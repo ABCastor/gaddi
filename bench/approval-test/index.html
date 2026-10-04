@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Gaddi approval picture test</title>
+<style>
+  body { font: 16px/1.5 -apple-system, sans-serif; margin: 40px; color: #222; }
+  .filler { height: 1600px; background: linear-gradient(#f4f4f4, #e8e8e8); border-radius: 8px; padding: 20px; }
+  .row { display: flex; gap: 16px; align-items: center; margin-top: 40px; }
+  button { font: inherit; padding: 12px 22px; border-radius: 8px; border: 0; }
+  #save { background: #d9e7ff; }
+  #pay { background: #ff7a00; color: white; font-weight: 600; }
+</style>
+<h1>Approval picture test</h1>
+<p>A local page for testing Gaddi. Nothing here sends or pays for anything.</p>
+<div class="filler">Scroll down: the button the agent tries to press is further down.</div>
+<div class="row">
+  <button id="save" type="button">Save draft</button>
+  <button id="pay" type="button" onclick="document.body.dataset.clicked = 'pay'">Pay now</button>
+  <span>Order total: 0.00 (test page)</span>
+</div>
+</html>

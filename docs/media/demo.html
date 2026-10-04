@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Gaddi demo: research notes</title>
+<style>
+:root{color-scheme:light}*{box-sizing:border-box}body{margin:0;background:#faf9f4;color:#24231f;font:24px/1.4 -apple-system,BlinkMacSystemFont,sans-serif}.page{max-width:760px;margin:16px auto;padding:0 32px}.masthead{display:flex;align-items:center;gap:12px;font-size:18px;color:#006770;border-bottom:1px solid #d4d2c9;padding-bottom:12px}.masthead img{width:30px;height:30px;background:#24231f;border-radius:7px}h1{font:34px/1.2 Georgia,serif;margin:12px 0 8px}p{color:#67645d;margin:12px 0}label{display:block;margin:12px 0 8px;font-size:24px}input{width:100%;border:1px solid #bfbcb0;border-radius:7px;padding:15px;background:white;font:inherit}button{border:0;border-radius:7px;padding:13px 19px;font:24px -apple-system,sans-serif;cursor:pointer;background:#006770;color:white}.row{display:flex;justify-content:space-between;align-items:center;margin-top:22px}.note{border:1px solid #d4d2c9;border-radius:8px;background:#fff;padding:20px;margin-top:24px}h2{font:28px Georgia,serif;margin:0 0 8px}#publish{background:#c4552a}.small{font-size:13px;color:#77736a}#result{color:#006770}
+</style>
+<main class="page">
+<h1>Research notes</h1>
+<p>A local demo. Nothing is sent outside this page.</p>
+<label for="query">Search notes</label>
+<input id="query" placeholder="Find a note">
+<div class="row"><button id="search" onclick="document.querySelector('#result').textContent='1 note found for '+document.querySelector('#query').value">Search</button><span id="result" aria-live="polite">Ready to search</span></div>
+<article class="note"><h2>Browser automation</h2><p>A draft note. Publish changes only its local status.</p><div class="row"><button id="publish" aria-label="Publish local note" onclick="document.querySelector('#note-status').textContent='Note status: published locally'">Publish local note<br><span style="font-size:22px">Demo only, nothing sent</span></button><span id="note-status">Note status: draft</span></div></article>
+</main>
+</html>

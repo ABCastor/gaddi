@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Native background input fixture</title>
+<style>
+  body { margin: 40px; font: 18px sans-serif; }
+  input, textarea, [contenteditable], button { display: block; margin: 20px; padding: 10px; }
+  #hover { width: 160px; height: 50px; background: lightblue; }
+  #hover:hover { background: orange; }
+  #spacer { height: 3000px; }
+</style>
+<input id="field" value="hello">
+<input id="email" type="email" value="user">
+<input id="number" type="number" value="12">
+<textarea id="area">hello textarea</textarea>
+<div id="editable" contenteditable="true"><b>hello</b> editable</div>
+<button id="button">Focus this button</button>
+<div id="hover">Hover target</div>
+<div id="spacer"></div>
+<script>
+  window.inputEvents = [];
+  for (const type of ['pointerdown', 'mousedown', 'mouseup', 'click', 'focus', 'blur', 'keydown', 'input', 'visibilitychange']) {
+    document.addEventListener(type, event => {
+      window.inputEvents.push({ type, target: event.target.id || '', key: event.key,
+        trusted: event.isTrusted, visibility: document.visibilityState, focus: document.hasFocus() });
+    }, true);
+  }
+  window.framesSeen = 0;
+  requestAnimationFrame(function frame() { window.framesSeen++; requestAnimationFrame(frame); });
+</script>
+</html>

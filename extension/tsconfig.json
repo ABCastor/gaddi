@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "types": ["chrome"],
+    "noEmit": false,
+    "noEmitOnError": true,
+    "rewriteRelativeImportExtensions": true,
+    "rootDir": "..",
+    "outDir": "dist"
+  },
+  "include": ["*.ts"],
+  "exclude": ["dist"]
+}

@@ -1,0 +1,14 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Page version fixture</title>
+<style>body { margin: 24px; } #spacer { height: 2000px; }</style>
+<button id="target">Continue</button>
+<a id="link" href="/next.html">Next</a>
+<input id="field" aria-label="First field">
+<input id="other" aria-label="Second field">
+<select id="choice"><option value="a">A</option><option value="b">B</option></select>
+<span id="ticker">Tick 1</span><div id="spacer"></div>
+<script>
+  window.versionEvents = [];
+  document.addEventListener('click', event => versionEvents.push({ id: event.target.id, trusted: event.isTrusted }));
+</script>

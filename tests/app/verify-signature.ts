@@ -1,0 +1,17 @@
+import fs from 'node:fs';
+import crypto from 'node:crypto';
+import assert from 'node:assert/strict';
+const fixture: unknown = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+assert(fixture !== null && typeof fixture === 'object');
+assert('message' in fixture && typeof fixture.message === 'string');
+assert('sig' in fixture && typeof fixture.sig === 'string');
+assert('publicKey' in fixture && typeof fixture.publicKey === 'string');
+const key = crypto.createPublicKey(fixture.publicKey);
+assert.equal(key.asymmetricKeyType, 'ec');
+assert.equal(key.asymmetricKeyDetails?.namedCurve, 'prime256v1');
+const signature = Buffer.from(fixture.sig, 'base64');
+assert(crypto.verify('sha256', Buffer.from(fixture.message, 'utf8'), { key, dsaEncoding: 'der' }, signature));
+assert(!crypto.verify('sha256', Buffer.from(fixture.message + 'tampered', 'utf8'), { key, dsaEncoding: 'der' }, signature));
+const other = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).publicKey;
+assert(!crypto.verify('sha256', Buffer.from(fixture.message, 'utf8'), other, signature));
+console.log('PASS app signature: Node verifies P-256 DER and rejects changed message and wrong key');

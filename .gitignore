@@ -1,0 +1,12 @@
+CHANGES.log
+node_modules
+profile/
+*.log
+.DS_Store
+tests/.state-mcp/
+tests/.state/
+.codex-runs/
+app/build/
+tests/.state-bridge/
+tests/.state-mcp/
+bench/results/

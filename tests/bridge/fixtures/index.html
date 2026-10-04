@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Chrome bridge local fixture</title>
+<style>body { font: 18px sans-serif; margin: 48px; } button, input { margin: 12px; padding: 12px; } #spacer { height: 1500px; }</style>
+<header aria-label="Fixture header">Gaddi local fixture</header>
+<main aria-label="Checkout fixture">
+  <h1>Local checkout</h1>
+  <label for="password">Password</label><input id="password" type="password">
+  <label for="current">Existing password</label><input id="current" autocomplete="section-login current-password">
+  <label for="new">New password</label><input id="new" autocomplete="new-password">
+  <label for="text">Notes</label><input id="text">
+  <select id="choices"><option value="a">First</option><option value="b">Second</option></select>
+  <input id="focus-race" aria-label="Changes on focus">
+  <button id="icon" aria-label="Continue safely"><span aria-hidden="true">X</span></button>
+  <span id="label" hidden>Referenced button name</span><button id="referenced" aria-labelledby="label">Wrong visible name</button>
+  <a id="link" href="/next.html">Next fixture page</a>
+  <form id="multiple-buttons" onsubmit="event.preventDefault()">
+    <input id="implicit-submit" aria-label="Implicit submission">
+    <button id="preview-submit">Preview</button><button id="pay-submit">Pay</button>
+  </form>
+  <p id="status">Not clicked</p>
+  <div id="spacer"></div>
+  <button id="pay">Procedi al pagamento</button>
+</main>
+<footer>Local fixture footer</footer>
+<script>
+  window.events = [];
+  document.querySelector('#pay').addEventListener('click', event => {
+    window.events.push({ type: 'click', isTrusted: event.isTrusted });
+    document.querySelector('#status').textContent = 'Payment button clicked';
+  });
+  document.querySelector('#text').addEventListener('input', event => window.events.push({ type: 'input', isTrusted: event.isTrusted }));
+  document.querySelector('#text').addEventListener('keydown', event => window.events.push({ type: 'keydown', key: event.key, isTrusted: event.isTrusted }));
+  document.querySelector('#focus-race').addEventListener('focus', event => { event.target.type = 'password'; });
+</script>
+</html>

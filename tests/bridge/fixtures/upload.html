@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Upload fixture</title>
+<style>
+  body { margin: 40px; font: 18px sans-serif; }
+  label, input, div { display: block; margin: 16px 0; }
+  .button { display: inline-block; padding: 8px 12px; border: 1px solid #555; cursor: pointer; }
+  #zone { width: 320px; height: 120px; border: 2px dashed #888; }
+</style>
+<label for="logo">Logo</label>
+<input id="logo" type="file" accept="image/png,.svg">
+<label id="avatar-button" class="button">Upload new picture<input id="avatar" type="file" accept="image/*" style="display:none"></label>
+<div id="zone" role="button" tabindex="0">Drop a file here</div>
+<input id="off" type="file" disabled>
+<input id="name" type="text" aria-label="Name">
+<script>
+  // The page reads back exactly what it received, as an upload widget would.
+  window.received = [];
+  async function read(source, file) {
+    const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+    window.received.push({ source, name: file.name, type: file.type, size: file.size, lastModified: file.lastModified,
+      sha256: [...new Uint8Array(digest)].map(b => b.toString(16).padStart(2, '0')).join('') });
+  }
+  for (const id of ['logo', 'avatar']) document.getElementById(id).addEventListener('change', event => { for (const file of event.target.files) read(id, file); });
+  const zone = document.getElementById('zone');
+  zone.addEventListener('dragover', event => event.preventDefault());
+  zone.addEventListener('drop', event => { event.preventDefault(); for (const file of event.dataTransfer.files) read('zone', file); });
+</script>
+</html>

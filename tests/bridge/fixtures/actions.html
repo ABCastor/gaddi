@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Action outcome fixture</title>
+<style>
+  body { margin: 20px; font: 16px sans-serif; }
+  button, input, select, #hover, #inert { display: block; margin: 8px; padding: 5px; }
+  #hover, #inert { width: 150px; height: 24px; }
+  #spacer { height: 2500px; }
+</style>
+<button id="button">Continue</button>
+<button id="noop">Unchanged button</button>
+<button id="hover-race">Continue on hover</button>
+<a id="link" href="/next.html">Continue link</a>
+<input id="field" aria-label="Field" value="hello">
+<select id="choices" aria-label="Choice"><option value="a">Alpha</option><option value="b">Beta</option></select>
+<div id="hover">Hover changes text</div>
+<div id="inert">Unchanged hover</div>
+<input id="combo" role="combobox" aria-controls="options" aria-label="Destination">
+<div id="options" role="listbox" hidden></div>
+<form id="form" onsubmit="event.preventDefault()"><input id="submit-field" aria-label="Submit field"><button id="submit-button">Preview</button></form>
+<p id="status">Waiting</p>
+<div id="spacer"></div>
+<script>
+  window.actionEvents = [];
+  for (const type of ['pointerdown', 'click', 'keydown', 'input', 'change']) {
+    document.addEventListener(type, event => window.actionEvents.push({ type, target: event.target.id, key: event.key, trusted: event.isTrusted }), true);
+  }
+  document.querySelector('#button').addEventListener('click', () => document.querySelector('#status').textContent = 'Clicked');
+  document.querySelector('#hover-race').addEventListener('mouseenter', event => event.target.textContent = 'Delete on hover');
+  document.querySelector('#hover').addEventListener('pointerover', () => document.querySelector('#status').textContent = 'Hovered');
+  document.querySelector('#field').addEventListener('keydown', event => {
+    if (event.key === 'ArrowDown') document.querySelector('#status').textContent = 'Key received';
+  });
+  document.querySelector('#combo').addEventListener('input', () => {
+    setTimeout(() => {
+      document.querySelector('#options').innerHTML = '<div role="option">Zurich option</div>';
+      document.querySelector('#options').hidden = false;
+    }, 80);
+  });
+</script>
+</html>

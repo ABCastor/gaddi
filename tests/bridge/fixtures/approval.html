@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Approval picture fixture</title>
+<style>
+  body { margin: 0; width: 1400px; height: 3600px; background: #f2ecd8; }
+  button { position: absolute; left: 320px; width: 240px; height: 80px; padding: 0; border: 0; color: white; font: 18px sans-serif; }
+  #near { top: 180px; background: rgb(214, 35, 143); }
+  #far { top: 2800px; background: rgb(20, 170, 100); }
+  h1 { position: absolute; top: 70px; left: 32px; }
+  .context { position: absolute; left: 280px; font: 20px sans-serif; }
+  #small, #top-left, #bottom-right { width: 120px; height: 40px; background: rgb(214, 35, 143); }
+  #small { left: 600px; top: 1200px; }
+  #wide { left: 250px; top: 1850px; width: 900px; background: rgb(20, 170, 100); }
+  #top-left { left: 8px; top: 8px; }
+  #bottom-right { left: 1272px; top: 3552px; }
+  #oversized { left: 160px; top: 2200px; width: 1080px; height: 500px; background: rgb(20, 170, 100); }
+</style>
+<h1>Review this purchase</h1>
+<button id="near" aria-label="Pay now">Visible purchase</button>
+<button id="far" aria-label="Delete account">Far below the fold</button>
+<p class="context" style="top:1070px">Account settings: permanently remove this workspace</p>
+<button id="small">Delete forever</button>
+<p class="context" style="top:1720px">Order review: delivery address and payment summary</p>
+<button id="wide">Pay now</button>
+<button id="top-left">Send</button>
+<button id="bottom-right">Send</button>
+<button id="oversized">Confirm order</button>
+
+<div id="clipping" style="position:absolute;top:450px;left:200px;width:400px;height:100px;overflow:auto"><div style="position:relative;height:900px"><button id="clipped" style="top:400px;left:10px;background:blue">Pay hidden</button></div></div>
+<div id="scaled-clipping" style="position:absolute;top:3200px;left:200px;width:400px;height:100px;overflow:auto;transform:scale(.5);transform-origin:top left"><div style="position:relative;height:900px"><button id="scaled-clipped" style="top:150px;left:10px;height:20px;background:blue">Pay hidden</button></div></div>

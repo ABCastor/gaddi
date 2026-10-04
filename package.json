@@ -1,0 +1,24 @@
+{
+  "name": "gaddi",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Your Chrome, shared with your AI agents.",
+  "type": "module",
+  "engines": {
+    "node": "^22.18.0 || >=23.6.0"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.30.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "0.2.9",
+    "@types/node": "26.5.1",
+    "playwright-core": "1.63.0",
+    "typescript": "7.0.2"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build:extension": "tsc -p extension/tsconfig.json",
+    "test": "bash tests/run-all.sh"
+  }
+}

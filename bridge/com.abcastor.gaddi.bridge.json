@@ -1,0 +1,7 @@
+{
+  "name": "com.abcastor.gaddi.bridge",
+  "description": "Gaddi Chrome bridge",
+  "path": "__HOST_PATH__",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://dkdhddaljaegpbloohdplknmghpgkoce/"]
+}

@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Control state fixture</title>
+<style>body { margin: 24px; font: 16px sans-serif; } input, textarea, select, [contenteditable] { display: block; margin: 8px; } #spacer { height: 1800px; }</style>
+<main aria-label="Control state">
+<input type="search" aria-label="Search" value="hello">
+<input id="long" aria-label="Long value">
+<textarea aria-label="Notes">line one</textarea>
+<div contenteditable="true" aria-label="Editor">edit me</div>
+<input type="number" aria-label="Count" value="7">
+<div role="spinbutton" aria-label="ARIA count" aria-valuenow="9" tabindex="0"></div>
+<input type="checkbox" aria-label="Ticked" checked>
+<input type="checkbox" aria-label="Unticked">
+<input id="mixed" type="checkbox" aria-label="Partial">
+<input type="radio" aria-label="Selected radio" checked>
+<input type="radio" aria-label="Unselected radio">
+<div role="switch" aria-label="Switch" aria-checked="mixed" tabindex="0"></div>
+<button aria-label="Disclosure" aria-expanded="true">Open</button>
+<button aria-label="Toggle" aria-pressed="mixed">Toggle</button>
+<div role="tab" aria-label="Unselected tab" aria-selected="false" tabindex="0"></div>
+<input aria-label="Unavailable" value="readable" disabled>
+<select aria-label="Choice"><option value="a">Alpha</option><option value="x" disabled>Disabled</option><optgroup label="Unavailable" disabled><option value="z">Group disabled</option></optgroup><option value="b" selected>Beta</option></select>
+<select id="many" aria-label="Many options"></select>
+<input type="password" aria-label="Password" value="private-password-marker">
+<input autocomplete="section-login current-password" aria-label="Current password" value="private-current-marker">
+<input autocomplete="new-password" aria-label="New password" value="private-new-marker">
+<input autocomplete="section-billing cc-number" aria-label="Card number" value="private-card-marker">
+<input autocomplete="cc-csc" aria-label="Card security" value="private-csc-marker">
+<input autocomplete="cc-exp" aria-label="Card expiry" value="private-exp-marker">
+<input autocomplete="cc-exp-month" aria-label="Card month" value="private-month-marker">
+<input autocomplete="cc-exp-year" aria-label="Card year" value="private-year-marker">
+<input autocomplete="one-time-code" aria-label="One time code" value="private-code-marker">
+<input type="hidden" aria-label="Hidden field" value="private-hidden-marker">
+<input type="file" aria-label="Upload">
+<form aria-label="Clobbered form"><input name="type" aria-label="Clobber field" value="safe"></form>
+<div id="spacer"></div>
+</main>
+<script>
+  document.querySelector('#long').value = 'x'.repeat(100);
+  document.querySelector('#mixed').indeterminate = true;
+  const files = new DataTransfer();
+  files.items.add(new File(['fixture'], 'private-file-marker.txt'));
+  document.querySelector('input[type=file]').files = files.files;
+  for (let i = 0; i < 23; i++) document.querySelector('#many').add(new Option(`Option ${i}`, `v${i}`));
+</script>
+</html>

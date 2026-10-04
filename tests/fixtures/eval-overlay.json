@@ -1,0 +1,16 @@
+{
+  "deny": {
+    "eval_patterns": [
+      "LMSSetValue",
+      "LMSCommit",
+      "LMSFinish",
+      "SetValue\\s*\\(",
+      "Commit\\s*\\(",
+      "Terminate\\s*\\(",
+      "pipwerks",
+      "SCORM\\.set",
+      "cmi\\.(core\\.lesson_status|completion_status|success_status|core\\.score\\.raw|score\\.raw|score\\.scaled|core\\.exit|exit|progress_measure)[\"']\\s*,",
+      "cmi\\.(core\\.lesson_status|completion_status|success_status|core\\.score|score|progress_measure)[A-Za-z_.]*\\s*=[^=]"
+    ]
+  }
+}

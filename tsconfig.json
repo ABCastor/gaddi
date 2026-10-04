@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["node", "chrome"],
+    "strict": true,
+    "erasableSyntaxOnly": true,
+    "verbatimModuleSyntax": true,
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["bridge/**/*.ts", "cli/**/*.ts", "daemon/**/*.ts", "extension/*.ts", "install/**/*.ts", "mcp/**/*.ts", "shared/**/*.ts", "tests/**/*.ts"],
+  "exclude": ["node_modules", "extension/dist", "tests/.state*/**"]
+}

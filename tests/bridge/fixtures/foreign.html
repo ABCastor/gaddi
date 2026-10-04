@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Foreign frame fixture</title>
+<svg aria-hidden="true" width="1" height="1"><path d="M0 0 L1 1"/></svg>
+<math aria-hidden="true"><mi>x</mi></math>
+<style>
+  body { margin: 40px; font: 18px sans-serif; }
+  label, input, select, button { display: block; margin: 12px 0; }
+  input, select, button { padding: 8px; }
+  #spacer { height: 1600px; }
+</style>
+<form id="form" onsubmit="event.preventDefault(); window.submitted = (window.submitted || 0) + 1">
+  <label>Email <input id="email" type="email" autocomplete="email" data-menu></label>
+  <label>Organization name <input id="org" autocomplete="organization" data-menu></label>
+  <label>Plan <select id="plan"><option value="free">Free</option><option value="pro">Pro</option></select></label>
+  <label>Attachment <input id="attachment" type="file"></label>
+  <button id="save" type="button">Save</button>
+</form>
+<p id="status">Ready</p>
+<div id="spacer"></div>
+<script>
+  window.events = [];
+  for (const type of ['keydown', 'keypress', 'keyup', 'input', 'click', 'mousedown']) {
+    document.addEventListener(type, event => window.events.push({ type, target: event.target.id || '', key: event.key,
+      keyCode: event.keyCode, inputType: event.inputType, trusted: event.isTrusted }), true);
+  }
+  document.querySelector('#save').addEventListener('click', () => { document.querySelector('#status').textContent = 'Saved'; });
+  document.addEventListener('keydown', event => { if (event.key === 'Escape') document.querySelector('#status').textContent = 'Escaped'; });
+</script>
+</html>

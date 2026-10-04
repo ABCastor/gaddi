@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Autonomous setup fixture</title>
+<style>
+  body { font: 18px sans-serif; padding: 30px; }
+  #menu { position: absolute; z-index: 50; top: 80px; left: 30px; }
+  .item { cursor: pointer; padding: 12px; background: #eee; }
+  #composer { padding: 12px; min-height: 30px; border: 1px solid #888; margin-top: 140px; }
+</style>
+<div id="menu" data-radix-popper-content-wrapper>
+  <div class="item" onclick="choose(this)"><span>ChatGPT plugin</span></div>
+  <div class="item" onclick="choose(this)"><span>Other plugin</span></div>
+  <div class="item" hidden>Hidden plugin</div>
+</div>
+<div id="composer" contenteditable="true" aria-label="Message"></div>
+<script>
+  function choose(item) {
+    const chip = document.createElement('span');
+    chip.contentEditable = 'false'; chip.textContent = '@' + item.textContent;
+    document.querySelector('#composer').append(chip);
+    window.originalChip = chip;
+    document.querySelector('#menu').hidden = true;
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    if (location.hash === '#settings/Connectors') history.replaceState(null, '', '#settings/Apps');
+  });
+</script>
+</html>
