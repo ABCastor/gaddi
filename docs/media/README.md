@@ -11,3 +11,5 @@ bash docs/media/render.sh
 The script opens and closes its own background demo tabs and cancels the held action. A new hold can bring the native approval panel forward. Nothing is approved, sent or installed. If the optional broker capture is absent, the renderer uses a screenshot and measured button bounds from the same live tab. The screenshot expiry label is fixed for repeatable output. Review the rendered files before committing them. Browser and UI rendering can vary with Chrome, macOS, fonts and display scale.
 
 The README lockup uses the app icon and outlined Literata lettering. Its SVG motion rests between cycles and stops when reduced motion is requested. Literata and its license are included in `app/Fonts/`.
+
+The README title is real Markdown text with a typed asterisk. The animated browser mark beside it carries the canonical full Castor logo at its top right, using the padded 24-unit artwork without recolouring. Its asterisk span is 38% of the browser drawing’s ink height. The padded canvas contains the rotating asterisk; reduced motion stops the animation. The older outlined lockup remains available as a standalone wordmark.
