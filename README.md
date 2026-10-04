@@ -1,6 +1,8 @@
-<img src="extension/icons/icon-128.png" width="72" alt="Gaddi logo">
-
-# Gaddi
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/media/lockup-dark.svg">
+  <source media="(prefers-color-scheme: light)" srcset="docs/media/lockup-light.svg">
+  <img src="docs/media/lockup-light.svg" width="250" alt="Gaddi">
+</picture>
 
 Gaddi is a local [MCP](https://modelcontextprotocol.io/) server that lets AI agents work in your existing Chrome tabs.
 
