@@ -1,4 +1,4 @@
-<img src="docs/media/readme-header.svg" width="440" height="139.72" alt="Gaddi">
+<h1><img src="docs/media/readme-header.svg" width="112" height="72" align="absmiddle" alt=""> Gaddi</h1>
 
 Gaddi is a local [MCP](https://modelcontextprotocol.io/) server that lets AI agents work in your existing Chrome tabs.
 
