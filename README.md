@@ -1,9 +1,4 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/media/header-mark-dark.svg">
-  <img src="docs/media/header-mark-light.svg" align="right" width="88" height="77" alt="Gaddi browser logo">
-</picture>
-
-# Gaddi\*
+<img src="docs/media/readme-header.svg" width="440" height="139.72" alt="Gaddi">
 
 Gaddi is a local [MCP](https://modelcontextprotocol.io/) server that lets AI agents work in your existing Chrome tabs.
 
@@ -96,12 +91,4 @@ Tests use isolated state. Gate tests must fail with their protection removed. Br
 
 There is no console or network inspection, download handling, browser-dialog handling or video recording. CSS and Web Animations can be slowed; JavaScript timers, canvas and video cannot. Licensed under [MIT](LICENSE).
 
-<p>
-  <a href="https://abcastor.com">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="docs/castor-footer-dark.png">
-      <source media="(prefers-color-scheme: light)" srcset="docs/castor-footer-light.png">
-      <img src="docs/castor-footer-light.png" width="800" alt="Chip, the Castor beaver, by Castor, we give a dam">
-    </picture>
-  </a>
-</p>
+<p><a href="https://abcastor.com"><img src="docs/castor-footer.svg" width="350" alt="Chip, the Castor beaver, by Castor, we give a dam"></a></p>
