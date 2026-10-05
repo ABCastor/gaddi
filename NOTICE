@@ -1,0 +1,22 @@
+Gaddi
+Copyright 2026 Anneo22
+
+Gaddi's original code is licensed under the Apache License, Version 2.0.
+Earlier releases were distributed under MIT; that grant remains available
+for those releases. The previous notice is in docs/licenses/MIT-previous.txt.
+
+Third-party material retains its own terms:
+
+- daemon/public-suffix-list.dat is the Public Suffix List, distributed under
+  Mozilla Public License 2.0. Its source, version and notices are retained in
+  the file. A license copy is in docs/licenses/MPL-2.0.txt.
+  Source: https://publicsuffix.org/list/public_suffix_list.dat
+- The Commissioner, Literata and Martian Mono fonts in app/Fonts, and
+  Literata in docs/fonts, are distributed under SIL Open Font License 1.1.
+  Copyright notices and license copies remain in those directories.
+- npm dependencies installed from package-lock.json retain their package
+  licenses and notices. They are not relicensed by Gaddi's root LICENSE.
+  The Model Context Protocol SDK is MIT licensed.
+
+OmniRead is a separate, optional extractor invoked by Gaddi. Its code is
+not included in this distribution.

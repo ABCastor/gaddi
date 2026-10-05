@@ -2,7 +2,7 @@
   "name": "gaddi",
   "version": "0.1.0",
   "private": true,
-  "description": "Your Chrome, shared with your AI agents.",
+  "description": "A local MCP server for AI agents to work in your existing Chrome tabs.",
   "type": "module",
   "engines": {
     "node": "^22.18.0 || >=23.6.0"
@@ -20,5 +20,10 @@
     "typecheck": "tsc --noEmit",
     "build:extension": "tsc -p extension/tsconfig.json",
     "test": "bash tests/run-all.sh"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ABCastor/gaddi.git"
   }
 }

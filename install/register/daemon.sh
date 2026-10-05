@@ -61,7 +61,7 @@ if (( REMOVE )); then
 fi
 [[ -n "$NODE_BIN" && -x "$NODE_BIN" ]] || { echo 'daemon.sh: node not found' >&2; exit 1; }
 [[ -x "$SOURCE" ]] || { echo "daemon.sh: CLI is not executable: $SOURCE" >&2; exit 1; }
-"$NODE_BIN" -e 'if (Number(process.versions.node.split(".")[0]) < 22) process.exit(1)'
+"$NODE_BIN" -e 'const [major, minor] = process.versions.node.split(".").map(Number); if (!(major === 22 && minor >= 18 || major === 23 && minor >= 6 || major >= 24)) process.exit(1)' || { echo 'daemon.sh: Node 22.18+ on 22.x or 23.6+ required' >&2; exit 1; }
 mkdir -p "$(dirname "$PLIST")" "$(dirname "$LINK")" "$STATE"
 CONTENT="$(plist_content)"
 CHANGED=1
