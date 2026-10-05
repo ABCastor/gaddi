@@ -12,7 +12,7 @@ I built it to work with MCP-capable agents without taking focus from my other ap
 
 ## You authorize the action
 
-**A held action needs a signed decision from the Mac's owner.** Telling the agent "yes" does not create that signature.
+**A held action waits for you to confirm it in Gaddi's Mac panel.** Telling the agent "yes" does not create that signature.
 
 A local broker checks each request before Chrome. The default policy holds recognized payments, purchases, deletion, security changes and sends, plus all uploads. Gmail Send and direct password-field access are refused.
 
@@ -79,7 +79,7 @@ Pass the version from `look` to reject stale input. When a session ends, its bac
 
 Credentials stay out of sign-in results and audit entries. Text output redacts exact matches for ten minutes after use; screenshots do not.
 
-Uploads have a 20 MB limit. Protected credential paths and key files are refused; arbitrary files can still contain secrets. See [extension controls](docs/extension-controls.md). Connection recovery never replays page actions.
+Uploads have a 20 MB limit. Protected credential paths and key files are refused; arbitrary files can still contain secrets. See [extension controls](docs/extension-controls.md). Connection recovery does not resubmit pending page actions.
 
 ## Development
 
