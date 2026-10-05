@@ -12,4 +12,4 @@ The script opens and closes its own background demo tabs and cancels the held ac
 
 The README lockup uses the app icon and outlined Literata lettering. Its SVG motion rests between cycles and stops when reduced motion is requested. Literata and its license are included in `app/Fonts/`.
 
-The README title is real Markdown text with a typed asterisk. The animated browser mark beside it carries the canonical full Castor logo at its top right, using the padded 24-unit artwork without recolouring. Its asterisk span is 38% of the browser drawing’s ink height. The padded canvas contains the rotating asterisk; reduced motion stops the animation. The older outlined lockup remains available as a standalone wordmark.
+`readme-header.svg` is the editable, self-contained README header: the selected B composition with outlined Literata lettering, a typed asterisk, and the browser window enlarged 12%. It contains its own light and dark colours. The browser mark carries the canonical Castor logo without recolouring; reduced motion stops the animation. The older lockup and theme-specific marks remain available as standalone assets.
