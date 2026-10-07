@@ -10,6 +10,10 @@ I built it to work with MCP-capable agents without taking focus from my other ap
 
 ![Gaddi opens a background tab, searches a local page, and holds a publish action for approval.](docs/media/demo.gif)
 
+## Read with OmniRead
+
+[OmniRead](https://github.com/ABCastor/omniread) is Gaddi’s reading companion. Gaddi captures the page in your signed-in tab; OmniRead extracts Markdown, indexes its sections and reports evidence of missing content. Together, an agent can read a subscriber article, request one section and distinguish a full capture from an abstract or blocked page. A completeness verdict is evidence, not a guarantee.
+
 ## You authorize the action
 
 **A held action waits for you to confirm it in Gaddi's Mac panel.** Telling the agent "yes" does not create that signature.
