@@ -28,6 +28,7 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] <command>
   signin [tab] [--item <title-or-id>]
   eval [tab] <expression> | emulate [tab] <JSON options>
   status | approvals | pending | cancel <id> | audit [n] | events | bridge status
+  remote | remote off  (approving some holds from another device: show its state, or turn it off; turning it on needs Touch ID in the Gaddi app)
   extensions [list | reload|enable|disable|uninstall <id|self> | install <folder>]
   approve <id> (opens the app's Touch ID approval sheet)`;
 const argv = process.argv.slice(2), args: string[] = [];
@@ -135,6 +136,14 @@ switch (cmd) {
   case 'audit': method = 'audit.tail'; params.n = args.length ? Number(args.shift()) : 20; break;
   case 'events': method = 'events.subscribe'; break;
   case 'bridge': if (take('status') !== 'status') die('gaddi bridge status', 2); method = 'bridge.status'; break;
+  case 'remote': {
+    // Status, or off. There is no `on`: turning it on is the owner's Touch ID in the Gaddi app, never a command.
+    const action = args.length ? take('off') : '';
+    if (action === 'off') method = 'remote.disable';
+    else if (action === '') method = 'remote.status';
+    else die(action === 'on' ? 'gaddi remote: turning it on needs Touch ID in the Gaddi app' : 'gaddi remote [off]', 2);
+    break;
+  }
   case 'extensions': {
     const operation = args.length ? take('operation') : 'list';
     if (!['list', 'reload', 'enable', 'disable', 'uninstall', 'install'].includes(operation)) die('invalid extension operation', 2);

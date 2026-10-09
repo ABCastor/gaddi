@@ -58,5 +58,16 @@ export function createProofVerifier({ publicKeyPath, usedPath }: { publicKeyPath
     try { fs.writeFileSync(fd, fingerprint + '\n' + operation + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     used.add(fingerprint); used.add(operation);
   }
-  return { verify };
+  // Single use for a credential that is not a Secure Enclave proof: remote approval's signature and nonce
+  // (remote.ts). The caller names sha256 hex digests; they share this journal, so a replay is refused after a
+  // restart too. Invariant: every entry is checked, then all are written and fsynced BEFORE this returns, so the
+  // caller acts only on a decision the journal already holds. A journal error throws and spends nothing.
+  function spend(entries: string[]) {
+    if (entries.length === 0 || !entries.every(entry => /^[a-f0-9]{64}$/.test(entry))) throw new GateError('proof-invalid', 'invalid journal entry');
+    if (entries.some(entry => used.has(entry))) throw new GateError('proof-invalid', 'signature or nonce already used');
+    const fd = fs.openSync(usedPath, 'a', 0o600);
+    try { fs.writeFileSync(fd, entries.join('\n') + '\n'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    for (const entry of entries) used.add(entry);
+  }
+  return { verify, spend };
 }

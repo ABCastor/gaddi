@@ -11,6 +11,12 @@ try {
     // Startup now registers a lifetime socket; metadata checks must never reach the live broker.
     env: { GADDI_SOCKET: `/tmp/gaddi-metadata-${crypto.randomUUID()}.sock` } }));
   const listed = await client.listTools();
+  // Agents never decide: no tool reaches approval.remote or a remote.* method (the owner's other device,
+  // daemon/remote.ts), and none even mentions one. Checked before the exact list so a stray tool names itself.
+  for (const tool of listed.tools) {
+    assert.ok(!/remote|phone|another device/i.test(`${tool.name} ${tool.description ?? ''} ${JSON.stringify(tool.inputSchema)}`), `ASSERT_REMOTE_NO_MCP: ${tool.name}`);
+  }
+  console.log('PASS ASSERT_REMOTE_NO_MCP');
   assert.deepEqual(listed.tools.map(t => t.name).sort(), [
     'tabs', 'bookmarks', 'look', 'wait', 'read', 'open', 'goto', 'back', 'click', 'type', 'press', 'hover', 'scroll', 'select', 'upload', 'signin', 'eval', 'emulate', 'screenshot', 'close', 'show', 'group', 'approvals', 'grant', 'status', 'extensions',
   ].map(n => 'browser_' + n).sort());

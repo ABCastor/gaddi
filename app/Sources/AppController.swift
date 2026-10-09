@@ -17,6 +17,9 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         let rememberedSignins: [String]
         let rememberedSends: [SendPermission]
         let grants: [SessionGrant]
+        let remote: RemoteStatus
+        let remoteApprovable: Set<String>
+        let remoteDecisions: [RemoteDecision]
         let requestedID: String?
         let connected: Bool
         let keyReady: Bool
@@ -123,6 +126,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         if let errorText { menu.addItem(menuItem(errorText, action: nil)) }
         let running = snapshot.grants.count
         if running > 0 { menu.addItem(menuItem(running == 1 ? "1 session grant active" : "\(running) session grants active", action: nil)) }
+        if snapshot.remote.enabled { menu.addItem(menuItem("Approving from your phone is on", action: nil)) }
         menu.addItem(.separator())
         menu.addItem(menuItem(snapshot.approvals.isEmpty ? "Open Gaddi…" : "Review and decide…", action: #selector(openApprovals)))
         menu.addItem(menuItem("Remembered sign-ins…", action: #selector(openRememberedSignins)))
@@ -170,6 +174,9 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             rememberedSignins: snapshot.rememberedSignins,
             rememberedSends: snapshot.rememberedSends,
             grants: snapshot.grants,
+            remote: snapshot.remote,
+            remoteApprovable: snapshot.remoteApprovable,
+            remoteDecisions: snapshot.remoteDecisions,
             requestedID: requestedID,
             connected: connected, keyReady: keyReady, busy: busy, errorText: errorText)
         // Polls must not reset the reader's scroll or selection.
@@ -204,7 +211,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             })
         }
         if !displayed.isEmpty || (snapshot.approvals.isEmpty && requestedID == nil) {
-            add(ApprovalList(displayed, enabled: connected && keyReady && !busy) { [weak self] approval, verb in
+            add(ApprovalList(displayed, enabled: connected && keyReady && !busy, remote: snapshot.remoteApprovable) { [weak self] approval, verb in
                 self?.decide(approval, verb: verb)
             })
         }
@@ -214,6 +221,10 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         add(SessionGrantList(snapshot.grants, enabled: connected && !busy) { [weak self] grant in
             self?.endGrant(grant)
         })
+        add(PanelRule())
+        // Also standing authority, so always shown. Turning it on needs Touch ID; turning it off only removes authority.
+        add(RemotePanel(snapshot.remote, decisions: snapshot.remoteDecisions, canTurnOn: connected && keyReady && !busy, canTurnOff: connected && !busy,
+                        turnOn: { [weak self] in self?.turnOnRemote() }, turnOff: { [weak self] in self?.turnOffRemote() }))
         add(PanelRule())
         add(RememberedSigninList(snapshot.rememberedSignins, enabled: connected && keyReady && !busy) { [weak self] site in
             self?.revokeSignin(site)
@@ -313,6 +324,42 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
                 if !error.localizedDescription.contains("no such active session grant") {
                     DispatchQueue.main.async { self.showError("The grant was not ended", error: error) }
                 }
+            }
+            model.refresh()
+        }
+    }
+    private func turnOnRemote() {
+        guard let candidate = snapshot.remote.candidate, connected, keyReady, !busy else { return }
+        // The fingerprint is put in front of the owner before anything is signed, so he can compare it with the one
+        // his phone approver shows. Touch ID then signs that exact fingerprint. The button he pressed is in Gaddi's
+        // own front panel, so the alert needs no activation of its own (only openApprovals ever takes focus).
+        let alert = NSAlert()
+        alert.messageText = "Turn on approving from your phone?"
+        alert.informativeText = "The key waiting has the fingerprint \(shortFingerprint(candidate)). Check that your phone approver shows the same digits.\n\nIt will then be able to approve uploads, posts and deletes on the pages an agent names, and session grants of up to 2 hours. Payments, purchases, sign-in, security pages and sending messages stay Touch ID only."
+        alert.addButton(withTitle: "Turn on with Touch ID")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        authenticated(reason: "Turn on approving from your phone for the key \(shortFingerprint(candidate))") { [self] context in
+            // What he confirmed must still be what is waiting after he authenticates.
+            let current = try model.client.call("remote.status")
+            guard let status = RemoteStatus(current), status.candidate == candidate else {
+                throw AppError("The phone approver's key changed. Look at its new fingerprint and try again.")
+            }
+            let ts = Int64(Date().timeIntervalSince1970 * 1000)
+            let message = try remoteEnableMessage(fingerprint: candidate, timestamp: ts)
+            let signed = try keys.sign(message, context: context)
+            _ = try model.client.call("remote.enable", ["fingerprint": candidate,
+                "proof": ["ts": ts, "sig": signed.signature.base64EncodedString()]])
+        }
+    }
+    private func turnOffRemote() {
+        // Ending it only removes authority, so it asks for no Touch ID. Already off is the outcome the owner wanted.
+        guard connected, !busy else { return }
+        model.queue.async { [self] in
+            do {
+                _ = try model.client.call("remote.disable")
+            } catch {
+                DispatchQueue.main.async { self.showError("Phone approvals were not turned off", error: error) }
             }
             model.refresh()
         }

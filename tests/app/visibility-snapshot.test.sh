@@ -24,6 +24,6 @@ node --input-type=module - "$GADDI_FAKE_RECORD" <<'NODE'
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 const rows = fs.readFileSync(process.argv[2], 'utf8').trim().split('\n').map(JSON.parse);
-assert(rows.every(row => row.subscriptions || ['events.subscribe', 'approvals.list', 'signin.remembered', 'sends.remembered'].includes(row.method)));
+assert(rows.every(row => row.subscriptions || ['events.subscribe', 'approvals.list', 'signin.remembered', 'sends.remembered', 'remote.status'].includes(row.method)));
 console.log('PASS snapshot visibility uses only read-only RPC, with no authentication or grant');
 NODE

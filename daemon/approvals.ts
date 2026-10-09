@@ -7,9 +7,14 @@ import type { createProofVerifier, approvalMessage } from './proof.ts';
 import { signinSite } from './signin.ts';
 import { sendRule } from './policy.ts';
 import type { SendRule } from './policy.ts';
-import type { GrantSpec } from './grants.ts';
+import type { GrantScope, GrantSpec } from './grants.ts';
 
-export interface ApprovalRecord { id: string; kind: string; tab: number | null; caller: string; url: string; detail: string; reason: string; actionHash: string; status: string; createdAt: string; expiresAt: string; resolvedAt?: string; by?: string; usedAt?: string; imagePath?: string; box?: ImageBox; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec }
+export interface ApprovalRecord { id: string; kind: string; tab: number | null; caller: string; url: string; detail: string; reason: string; actionHash: string; status: string; createdAt: string; expiresAt: string; resolvedAt?: string; by?: string; decidedAt?: string; usedAt?: string; imagePath?: string; box?: ImageBox; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec }
+// What the broker saw when it held an action, for remote approval (remote.ts) to judge again every time it is
+// asked. Invariant: this is kept in memory only, beside the record and never in it, so it is not written to
+// state.json and cannot reach publicView. It holds the full page address because a query can make a page
+// protected, and the raw hold reason, accessible name and link destination the grant scan reads.
+export interface RemoteFacts { pageURL: string; reason?: string; scope: GrantScope }
 export type Emit = (event: string, data: unknown) => void;
 export type ApprovalAction = { method: string; caller: string; url: string; [key: string]: unknown };
 // Persisted JSON is retained verbatim. Only its action binding was historically required.
@@ -47,11 +52,25 @@ export function publicView({ actionHash, targetSelector, grant, ...record }: Sto
   return site ? { ...record, site } : record;
 }
 export function approvalRef(a: StoredApproval) { return { id: a.id, reason: a.reason, expires: a.expiresAt }; }
+// What a remote approver signs for one request: kind, id and the detail text the owner reads, so a decision
+// cannot be moved to another request or to a request whose text changed.
+export function remoteDigest(a: { kind?: unknown; id?: unknown; detail?: unknown }) {
+  return crypto.createHash('sha256').update(`${String(a.kind)}|${String(a.id)}|${String(a.detail)}`, 'utf8').digest('hex');
+}
 function actionHash(action: ApprovalAction) { return crypto.createHash('sha256').update(JSON.stringify(action)).digest('hex'); }
 
-export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = () => {}, imageRoot, log = () => {} }:
-  { ttlMinutes?: number; onChange?: () => void; emit?: Emit; imageRoot?: string; log?: (...args: unknown[]) => void }) {
+export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = () => {}, imageRoot, log = () => {}, remote = () => false }:
+  { ttlMinutes?: number; onChange?: () => void; emit?: Emit; imageRoot?: string; log?: (...args: unknown[]) => void;
+    // Whether the owner's other device may answer this record right now (remote.ts decides, from live state).
+    remote?: (a: StoredApproval, facts: RemoteFacts | undefined) => boolean }) {
   const entries = new Map<unknown, StoredApproval>();
+  // Invariant: remote approval's facts live here and nowhere else (see RemoteFacts). A record restored after a
+  // restart has none, so it can only be answered with Touch ID until the agent's retry attaches them again.
+  const facts = new WeakMap<StoredApproval, RemoteFacts>();
+  // Every record that leaves this module goes through here: what publicView shows, plus, while the owner's other
+  // device may answer it, `remote: true` and the digest that device signs. Computed on every call from the live
+  // state, never remembered, so turning the feature off removes the flag from the next list and event.
+  const view = (a: StoredApproval) => remote(a, facts.get(a)) ? { ...publicView(a), remote: true, digest: remoteDigest(a) } : publicView(a);
   // Derive file names ourselves; a persisted path never authorizes deletion elsewhere.
   const imageFile = (id: unknown) => imageRoot && typeof id === 'string' && /^[a-f0-9]{16}$/.test(id)
     ? path.join(imageRoot, id + '.jpg') : undefined;
@@ -112,7 +131,7 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
       }
       // Invariant: persisted status alone never restores grant authority. A daemon restart
       // requires a fresh signed app decision; the durable proof journal still rejects replay.
-      if (a.status === 'granted') { a.status = 'pending'; delete a.resolvedAt; delete a.by; }
+      if (a.status === 'granted') { a.status = 'pending'; delete a.resolvedAt; delete a.by; delete a.decidedAt; }
       entries.set(a.id, a);
     }
   }
@@ -120,7 +139,7 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
     if (status !== 'granted') removePicture(a);
     Object.assign(a, extra, { status, resolvedAt: new Date().toISOString() });
     onChange();
-    emit('approval.resolved', { approval: publicView(a), tab: a.tab });
+    emit('approval.resolved', { approval: view(a), tab: a.tab });
   }
   function expire() {
     for (const a of entries.values()) {
@@ -133,7 +152,7 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
     expire();
     return [...entries.values()].find(a => a.status === 'pending' && a.actionHash === actionHash(action) && a.targetSelector === targetSelector);
   }
-  function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false, grant }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec }) {
+  function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false, grant, remoteFacts }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; remoteFacts?: RemoteFacts }) {
     expire();
     const hash = actionHash(action);
     const existing = pendingFor(action, targetSelector);
@@ -147,11 +166,23 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
       createdAt: new Date(now).toISOString(), expiresAt: new Date(now + ttlMinutes * 60000).toISOString() };
     savePicture(a, picture);
     entries.set(a.id, a);
+    // Attached before the event goes out, so the first announcement already says whether it can be answered remotely.
+    if (remoteFacts) facts.set(a, remoteFacts);
     const recent = [...entries.values()].filter(x => !(x.status === 'pending' || x.status === 'granted'));
     for (const old of recent.slice(0, Math.max(0, recent.length - 40))) entries.delete(old.id);
     onChange();
-    emit('approval.pending', { approval: publicView(a), tab });
+    emit('approval.pending', { approval: view(a), tab });
     return a;
+  }
+  // The agent asked again for a request that is still waiting: the verdict is a function of the action the
+  // hash binds, so the facts are simply refreshed. This is also how a record restored after a restart gets them
+  // back; if that makes it answerable from the owner's other device, it is announced again, so a listener that
+  // only watches events learns of it.
+  function attach(a: StoredApproval, remoteFacts: RemoteFacts | undefined) {
+    const before = remote(a, facts.get(a));
+    if (remoteFacts) facts.set(a, remoteFacts);
+    else facts.delete(a);
+    if (!before && remote(a, facts.get(a))) emit('approval.pending', { approval: view(a), tab: a.tab });
   }
   function get(id: unknown) {
     expire();
@@ -169,7 +200,7 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
     if (a.status === 'denied') throw new GateError('denied', `approval ${id} was denied`);
     if (a.status !== 'granted') throw new GateError(`approval-${a.status}`, `approval ${id} is ${a.status}`);
     resolve(a, 'used', { usedAt: new Date().toISOString() });
-    return publicView(a);
+    return view(a);
   }
   function signed(id: unknown, verb: 'grant' | 'deny', proof: unknown, verifier: ReturnType<typeof createProofVerifier>, message: typeof approvalMessage,
     { remember = false, onRemember }: { remember?: unknown; onRemember?: (site: string, send?: SendRule) => void } = {}) {
@@ -186,13 +217,22 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
       onRemember(send?.site ?? signinSite(a.url), send);
     }
     resolve(a, verb === 'grant' ? 'granted' : 'denied', { by: 'signed-proof' });
-    return publicView(a);
+    return view(a);
+  }
+  // The owner's other device answered. Its signature was checked and spent by remote.ts before this runs.
+  // Invariant: only a pending record is resolved, and `by` says who decided, so the record, the events and the
+  // owner's panel can always tell a Touch ID answer from a remote one.
+  function resolveRemote(id: unknown, verb: 'grant' | 'deny') {
+    const a = get(id);
+    if (a.status === 'pending') resolve(a, verb === 'grant' ? 'granted' : 'denied', { by: 'remote', decidedAt: new Date().toISOString() });
+    else throw new GateError('approval-invalid', `approval ${id} is not pending`);
+    return view(a);
   }
   function cancel(id: unknown) {
     const a = get(id);
     if (!(a.status === 'pending' || a.status === 'granted')) throw new GateError('approval-invalid', `approval ${id} is ${a.status}`);
     resolve(a, 'cancelled');
-    return publicView(a);
+    return view(a);
   }
   // A session grant has no agent retry: the broker acts on the signed decision itself, then closes
   // the record here, so a decision can never be acted on twice.
@@ -202,8 +242,11 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
     const a = entries.get(String(id));
     if (!a || a.status !== 'granted') throw new GateError('approval-invalid', `approval ${id} is ${a ? String(a.status) : 'unknown'}`);
     resolve(a, 'used', { usedAt: new Date().toISOString() });
-    return publicView(a);
+    return view(a);
   }
+  // Whether the owner's other device may answer this record right now. The very call that decides the `remote`
+  // flag in every list and event, so what the device is shown and what the broker accepts cannot disagree.
+  function remotable(a: StoredApproval) { return remote(a, facts.get(a)); }
   function pendingMatching(test: (a: StoredApproval) => boolean) {
     expire();
     return [...entries.values()].filter(a => a.status === 'pending' && test(a));
@@ -211,8 +254,8 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
   function list() {
     expire();
     const all = [...entries.values()];
-    return { pending: all.filter(a => (a.status === 'pending' || a.status === 'granted')).map(publicView),
-      recent: all.filter(a => !(a.status === 'pending' || a.status === 'granted')).reverse().slice(0, 20).map(publicView) };
+    return { pending: all.filter(a => (a.status === 'pending' || a.status === 'granted')).map(view),
+      recent: all.filter(a => !(a.status === 'pending' || a.status === 'granted')).reverse().slice(0, 20).map(view) };
   }
-  return { pendingFor, pendingMatching, pruneImages, hold, consume, signed, cancel, complete, get, list, restore, persistable, stop: () => clearInterval(timer) };
+  return { pendingFor, pendingMatching, pruneImages, hold, attach, remotable, consume, signed, resolveRemote, cancel, complete, get, list, restore, persistable, stop: () => clearInterval(timer) };
 }

@@ -92,6 +92,50 @@ check(ApprovalWords.rule("upload https://github.com/settings") == "upload on git
 check(!grantApproval.canRemember, "a session grant never offers Always allow")
 check(try! grantApproval.signingMessage(verb: "grant", timestamp: 1).hasPrefix("grant|grant1|grant||"), "a session grant signs the ordinary tuple with an empty tab")
 rejects("a session grant cannot sign a remember choice") { _ = try grantApproval.signingMessage(verb: "grant", timestamp: 1, remember: true) }
+// Approving from the owner's other device: the status the broker reports, the fingerprint the owner compares with his
+// phone approver's, the text Touch ID signs to turn it on, and the requests it answered.
+let sampleFingerprint = String(repeating: "0123456789abcdef", count: 4)
+check(isKeyFingerprint(sampleFingerprint), "a sha256 hex fingerprint is accepted")
+for malformed in ["", "abc", String(sampleFingerprint.dropLast()), sampleFingerprint.uppercased(), String(repeating: "g", count: 64), sampleFingerprint + "0"] {
+    check(!isKeyFingerprint(malformed), "a malformed fingerprint is never shown or signed")
+}
+check(shortFingerprint(sampleFingerprint) == "0123 4567 89ab cdef", "the owner compares the first sixteen digits, in groups of four")
+check(try! remoteEnableMessage(fingerprint: sampleFingerprint, timestamp: 1_700_000_000_000) == "remote.enable|\(sampleFingerprint)|1700000000000",
+      "Touch ID signs the exact fingerprint and the time")
+rejects("a turn-on message for a malformed fingerprint is refused") { _ = try remoteEnableMessage(fingerprint: "abc", timestamp: 1) }
+let phoneOff = RemoteStatus(["enabled": false, "candidate": ["fingerprint": sampleFingerprint]])!
+check(!phoneOff.enabled && phoneOff.candidate == sampleFingerprint && phoneOff.fingerprint == nil, "an off status carries only the key that is waiting")
+let phoneOn = RemoteStatus(["enabled": true, "fingerprint": sampleFingerprint, "enabledAt": "2099-01-01T00:00:00.000Z", "candidate": NSNull()])!
+check(phoneOn.enabled && phoneOn.fingerprint == sampleFingerprint && phoneOn.enabledAt != nil && phoneOn.candidate == nil,
+      "an on status carries its key and since when")
+check(RemoteStatus(["enabled": true, "fingerprint": "not a fingerprint"])?.fingerprint == nil, "a damaged fingerprint is dropped, never shown")
+check(RemoteStatus(["enabled": true, "fingerprint": "not a fingerprint"])?.enabled == true, "but the switch still reads as on, so it can be turned off")
+check(RemoteStatus([:]) == nil && RemoteStatus(["enabled": "yes"]) == nil, "a status without a plain yes or no is rejected")
+check(RemoteStatus() == RemoteStatus(["enabled": false])!, "nothing known means off")
+let answeredObject: JSONObject = ["id": "r1", "kind": "click", "caller": "Marcus", "url": "https://example.test/shop", "detail": "Post",
+    "reason": "verb:post", "status": "used", "by": "remote", "decidedAt": "2099-01-01T14:02:00.000Z", "resolvedAt": "2099-01-01T14:09:00.000Z"]
+var phoneApprovedGrant = grantObject; phoneApprovedGrant["approver"] = "remote"
+check(SessionGrant(phoneApprovedGrant)?.approver == "remote" && sessionGrant.approver == nil, "a grant the phone approved says so, and a Touch ID grant does not")
+check(SessionGrant(phoneApprovedGrant)!.summary.hasSuffix("\nApproved from your phone") && !sessionGrant.summary.contains("phone"),
+      "the panel lists who approved a grant only when it was the phone")
+phoneApprovedGrant["approver"] = "someone"
+check(SessionGrant(phoneApprovedGrant)?.approver == nil, "an approver the app does not know is not shown")
+let phoneAnswer = RemoteDecision(answeredObject)!
+check(phoneAnswer.approved && phoneAnswer.at == instant("2099-01-01T14:02:00.000Z"),
+      "an answer from the phone decodes, and its time is when it was decided, not when the agent used it")
+check(phoneAnswer.line == "Approved from phone: Marcus click “Post” on example.test/shop, \(displayTime(phoneAnswer.at))",
+      "it reads as one line: who, what, where, when")
+var phoneDenial = answeredObject; phoneDenial["status"] = "denied"
+check(RemoteDecision(phoneDenial)?.approved == false && RemoteDecision(phoneDenial)!.line.hasPrefix("Denied from phone: "), "a denial reads as one")
+for (field, value) in [("by", "signed-proof"), ("status", "cancelled"), ("status", "expired"), ("status", "pending")] {
+    var other = answeredObject; other[field] = value
+    check(RemoteDecision(other) == nil, "only an answer the phone really gave is listed (\(field) \(value))")
+}
+var untimed = answeredObject; untimed["decidedAt"] = nil; untimed["resolvedAt"] = nil
+check(RemoteDecision(untimed) == nil, "an answer with no readable time is not listed")
+var phoneGrant = answeredObject; phoneGrant["kind"] = "grant"; phoneGrant["detail"] = "upload on github.com/settings\nfor 2 hours"
+check(RemoteDecision(phoneGrant)!.line == "Approved from phone: Marcus work without asking you for 2 hours, \(displayTime(phoneAnswer.at))",
+      "a session grant is listed without its rule list")
 check(SocketClient.socketPath == ProcessInfo.processInfo.environment["GADDI_SOCKET"], "GADDI_SOCKET overrides all defaults")
 // Either home is disposable; the point is that the live broker's socket can never be named.
 guard SocketClient.socketPath.contains("/tests/.state/") || SocketClient.socketPath.hasPrefix("/tmp/gaddi-test-")
