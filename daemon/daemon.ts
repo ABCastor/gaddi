@@ -7,7 +7,7 @@ import { isRecord, parseJSON, errorMessage, hasErrorCode, versionParam } from '.
 import type { IncomingParams, ChromeParams, WireError, BrokerResults, SigninResult } from '../shared/protocol.ts';
 import type { PolicyCheck } from './policy.ts';
 import type { ApprovalAction, StoredApprovalRef } from './approvals.ts';
-interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: unknown; url: string }[]; upload?: { name: string; bytes?: number }; signin?: SigninResult }
+interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: unknown; url: string }[]; upload?: { name: string; bytes?: number }; signin?: SigninResult; grantId?: string }
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -20,6 +20,8 @@ import { readUpload, UPLOAD_CHUNK } from './uploads.ts';
 import type { UploadFile } from './uploads.ts';
 import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail } from './approvals.ts';
 import { createProofVerifier, approvalMessage, signinRevokeMessage, sendRevokeMessage } from './proof.ts';
+import { createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString } from './grants.ts';
+import type { GrantScope } from './grants.ts';
 import { createBridge } from './bridge.ts';
 import { extensionCall } from './extensions.ts';
 import { wakeApprovalApp } from './approval-wake.ts';
@@ -52,10 +54,24 @@ function positiveMillis(value: string | undefined, fallback: number) {
 const SESSION_IDLE_MS = positiveMillis(process.env.GADDI_SESSION_IDLE_MS, 900000);
 const SESSION_END_MS = positiveMillis(process.env.GADDI_SESSION_END_MS, 120000);
 const SESSION_SWEEP_MS = positiveMillis(process.env.GADDI_SESSION_SWEEP_MS, 30000);
+// Test-only: shortens the grant "minute" so expiry can be watched. It can never lengthen a grant
+// past what the owner saw on the card (60 s per minute is the ceiling).
+const GRANT_MINUTE_MS = Math.min(60000, positiveMillis(process.env.GADDI_GRANT_MINUTE_MS, 60000));
 function validSession(value: unknown): string | undefined {
   return typeof value === 'string' && value.length >= 1 && value.length <= 64
     && !/[^A-Za-z0-9:_-]/.test(value) ? value : undefined;
 }
+// The key a session grant is bound to. A CLI call or a malformed ID has none, so it can hold no grant;
+// explicit IDs stay disjoint from the `cli:` fallbacks touchSession uses for ordinary bookkeeping.
+function grantSession(params: IncomingParams): string | undefined {
+  const identity = validSession(params.session);
+  return identity === undefined ? undefined : 'session:' + identity;
+}
+// Chats whose lifetime socket (session.begin) is open right now, with how many sockets that is.
+// A grant is only ever requested by, approved for, and served to a chat in this map.
+const liveSessions = new Map<string, number>();
+// Only a socket that was counted may be counted down: one that was already closing when it registered never was.
+const countedLifetimes = new WeakSet<Socket>();
 function touchSession(params: IncomingParams, caller: string) {
   const identity = validSession(params.session);
   // Keep explicit IDs disjoint from CLI fallbacks, even if an ID itself starts with cli:.
@@ -121,6 +137,8 @@ try {
 }
 catch (e) { if (!hasErrorCode(e, 'ENOENT')) throw e; }
 approvals.pruneImages();
+// Invariant: grants exist only in this process. Nothing is loaded at startup, so a restart ends every one.
+const grants = createGrants({ minuteMs: GRANT_MINUTE_MS, emit, audit, log });
 
 async function gate({ kind, meta, detail, action, check, approval, capture, targetSelector }: { kind: string; meta: CallMeta; detail: string; action: ApprovalAction; check: PolicyCheck; approval: unknown; capture?: () => Promise<unknown>; targetSelector?: string }) {
   // Only isolated-world references are retained; raw selectors may contain page data.
@@ -262,6 +280,14 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   if (typeof resolvedTab !== 'number' || !Number.isSafeInteger(resolvedTab) || typeof tab?.url !== 'string') throw new Error('chrome tab not found or missing URL');
   let pageURL = tab.url;
   meta.tab = resolvedTab; meta.url = pageURL;
+  // Invariant: a hold becomes an allow here only through the calling chat's own unexpired session
+  // grant (grants.ts). A CLI call has no session, so grantSession is undefined and it gets none.
+  let grantId: string | undefined;
+  const grantCheck = (held: PolicyCheck, scope: GrantScope) => {
+    const decision = checkGrant(grants.active(grantSession(params)), policy, pageURL, held, scope);
+    grantId = decision.grant;
+    return decision;
+  };
   const args: ChromeParams = { tab: resolvedTab };
   if (method === 'signin') {
     let site = '';
@@ -311,7 +337,9 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       targetSelector = typeof info.selector === 'string' ? info.selector : args.selector;
       check = checkClick(policy, hostOf(pageURL), info.name);
       if (check.outcome === 'allow' && info.href) check = checkNavigation(policy, navigationURL(new URL(info.href, pageURL).href));
-      check = checkRememberedSend(policy, pageURL, method, check, info.name, info.href ? new URL(info.href, pageURL).href : '');
+      const destination = info.href ? new URL(info.href, pageURL).href : '';
+      check = checkRememberedSend(policy, pageURL, method, check, info.name, destination);
+      check = grantCheck(check, { kind: 'click', name: info.name, destination });
       detail = `${cleanDetail(info.name)}${info.href ? ' -> ' + cleanURL(new URL(info.href, pageURL).href) : ''}`;
       // Bind the resolved accessible name and destination too, so a changed button requires new approval.
       args._description = { name: info.name, href: info.href };
@@ -339,6 +367,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     }
     if (check.outcome === 'allow') check = checkPress(policy, hostOf(pageURL), args.key, submitName);
     check = checkRememberedSend(policy, pageURL, method, check, submitName);
+    check = grantCheck(check, { kind: 'press', name: submitName });
     detail = args.key; args._description = { submitName };
   } else if (method === 'goto') {
     args.url = navigationURL(params.url); detail = args.url; check = checkNavigation(policy, args.url);
@@ -357,6 +386,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     targetSelector = typeof info.selector === 'string' ? info.selector : args.selector;
     meta.upload = { name: upload.name, bytes: upload.bytes.length };
     check = checkUpload(policy);
+    // readUpload already refused secret stores above, so a grant never reaches a refused file.
+    check = grantCheck(check, { kind: 'upload' });
     const size = upload.bytes.length < 1024 * 1024 ? `${Math.ceil(upload.bytes.length / 1024)} KB` : `${(upload.bytes.length / 1024 / 1024).toFixed(1)} MB`;
     // The approval app reads this as: <agent> wants to upload “<file> (<size>)” on <site>.
     detail = `${cleanDetail(upload.name)} (${size})`;
@@ -387,6 +418,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     // An approval covers this exact file: its name, size and content digest.
     action: { method, caller: meta.caller, url: pageURL, ...args,
       ...(upload ? { file: { name: upload.name, bytes: upload.bytes.length, sha256: upload.sha256 } } : {}) } });
+  // A supplied approval went through consume, so only an action the grant itself waived is credited to it.
+  if (grantId && !params.approval) meta.grantId = grantId;
   // Add the wire field only after gating so existing approval action hashes stay valid.
   if (method === 'click' || method === 'press' && /^(enter|return)$/i.test(args.key!)) args.checkedDescription = args._description;
   if (targetSelector && targetSelector !== ':focus') args.selector = targetSelector;
@@ -438,6 +471,62 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   return rawResult;
 }
 
+// ---------------------------------------------------------------- session grants
+// A chat asks once. The owner answers in Gaddi with Touch ID. The broker acts on his signed answer
+// itself, so the agent never retries and never holds a token that could be replayed.
+function pendingGrantsOf(session: string) {
+  return approvals.pendingMatching(a => a.kind === 'grant' && isRecord(a.grant) && a.grant.session === session);
+}
+function requestGrant(params: IncomingParams): never {
+  const caller = typeof params.caller === 'string' ? params.caller : 'unknown';
+  const session = grantSession(params);
+  if (session === undefined || !liveSessions.has(session)) {
+    throw new Error('a session grant needs a live agent chat (its MCP connection); a CLI call or an ended chat cannot ask for one');
+  }
+  const parsed = parseGrantRequest(params, policy);
+  const { rules, minutes } = parsed;
+  // The label is stored exactly as the card will show it (addresses lose their queries), so what the
+  // owner signs and what the grant later lists are the same words.
+  const label = parsed.label === undefined ? undefined : cleanDetail(parsed.label).trim() || undefined;
+  const action = { method: 'grant.request', caller, url: '', session, rules: rules.map(ruleString), minutes, label: label ?? null };
+  let request = approvals.pendingFor(action);
+  if (!request) {
+    // One open request per chat: a changed one replaces the old, so an agent cannot stack cards in front of the owner.
+    for (const older of pendingGrantsOf(session)) approvals.cancel(older.id);
+    request = approvals.hold({ kind: 'grant', tab: null, caller, url: '', detail: grantDetail(rules, minutes, label),
+      reason: 'session grant', action, grant: { session, rules, minutes, ...(label ? { label } : {}) } });
+  }
+  throw new GateError('held', `held: session grant; approve ${String(request.id)} in Gaddi. It takes effect as soon as the owner approves: do not retry`, approvalRef(request));
+}
+function activateGrant(id: unknown, proof: unknown, remember: unknown) {
+  // Refused before the proof is looked at, so a refused choice never uses a signature up.
+  if (remember === true) throw new GateError('approval-invalid', 'a session grant cannot be remembered');
+  // Invariant: a grant exists only after a valid, fresh, single-use Touch ID signature over this
+  // record's id, kind and a digest of its detail text. The record is immutable while pending, so the
+  // owner signed exactly the rules, duration and label the grant is made from.
+  const record = approvals.get(id);
+  approvals.signed(id, 'grant', proof, proofs, approvalMessage, { remember });
+  const spec = record.grant;
+  // Signed and "granted" now. Everything below is synchronous: nothing can slip in between.
+  if (!isGrantSpec(spec) || !liveSessions.has(spec.session)) {
+    approvals.cancel(id);
+    throw new GateError('approval-invalid', 'the chat that asked has ended, so nothing was granted');
+  }
+  // If the grant cannot start (for instance its audit line cannot be written), the signed answer is
+  // spent and the request closed: nothing runs unrecorded.
+  try { grants.activate({ ...spec, caller: String(record.caller) }); }
+  catch (error) { approvals.cancel(id); throw error; }
+  return approvals.complete(id);
+}
+// The chat's last lifetime socket closed: its grants end, and what it asked for can no longer be approved.
+function releaseSession(key: string) {
+  const open = (liveSessions.get(key) ?? 0) - 1;
+  if (open > 0) { liveSessions.set(key, open); return; }
+  liveSessions.delete(key);
+  grants.endSession(key);
+  for (const request of pendingGrantsOf(key)) approvals.cancel(request.id);
+}
+
 const methods: Record<string, (params: IncomingParams, conn: Socket) => unknown> = {
   'session.begin': (params, conn) => serial(async () => {
     const key = validSession(params.session);
@@ -446,6 +535,11 @@ const methods: Record<string, (params: IncomingParams, conn: Socket) => unknown>
       if (conn.destroyed) session.endedAt = Date.now();
       else delete session.endedAt;
       sessionConnections.set(conn, 'session:' + key);
+      // Counted only while open, so a socket that closed before this ran can never keep a chat "live".
+      if (!conn.destroyed) {
+        countedLifetimes.add(conn);
+        liveSessions.set('session:' + key, (liveSessions.get('session:' + key) ?? 0) + 1);
+      }
     }
     return {};
   }),
@@ -461,18 +555,28 @@ const methods: Record<string, (params: IncomingParams, conn: Socket) => unknown>
     return extensionCall(params, typeof params.caller === 'string' ? params.caller : 'unknown', policy,
       args => bridge.request('chrome.extensions', args, connection), gate);
   }),
-  'approvals.list': () => approvals.list(),
-  'approval.grant': ({ id, proof, remember }) => approvals.signed(id, 'grant', proof, proofs, approvalMessage, {
-    remember, onRemember: (site, send) => {
-      if (send) {
-        policy = setSendRemember(policyPath, send, true, policy.off);
-        emit('sends.remembered', { rules: policy.sends?.remember ?? [] });
-      } else {
-        policy = setSigninRemember(policyPath, site, true, policy.off);
-        emit('signin.remembered', { sites: policy.signin?.remember ?? [] });
-      }
-    },
-  }),
+  // `mine` marks the grants of the asking chat; the session key itself is never sent.
+  'approvals.list': params => ({ ...approvals.list(), grants: grants.list(grantSession(params)) }),
+  'grant.request': params => requestGrant(params),
+  // Ending a grant only removes authority, so it needs no proof and any client may do it.
+  'grants.revoke': ({ id }) => {
+    if (typeof id !== 'string' || !grants.revoke(id)) throw new Error('no such active session grant');
+    return { revoked: id, grants: grants.list() };
+  },
+  'approval.grant': ({ id, proof, remember }) => {
+    if (approvals.get(id).kind === 'grant') return activateGrant(id, proof, remember);
+    return approvals.signed(id, 'grant', proof, proofs, approvalMessage, {
+      remember, onRemember: (site, send) => {
+        if (send) {
+          policy = setSendRemember(policyPath, send, true, policy.off);
+          emit('sends.remembered', { rules: policy.sends?.remember ?? [] });
+        } else {
+          policy = setSigninRemember(policyPath, site, true, policy.off);
+          emit('signin.remembered', { sites: policy.signin?.remember ?? [] });
+        }
+      },
+    });
+  },
   'approval.deny': ({ id, proof, remember }) => approvals.signed(id, 'deny', proof, proofs, approvalMessage, { remember }),
   'signin.remembered': () => ({ sites: policy.signin?.remember ?? [] }),
   'signin.revoke': ({ site, proof }) => {
@@ -600,6 +704,7 @@ async function handle(input: unknown, conn: Socket) {
     else audit({ ts: new Date().toISOString(), caller: meta.caller,
       ...(typeof params.harness === 'string' ? { harness: params.harness } : {}), method, tab: meta.tab,
       url: cleanURL(meta.url), ...(meta.tabs ? { tabs: meta.tabs } : {}), ...(meta.upload ? { upload: meta.upload } : {}),
+      ...(meta.grantId ? { grant: meta.grantId } : {}),
       ...(typeof method === 'string' && ['click', 'hover', 'type', 'press', 'select', 'scroll', 'upload'].includes(method)
         && isRecord(result) && typeof result.changed === 'boolean' ? { changed: result.changed } : {}),
       outcome: error ? error.code === 'held' ? 'hold' : error.code === 'denied' ? 'deny' : 'error' : 'allow',
@@ -616,6 +721,7 @@ const server = net.createServer(conn => {
     connections.delete(conn); subscribers.delete(conn);
     const key = sessionConnections.get(conn), session = key === undefined ? undefined : sessions.get(key);
     if (session) session.endedAt = Date.now();
+    if (key !== undefined && countedLifetimes.delete(conn)) releaseSession(key);
   });
   conn.on('error', e => log('connection error:', isRecord(e) ? e.code : undefined));
   conn.on('data', data => {
@@ -656,6 +762,7 @@ function shutdown() {
   clearInterval(sessionTimer);
   signinSecrets.stop();
   approvals.stop();
+  grants.stop();
   for (const conn of connections) conn.destroy();
   server.close(() => process.exit(0));
 }

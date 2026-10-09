@@ -14,6 +14,18 @@ The approval panel can show a page capture around a click or Enter target. This 
 
 Sign-in grants cover one exact origin, including scheme and port. Eligible sends cover that origin plus a specific send kind: Enter and a Send button have separate scopes. Remembering or revoking requires a signed app decision. Payments, deletion, security pages, uploads and denied actions never offer remembered send permission. The default policy remembers nothing.
 
+## Session grants
+
+An agent can ask once, at the start of a chat, to skip a few holds for a while. It calls `browser_grant` with rules of the form `<upload|post|delete> <https address prefix>` (for example `upload https://github.com/settings`), a length from 5 minutes to 12 hours, and an optional label in its own words. Gaddi shows a card with the rules, the length and the label, marked as the agent's description. Only your Touch ID answer in the Gaddi app creates the grant; nothing an agent or a page says can.
+
+- **What can be waived.** Only an upload hold, a hold on `post`, `publish`, `share` (and their Italian forms) and a hold on `delete`, `remove` and their forms. Payments, purchases, sending email or messages, sign-in, account and security changes, every protected address, guarded keys, navigation holds, extension operations and any verb you add yourself stay held every time. A request that names any of those is refused outright, and Gmail cannot be named at all. A refused or denied action stays refused or denied.
+- **Where it applies.** A rule covers its exact site (scheme, host and port) and the path prefix on a path boundary: `/settings` covers `/settings/profile`, never `/settingsX`. A button whose name also contains a verb that is not granted ("Post and pay") stays held, and so does a link that leads outside the granted prefix or to a protected address. An upload still goes through the secret-file refusal first.
+- **Whose it is.** A grant belongs to the one chat that asked, identified by the connection its Gaddi adapter keeps open (one adapter process is one chat; an app that runs several conversations through a single adapter shares the grant between them). Another adapter, or a command-line call, gets nothing. It ends when the time is up, when that connection closes, when you end it, or when the broker restarts: grants live in memory only and are never read back from disk.
+- **Seeing and ending it.** The panel lists every active grant (who, until when, what, the agent's words) and shows an empty list when there is none. **End now** needs no Touch ID, because it only removes authority. The menu bar shows how many grants are running. `browser_approvals` lists them for the agent too.
+- **Audit.** `grant.request`, `grant.start` and `grant.end` (expired, session-ended or revoked) are logged, and every action a grant allowed carries `grant: <id>`.
+
+What this does not give you: a grant trusts the whole chat inside its rules, including anything a web page talks that chat into doing there. An upload grant lets the chat attach any file from your home folder that is not on the secret-file list to that page. Keep the rules narrow and the time short. The chat identity is a random ID held by the adapter process, not an authenticated operating-system identity: the broker never lists or logs it, but a process under your account that learned it could use the grant.
+
 The owner can also edit the local policy. That file and the broker run under the same macOS account as the agents: signed UI decisions do not make them tamper-proof against a process with full access to that account. Policy changes can relax defaults, including the upload hold. See [policy configuration](../install/README.md#policy).
 
 ## 1Password sign-in

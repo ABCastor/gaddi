@@ -16,6 +16,9 @@ const approval = (id: string, caller = 'Café task') => ({ id, kind: 'click', ta
   url: 'https://example.test/cart', detail: 'click Pay café', reason: 'checkout action',
   status: 'pending', expiresAt: new Date(Date.now() + 600_000).toISOString() });
 const pending = [approval('existing', 'Already pending')];
+// One active session grant rides along with every approvals snapshot, as the real broker sends it.
+const grants = [{ id: 'g1', caller: 'Café task', label: 'Update the profile', rules: ['upload https://example.test/profile'],
+  createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3_600_000).toISOString(), mine: false }];
 let malformedSent = false;
 const started = Date.now();
 function log(value: unknown) { if (record) fs.appendFileSync(record, JSON.stringify(value) + '\n'); }
@@ -80,7 +83,7 @@ const server = net.createServer(socket => {
       } else if (method === 'approvals.list') {
         if (mode === 'snapshot-error' && Date.now() - started < 2000) {
           socket.end(JSON.stringify({ id, error: { message: 'transient snapshot failure' } }) + '\n');
-        } else { reply(socket, id, { pending, recent: [] }); }
+        } else { reply(socket, id, { pending, recent: [], grants }); }
       } else if (method === 'sends.remembered') {
         reply(socket, id, { rules: [] });
       } else if (method === 'signin.remembered') {

@@ -26,6 +26,8 @@ export interface BrokerParams extends ChromeParams {
   caller?: string; session?: string; harness?: string; approval?: string; id?: string; proof?: SignedProof;
   kind?: string; n?: number; path?: string; item?: string;
   remember?: boolean; site?: string; reason?: string;
+  // browser_grant: what to waive (`<upload|post|delete> <address prefix>`), for how long, and the agent's own words.
+  rules?: string[]; minutes?: number; label?: string;
 }
 type ExtensionOperation = 'list' | 'reload' | 'enable' | 'disable' | 'uninstall' | 'install';
 export interface ExtensionInfo {

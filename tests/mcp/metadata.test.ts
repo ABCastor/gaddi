@@ -12,7 +12,7 @@ try {
     env: { GADDI_SOCKET: `/tmp/gaddi-metadata-${crypto.randomUUID()}.sock` } }));
   const listed = await client.listTools();
   assert.deepEqual(listed.tools.map(t => t.name).sort(), [
-    'tabs', 'bookmarks', 'look', 'wait', 'read', 'open', 'goto', 'back', 'click', 'type', 'press', 'hover', 'scroll', 'select', 'upload', 'signin', 'eval', 'emulate', 'screenshot', 'close', 'show', 'group', 'approvals', 'status', 'extensions',
+    'tabs', 'bookmarks', 'look', 'wait', 'read', 'open', 'goto', 'back', 'click', 'type', 'press', 'hover', 'scroll', 'select', 'upload', 'signin', 'eval', 'emulate', 'screenshot', 'close', 'show', 'group', 'approvals', 'grant', 'status', 'extensions',
   ].map(n => 'browser_' + n).sort());
   for (const tool of listed.tools) {
     assert.equal(tool.inputSchema.type, 'object');
@@ -52,6 +52,18 @@ try {
     assert.ok(!schema(name).required.includes('version'), 'ASSERT_VERSION_MCP');
   }
   console.log('PASS ASSERT_VERSION_MCP');
+  // browser_grant: ask once for a few holds to be waived on named pages. The arguments are bounded here and again by the broker.
+  assert.deepEqual([...schema('grant').required].sort(), ['minutes', 'rules'], 'ASSERT_GRANT_SCHEMA');
+  const grantRules = schema('grant').properties.rules;
+  assert.ok(isRecord(grantRules) && isRecord(grantRules.items), 'ASSERT_GRANT_SCHEMA');
+  assert.equal(grantRules.type, 'array', 'ASSERT_GRANT_SCHEMA'); assert.equal(grantRules.minItems, 1, 'ASSERT_GRANT_SCHEMA'); assert.equal(grantRules.maxItems, 20, 'ASSERT_GRANT_SCHEMA');
+  assert.equal(grantRules.items.type, 'string', 'ASSERT_GRANT_SCHEMA'); assert.equal(grantRules.items.maxLength, 300, 'ASSERT_GRANT_SCHEMA');
+  assert.match(String(grantRules.description), /upload\|post\|delete/, 'ASSERT_GRANT_SCHEMA');
+  assert.match(String(grantRules.description), /https URL prefix/, 'ASSERT_GRANT_SCHEMA');
+  assert.deepEqual(schema('grant').properties.minutes, { type: 'integer', minimum: 5, maximum: 720 }, 'ASSERT_GRANT_SCHEMA');
+  assert.deepEqual(schema('grant').properties.label, { type: 'string', maxLength: 60 }, 'ASSERT_GRANT_SCHEMA');
+  assert.match(listed.tools.find(t => t.name === 'browser_grant')!.description!, /Touch ID/, 'ASSERT_GRANT_SCHEMA');
+  console.log('PASS ASSERT_GRANT_SCHEMA');
   const shownTab = schema('show').properties.tab; assert.ok(isRecord(shownTab)); assert.equal(shownTab.maximum, Number.MAX_SAFE_INTEGER);
   const estimate = Math.ceil(JSON.stringify(listed).length / 4);
   console.log(`MCP tools/list: ${listed.tools.length} tools, ${estimate} total estimated tokens (JSON characters / 4; limit 2500)`);
@@ -63,7 +75,10 @@ try {
   assert.match(instructions, /Never ask for passwords/);
   assert.match(instructions, /Touch ID/);
   assert.match(instructions, /type mode:append after chips\/mentions/, 'ASSERT_APPEND_SCHEMA');
-  assert.match(instructions, /owner may pre-allow sends.*agents cannot grant permissions/, 'ASSERT_SEND_GUIDANCE');
+  assert.match(instructions, /owner may pre-allow sends/, 'ASSERT_SEND_GUIDANCE');
+  assert.doesNotMatch(instructions, /agents cannot grant permissions/, 'ASSERT_GRANT_GUIDANCE');
+  assert.match(instructions, /ask for a session grant with browser_grant.*only the owner approves it in Gaddi/, 'ASSERT_GRANT_GUIDANCE');
+  assert.match(instructions, /Payments, sends, sign-in, security stay held/, 'ASSERT_GRANT_GUIDANCE');
   assert.deepEqual(Object.keys(schema('signin').properties).sort(), ['approval', 'item', 'tab']);
-  console.log(`PASS metadata: exact 25 tools; ${words} instruction words; within token budget`);
+  console.log(`PASS metadata: exact 26 tools; ${words} instruction words; within token budget`);
 } finally { await client.close(); }

@@ -36,6 +36,7 @@ for line in \
   'NOTIFICATION Already pending wants to click “click Pay café”' \
   'NOTIFICATION Café task wants to click “click Pay café”' \
   'APPROVAL a1 kind=click tab=42 detail=click Pay café reason=checkout action' \
+  'GRANTS g1' \
   'EVENT approval.resolved' \
   'RESOLVED approval=a1' \
   'RESOLVED approval=existing' \

@@ -22,6 +22,8 @@ func headlessCheck() -> Never {
         let current = Set(snapshot.approvals.map(\.id))
         for id in opened.subtracting(current).sorted() { print("RESOLVED approval=\(id)") }
         opened = current
+        // Session grants arrive inside the same approvals snapshot; naming them proves the parse.
+        if !snapshot.grants.isEmpty { print("GRANTS \(snapshot.grants.map(\.id).joined(separator: ","))") }
         fflush(stdout)
     }
     model.onPending = { approval in

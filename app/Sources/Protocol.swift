@@ -115,10 +115,30 @@ struct SendPermission: Equatable {
     func revokeMessage(timestamp: Int64) -> String { "sends.revoke|\(site)|\(kind)|\(reason)|\(timestamp)" }
 }
 
+/// An owner-approved, time-limited permission for one chat. The broker never sends the chat's
+/// identity: the panel shows who asked, what is waived and until when, and can end it at once.
+struct SessionGrant: Equatable {
+    let id: String
+    let caller: String
+    let label: String?
+    /// Canonical rules, e.g. "upload https://github.com/settings".
+    let rules: [String]
+    let expiresAt: Date
+    init?(_ object: JSONObject) {
+        guard let id = string(object["id"]), !id.isEmpty, let rules = object["rules"] as? [String], !rules.isEmpty,
+              let expiresAt = instant(object["expiresAt"]) else { return nil }
+        self.id = id; self.rules = rules; self.expiresAt = expiresAt
+        caller = object["caller"] as? String ?? "unknown"
+        label = (object["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+    }
+    var expired: Bool { expiresAt <= Date() }
+}
+
 struct Snapshot: Equatable {
     var approvals: [Approval] = []
     var rememberedSignins: [String] = []
     var rememberedSends: [SendPermission] = []
+    var grants: [SessionGrant] = []
 }
 
 /// Visibility follows authoritative pending snapshots, never notification delivery.
@@ -187,6 +207,14 @@ final class BrowserModel {
             var next = Snapshot()
             next.rememberedSends = sendPermissions.sorted { ($0.site, $0.kind, $0.reason) < ($1.site, $1.kind, $1.reason) }
             next.rememberedSignins = sites.sorted()
+            // Session grants arrive with the approvals. A broker without them is simply older; a malformed
+            // list is an error, because a grant the owner cannot see is authority he cannot end.
+            if let rows = approvals["grants"] {
+                guard let objects = rows as? [JSONObject] else { throw AppError("Daemon returned an invalid session grant list") }
+                let parsed = objects.compactMap(SessionGrant.init)
+                guard parsed.count == objects.count else { throw AppError("Daemon returned an invalid session grant") }
+                next.grants = parsed.filter { !$0.expired }.sorted { ($0.expiresAt, $0.id) < ($1.expiresAt, $1.id) }
+            }
             // Granted records remain in the broker queue until consumed, but need no further human decision.
             next.approvals = approvalRows.filter { $0["status"] as? String == "pending" }.compactMap(Approval.init)
                 .filter { !$0.expired }.sorted { $0.id < $1.id }
@@ -203,7 +231,7 @@ final class BrowserModel {
         let data = event["data"] as? JSONObject ?? event
         onEvent?(name, data)
         switch name {
-        case "approval.pending", "approval.resolved", "signin.remembered", "sends.remembered":
+        case "approval.pending", "approval.resolved", "signin.remembered", "sends.remembered", "grants.changed":
             refresh()
         default: break
         }

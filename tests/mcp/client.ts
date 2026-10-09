@@ -3,7 +3,7 @@ import { CallToolResultSchema } from '@modelcontextprotocol/sdk/types.js';
 import type { BrokerParams, TabInfo, TextPage } from '../../shared/protocol.ts';
 import { hasErrorCode, isRecord, parseJSON, isBrokerResult, isTabInfo } from '../../shared/protocol.ts';
 type FixtureBridge = Awaited<ReturnType<typeof fakeBridge>>;
-interface AuditEntry { method?: string; caller?: string }
+interface AuditEntry { method?: string; caller?: string; outcome?: string; grant?: string }
 interface FixtureBodies {
   look: TextPage & { outline: string };
   read: { result: { content: string }; handle: string };
@@ -28,6 +28,7 @@ function isFixtureBody<M extends keyof FixtureBodies>(method: M, value: unknown)
 // End-to-end stdio client against the private broker and synthetic Chrome bridge.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import net from 'node:net';
 import crypto from 'node:crypto';
@@ -333,6 +334,53 @@ try {
   const cliShotPath = (await cli(['screenshot', '8'])).trim();
   check(cliShotPath.endsWith('.png') && fs.existsSync(cliShotPath) && fs.readFileSync(cliShotPath).equals(fs.readFileSync(shotPath)),
     'CLI screenshot prints only the existing image path without JSON');
+
+  // Session grants end to end: this adapter's own lifetime socket is the chat a grant belongs to.
+  const grantRules = ['upload https://fixture.example/shop', 'post https://fixture.example/shop'];
+  const grantRequests = () => readAudit().filter(entry => entry.method === 'grant.request').length;
+  for (const args of [{ rules: grantRules }, { minutes: 60 }, { rules: [], minutes: 60 }, { rules: 'upload https://fixture.example/shop', minutes: 60 },
+    { rules: [42], minutes: 60 }, { rules: ['x'.repeat(301)], minutes: 60 }, { rules: Array(21).fill('upload https://fixture.example/a'), minutes: 60 },
+    { rules: grantRules, minutes: 4 }, { rules: grantRules, minutes: 721 }, { rules: grantRules, minutes: 5.5 }, { rules: grantRules, minutes: '60' },
+    { rules: grantRules, minutes: 60, label: 'x'.repeat(61) }, { rules: grantRules, minutes: 60, label: 7 }, { rules: grantRules, minutes: 60, extra: 1 },
+  ] as Record<string, unknown>[]) {
+    check((await call('grant', args)).isError === true, `MCP rejects invalid browser_grant arguments ${JSON.stringify(args).slice(0, 48)}`);
+  }
+  check(grantRequests() === 0, 'MCP validation stops an invalid grant request before it reaches the broker');
+  const refusedGrant = await call('grant', { rules: ['send https://fixture.example/shop'], minutes: 60 });
+  check(refusedGrant.isError === true && /can never be granted/.test(txt(refusedGrant)), 'MCP: sends, payments and sign-in can never be granted, and the reason is plain');
+  const grantReply = await call('grant', { rules: grantRules, minutes: 60, label: 'Update the shop page' });
+  const grantID = heldID(grantReply);
+  check(!grantReply.isError && grantID && /session grant/.test(txt(grantReply)) && /as soon as they approve/.test(txt(grantReply)) && /do not retry/.test(txt(grantReply))
+    && /browser_approvals/.test(txt(grantReply)) && !/retry with approval/.test(txt(grantReply)),
+  'MCP browser_grant is HELD, takes effect on approval without a retry, and points at browser_approvals');
+  const grantAction = body('approvals', await call('approvals')).pending.find(a => a.id === grantID);
+  check(grantAction?.kind === 'grant' && grantAction.detail === 'post on fixture.example/shop\nupload on fixture.example/shop\nfor 1 hour\n“Update the shop page”',
+    'MCP grant request is a pending record holding exactly the text the owner signs');
+  const grantTs = Date.now(), grantDigest = crypto.createHash('sha256').update(grantAction.detail).digest('hex');
+  const grantMessage = `grant|${grantAction.id}|${grantAction.kind}|${grantAction.tab ?? ''}|${grantDigest}|${grantTs}`;
+  await rpc('approval.grant', { id: grantID, proof: { ts: grantTs, sig: crypto.sign('sha256', Buffer.from(grantMessage), privateKey).toString('base64') } });
+  const listedGrants = parseJSON(txt(await call('approvals')).split('\n').slice(2, -1).join('\n'));
+  assert.ok(isRecord(listedGrants) && Array.isArray(listedGrants.grants));
+  const mineGrant: unknown = listedGrants.grants.find((entry: unknown) => isRecord(entry) && entry.mine === true);
+  check(isRecord(mineGrant) && typeof mineGrant.id === 'string' && mineGrant.label === 'Update the shop page' && Array.isArray(mineGrant.rules)
+    && mineGrant.rules.length === 2 && !JSON.stringify(listedGrants.grants).includes('session'),
+  'MCP browser_approvals lists the active grant as this chat\'s own, with no session id');
+  bridge.tabs[0].url = 'https://fixture.example/shop';
+  const grantFile = path.join(os.tmpdir(), `gaddi-grant-${process.pid}.png`);
+  fs.writeFileSync(grantFile, 'fixture picture');
+  const uploadsBefore = count(bridge, 'upload'), clicksBefore = count(bridge, 'click');
+  const granted = await call('upload', { tab: 7, selector: '#file', path: grantFile });
+  check(!granted.isError && !heldID(granted) && count(bridge, 'upload') === uploadsBefore + 1, 'MCP upload runs under the chat\'s grant, with no retry');
+  check(readAudit().findLast(entry => entry.method === 'upload' && entry.outcome === 'allow')?.grant === mineGrant.id, 'MCP: the audit line of that upload names the grant');
+  check(heldID(await call('click', { tab: 7, selector: '#pay' })) !== undefined && count(bridge, 'click') === clicksBefore, 'MCP: a payment click stays held under the grant');
+  bridge.tabs[0].url = 'https://elsewhere.example/shop';
+  check(heldID(await call('upload', { tab: 7, selector: '#file', path: grantFile })) !== undefined, 'MCP: the same upload on another site is held');
+  bridge.tabs[0].url = 'https://fixture.example/shop';
+  await rpc('grants.revoke', { id: mineGrant.id });
+  check(heldID(await call('upload', { tab: 7, selector: '#file', path: grantFile })) !== undefined, 'MCP: ending the grant makes the upload held again');
+  const endedGrants = parseJSON(txt(await call('approvals')).split('\n').slice(2, -1).join('\n'));
+  check(isRecord(endedGrants) && Array.isArray(endedGrants.grants) && endedGrants.grants.length === 0, 'MCP browser_approvals shows no grant once it has ended');
+  fs.rmSync(grantFile, { force: true }); // Only this test's temporary file.
   await cliFlushProof();
   console.log(`== MCP integration: ${checks} passed, 0 failed`);
 } finally { bridge?.conn.destroy(); await client.close(); }
