@@ -544,6 +544,24 @@ import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(openLog)}, JSON.stri
   assert.equal((await cli('eval', '7', 'document.title')).value, 'fixture-result');
   assert.equal((await cli('scroll', '-200')).ok, true);
   assert.equal((await cli('emulate', '7', '{"reset":true}')).ok, true); pass('actions-forward-exact-arguments');
+  // Sideways and element-targeted wheels: validated here, before anything is forwarded.
+  const scrollArgs = () => { const call = b.calls.findLast(m => m.method === 'chrome.scroll'); assert.ok(call); return call.params; };
+  for (const params of [{ dx: 120 }, { dx: -5, dy: 40 }, { selector: '#plain', dx: 5, dy: -5 }, { selector: '#plain', dy: 9 }] as IncomingParams[]) {
+    await result(c, 'scroll', { tab: 7, ...params });
+    assert.deepEqual(scrollArgs(), { ...scrollArgs(), tab: 7, ...params }, `ASSERT_HSCROLL_BROKER: ${JSON.stringify(params)} reaches the bridge as given`);
+  }
+  assert.equal((await cli('scroll', '--dx', '300')).ok, true);
+  assert.deepEqual([scrollArgs().dx, scrollArgs().dy, scrollArgs().selector], [300, undefined, undefined], 'ASSERT_HSCROLL_CLI: --dx alone is a sideways wheel');
+  assert.equal((await cli('scroll', '#plain', '--dx', '40', '--dy', '-2')).ok, true);
+  assert.deepEqual([scrollArgs().dx, scrollArgs().dy, scrollArgs().selector], [40, -2, '#plain'], 'ASSERT_HSCROLL_CLI: a selector with --dx and --dy');
+  assert.equal((await cli('scroll', '120', '--dx', '-8')).ok, true);
+  assert.deepEqual([scrollArgs().dx, scrollArgs().dy, scrollArgs().selector], [-8, 120, undefined], 'ASSERT_HSCROLL_CLI: a bare number is still dy');
+  for (const params of [{}, { dx: '1' }, { dx: 100001 }, { dy: -100001 }, { dx: 1, dy: null }, { dx: Number.NaN }] as IncomingParams[]) {
+    const sent = b.calls.filter(m => m.method === 'chrome.scroll').length;
+    await rejected(c, 'scroll', { tab: 7, ...params }, 'error');
+    assert.equal(b.calls.filter(m => m.method === 'chrome.scroll').length, sent, `ASSERT_HSCROLL_BROKER: ${JSON.stringify(params)} is refused before the bridge`);
+  }
+  pass('scroll-forwards-dx-dy-and-selector-and-refuses-bad-distances-before-the-bridge');
   const opened = await cli('open', 'https://example.test/read');
   assert.equal(b.calls.at(-1)!.params.foreground, false);
   assert.equal(opened.group, '● cli');

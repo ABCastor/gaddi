@@ -22,7 +22,8 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] <command>
   open <url> [--foreground] [--group <task>] | goto [tab] <url> | back [tab]
   close <id> [id...] | show <id> | group <task> <id> [id...]
   click|hover [tab] <selector> | type [tab] <selector> <text> [--mode replace|append]
-  press [tab] <key> | scroll [tab] <dy|selector> | select [tab] <selector> <value> | upload [tab] <selector> <path>
+  press [tab] <key> | select [tab] <selector> <value> | upload [tab] <selector> <path>
+  scroll [tab] <dy|selector> [--dx N] [--dy N]  (wheel pixels; with a selector the wheel goes over that element)
   wait [tab] <JSON options>
   signin [tab] [--item <title-or-id>]
   eval [tab] <expression> | emulate [tab] <JSON options>
@@ -33,9 +34,15 @@ const argv = process.argv.slice(2), args: string[] = [];
 let json = false, fullPage = false, foreground = false, visible = false;
 let approval: string | undefined, tab: number | undefined, group: string | undefined, item: string | undefined;
 let mode: 'replace' | 'append' | undefined;
+const wheel: { dx?: number; dy?: number } = {};
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i];
   if (arg === '--json') json = true;
+  else if (arg === '--dx' || arg === '--dy') {
+    const value = argv[++i];
+    if (!value?.trim() || !Number.isFinite(Number(value))) die(`${arg} needs a number`, 2);
+    wheel[arg.slice(2) as 'dx' | 'dy'] = Number(value);
+  }
   else if (arg === '--full-page') fullPage = true;
   else if (arg === '--visible') visible = true;
   else if (arg === '--foreground') foreground = true;
@@ -53,6 +60,7 @@ for (let i = 0; i < argv.length; i++) {
 }
 const cmd = args.shift() ?? '';
 if (mode && cmd !== 'type') die('--mode is only supported for type', 2);
+if ((wheel.dx !== undefined || wheel.dy !== undefined) && cmd !== 'scroll') die('--dx and --dy are only supported for scroll', 2);
 if (cmd === 'approve') {
   if (args.length !== 1 || !/^[a-f0-9]+$/i.test(args[0])) die('gaddi approve <id>', 2);
   // -n delivers arguments through a short-lived forwarding instance when the app is already running.
@@ -97,7 +105,17 @@ switch (cmd) {
   case 'click': case 'hover': params.selector = take('selector'); break;
   case 'type': params.selector = take('selector'); params.text = take('text'); params.text += args.length ? ' ' + args.splice(0).join(' ') : ''; break;
   case 'press': params.key = take('key'); break;
-  case 'scroll': { const value = take('dy or selector'); if (value.trim() && Number.isFinite(Number(value))) params.dy = Number(value); else params.selector = value; break; }
+  case 'scroll': {
+    // A bare number is dy, as before; --dx and --dy alone scroll the page, and with a selector go over it.
+    const wheelOnly = args.length === 0 && (wheel.dx !== undefined || wheel.dy !== undefined);
+    const value = wheelOnly ? '' : take('dy, selector, --dx or --dy');
+    if (value.trim() && Number.isFinite(Number(value))) {
+      if (wheel.dy !== undefined) die('scroll: dy given twice; a lone number is a distance, so name the tab with --tab', 2);
+      params.dy = Number(value);
+    } else if (value) params.selector = value;
+    Object.assign(params, wheel);
+    break;
+  }
   case 'select': params.selector = take('selector'); params.value = take('value'); break;
   case 'upload': params.selector = take('selector'); params.path = take('path'); break;
   case 'eval': params.expression = take('expression'); params.expression += args.length ? ' ' + args.splice(0).join(' ') : ''; break;

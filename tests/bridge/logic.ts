@@ -1,5 +1,5 @@
 import type { ChromeParams, Reply } from '../../shared/protocol.ts';
-import { isRecord, waitParams, versionParam, hasErrorCode } from '../../shared/protocol.ts';
+import { isRecord, waitParams, wheelParams, versionParam, hasErrorCode } from '../../shared/protocol.ts';
 import type { PageResult } from '../../extension/content.ts';
 import type { ChromeResults, FixtureTab } from './extension-types.ts';
 
@@ -15,6 +15,7 @@ interface CommandParams {
   captureBeyondViewport?: boolean; clip?: { x: number; y: number; width: number; height: number; scale: number };
   key?: string; text?: string; windowsVirtualKeyCode?: number; modifiers?: number;
   features?: { name: string; value: string }[]; media?: string; state?: string; enabled?: boolean;
+  x?: number; y?: number; deltaX?: number; deltaY?: number;
 }
 type Call = ['query', 'groups' | Query] | ['window.update' | 'update', number, Partial<FixtureTabRecord> & { focused?: boolean; drawAttention?: boolean }]
   | ['alarm', string, { periodInMinutes: number }] | ['remove', number] | ['group', GroupOptions]
@@ -185,7 +186,7 @@ const chrome = {
 // Exercise current sources (including disposable mutants), never a stale dist build.
 const source = stripTypeScriptTypes(fs.readFileSync(new URL('../../extension/bg.ts', import.meta.url), 'utf8')).replace(/^import .*;$/gm, '');
 function worker() {
-  const context = vm.createContext({ chrome, pageTask, waitParams, versionParam, hasErrorCode, isRecord, createRecovery, RECOVERY_KEY, manageExtensions, URL, setTimeout(fn: () => void, delay: number) { timers.push({ fn, delay }); return timers.length; }, clearTimeout(id: number) { if (timers[id - 1]) timers[id - 1].cleared = true; } });
+  const context = vm.createContext({ chrome, pageTask, waitParams, wheelParams, versionParam, hasErrorCode, isRecord, createRecovery, RECOVERY_KEY, manageExtensions, URL, setTimeout(fn: () => void, delay: number) { timers.push({ fn, delay }); return timers.length; }, clearTimeout(id: number) { if (timers[id - 1]) timers[id - 1].cleared = true; } });
   vm.runInContext(source, context);
   return context;
 }
@@ -448,11 +449,51 @@ let marker = calls.length;
 assert.equal((await request('chrome.hover', { tab: 42, selector: '#pay' })).result!.hovered, true);
 assert.deepEqual(calls.slice(marker).filter(isCommand).map(([, method, p]) => [method, p.type, p.enabled]),
   [['Emulation.setFocusEmulationEnabled', undefined, true], ['Input.dispatchMouseEvent', 'mouseMoved', undefined]]);
+const wheels = (from: number) => calls.slice(from).filter(isCommand).filter(([, method]) => method === 'Input.dispatchMouseEvent')
+  .map(([, , p]) => [p.type, p.x, p.y, p.deltaX, p.deltaY]);
+marker = calls.length;
 assert.equal((await request('chrome.scroll', { dy: 200 })).result!.scrolled, true);
-assert.match((await request('chrome.scroll', { dy: 2, selector: '#pay' })).error!.message, /exactly one/);
+assert.deepEqual(wheels(marker), [['mouseWheel', 1, 1, 0, 200]], 'dy alone: one wheel at the old point');
+marker = calls.length;
+assert.equal((await request('chrome.scroll', { dx: -300 })).result!.scrolled, true);
+assert.deepEqual(wheels(marker), [['mouseWheel', 1, 1, -300, 0]], 'ASSERT_HSCROLL_LOGIC: dx alone: one wheel at the old point');
+marker = calls.length;
+assert.equal((await request('chrome.scroll', { dx: 40, dy: 2 })).result!.scrolled, true);
+assert.deepEqual(wheels(marker), [['mouseWheel', 1, 1, 40, 2]], 'dx and dy together are one wheel');
+// A selector with a distance moves the pointer onto the element, then wheels there.
+marker = calls.length;
+assert.equal((await request('chrome.scroll', { dy: 2, dx: 7, selector: '#pay' })).result!.scrolled, true);
+assert.deepEqual(wheels(marker), [['mouseMoved', 10, 20, undefined, undefined], ['mouseWheel', 10, 20, 7, 2]], 'ASSERT_HSCROLL_LOGIC: selector with dx/dy wheels over the element');
 assert.match((await request('chrome.scroll', { dy: NaN })).error!.message, /finite/);
+for (const params of [{ dx: NaN }, { dx: Infinity }, { dx: 100001 }, { dy: -100001 }, { dx: '5' }, { dx: null }, { dx: 1, dy: 'x' }, { selector: '#pay', dx: 1e9 }]) {
+  marker = calls.length;
+  assert.match((await request('chrome.scroll', params)).error!.message, /finite number between/, `ASSERT_HSCROLL_LOGIC: ${JSON.stringify(params)}`);
+  assert.deepEqual(wheels(marker), [], 'a refused scroll sends nothing');
+}
+assert.match((await request('chrome.scroll', {})).error!.message, /Supply dx, dy or selector/);
+// The scroller offset comes back as before/after, and a moved scroller counts as a change.
+// This harness's timers are manual: fire the pauses the worker takes while the scroller settles.
+const pumped = async <T>(work: Promise<T>) => {
+  const pump = setInterval(() => { for (const timer of timers) if (timer.delay === 40 && !timer.cleared) { timer.cleared = true; timer.fn(); } }, 2);
+  try { return await work; } finally { clearInterval(pump); }
+};
+{
+  let reads = 0;
+  pageResult = action => action === 'scrollPoint' ? { signature: 'before', x: 10, y: 20, scroller: '@s:1', left: 0, top: 0 }
+    : action === 'scrollPosition' ? { left: ++reads < 2 ? 120 : 300, top: 0 } : action === 'settle' ? { signature: 'before', url: tab.url } : {};
+  const moved = (await pumped(request('chrome.scroll', { dx: 300, selector: '#pay' }))).result!;
+  assert.deepEqual(moved.position, { before: { left: 0, top: 0 }, after: { left: 300, top: 0 } }, 'ASSERT_HSCROLL_LOGIC: waits for the scroller to land');
+  assert.equal(moved.changed, true, 'ASSERT_HSCROLL_LOGIC: a moved scroller is a change even when the page text is not');
+  pageResult = action => action === 'scrollPoint' ? { signature: 'before', x: 10, y: 20, scroller: '@s:1', left: 5, top: 6 }
+    : action === 'scrollPosition' ? { left: 5, top: 6 } : action === 'settle' ? { signature: 'before', url: tab.url } : {};
+  const still = (await pumped(request('chrome.scroll', { dx: 300, selector: '#pay' }))).result!;
+  assert.deepEqual(still.position, { before: { left: 5, top: 6 }, after: { left: 5, top: 6 } });
+  assert.equal(still.changed, false, 'a scroller that did not move and a page that did not change report changed:false');
+}
 pageResult = { scrolled: true };
+marker = calls.length;
 assert.equal((await request('chrome.scroll', { selector: '#pay' })).result!.scrolled, true);
+assert.deepEqual(wheels(marker), [], 'selector alone sends no wheel');
 pageResult = { selected: true };
 assert.equal((await request('chrome.select', { selector: '#option', value: 'b' })).result!.selected, true);
 cdpResult = { currentIndex: 1, entries: [{ id: 7, url: tab.url }, { id: 8, url: `${tab.url}next` }] };
@@ -866,7 +907,8 @@ const inputCases = [
   ['chrome.click', { selector: '#button' }, 'clicked'], ['chrome.hover', { selector: '#button' }, 'hovered'],
   ['chrome.type', { selector: '#input', text: 'hello' }, 'typed'], ['chrome.press', { key: 'Enter' }, 'pressed'],
   ['chrome.select', { selector: '#select', value: 'b' }, 'selected'], ['chrome.scroll', { dy: 200 }, 'scrolled'],
-  ['chrome.scroll', { selector: '#bottom' }, 'scrolled'],
+  ['chrome.scroll', { selector: '#bottom' }, 'scrolled'], ['chrome.scroll', { dx: 20 }, 'scrolled'],
+  ['chrome.scroll', { selector: '#bottom', dx: 20 }, 'scrolled'],
 ] as const;
 for (const [method, params, acknowledgement] of inputCases) {
   for (const changed of [false, true]) {
@@ -894,7 +936,7 @@ for (const [method, params, acknowledgement] of inputCases) {
   assert.equal(actionCalls.filter(isCommand).filter(([, command, p]) => command === 'Input.insertText'
     || command === 'Input.dispatchKeyEvent' && p.type === 'keyDown'
     || command === 'Input.dispatchMouseEvent' && p.type === (method === 'chrome.click' ? 'mouseReleased' : method === 'chrome.hover' ? 'mouseMoved' : 'mouseWheel')).length,
-    method === 'chrome.select' || method === 'chrome.scroll' && 'selector' in params ? 0 : 1, 'input is never replayed');
+    method === 'chrome.select' || method === 'chrome.scroll' && 'selector' in params && !('dx' in params) ? 0 : 1, 'input is never replayed');
   tabRecords.get(recoveryTab)!.status = 'complete';
 }
 pass('all input paths compare signatures, return current URL and preserve sent input when after-read fails without replay');
@@ -958,6 +1000,7 @@ const versionActions = [
   ['click', { selector: '#button' }], ['hover', { selector: '#button' }],
   ['type', { selector: '#input', text: 'text' }], ['press', { key: 'Tab' }],
   ['select', { selector: '#select', value: 'b' }], ['scroll', { dy: 20 }], ['scroll', { selector: '#bottom' }],
+  ['scroll', { dx: 20 }], ['scroll', { selector: '#bottom', dx: 20 }],
 ] as const;
 for (const [method, params] of versionActions) {
   pageResult = (_action, params) => params.version === 'v1-old'

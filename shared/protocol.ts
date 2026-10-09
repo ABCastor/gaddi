@@ -6,7 +6,7 @@ export interface ChromeParams {
   operation?: ExtensionOperation | 'get'; extensionId?: string;
   tab?: number; tabs?: number[]; url?: string; query?: string; group?: string;
   foreground?: boolean; selector?: string; text?: string; key?: string; mode?: 'replace' | 'append';
-  expression?: string; dy?: number; fullPage?: boolean; width?: number; height?: number;
+  expression?: string; dx?: number; dy?: number; fullPage?: boolean; width?: number; height?: number;
   mobile?: boolean; reset?: boolean; colorScheme?: 'light' | 'dark' | 'no-preference';
   animationSpeed?: number; value?: string; denySelectors?: string[];
   _description?: { name?: string; href?: string; submitName?: string };
@@ -59,6 +59,7 @@ export interface ElementDescription {
   href?: string; submitName?: string; matched?: string[]; selector?: string;
 }
 // Results of the extension's serialized page function, keyed by the requested action.
+export interface ScrollOffset { left: number; top: number }
 export interface ImageBox { x: number; y: number; width: number; height: number }
 export interface ApprovalCapture { data: string; mimeType: string; width: number; height: number; box: ImageBox }
 export interface SigninProbe { url: string; signature: string; username?: string; password?: string; passwordPresent?: boolean; otp?: string; challenge?: boolean }
@@ -88,6 +89,9 @@ export interface PageResults {
   typeCleanup: Record<string, never>;
   typeLanded: { landed: boolean };
   clickPoint: PageResults['snapshot'] & { x: number; y: number };
+  // The scroller is a page reference to the nearest element that can take the wheel on the requested axis.
+  scrollPoint: PageResults['clickPoint'] & { scroller: string } & ScrollOffset;
+  scrollPosition: ScrollOffset;
   clickCheck: { x: number; y: number };
   upload: PageResults['snapshot'] & { via: 'input' | 'drop' };
   hoverPoint: PageResults['clickPoint'];
@@ -95,7 +99,7 @@ export interface PageResults {
 // The transport envelope may carry an error instead of the action's result.
 export type PageResult = { __gaddiError?: string; __gaddiCode?: string } & Partial<PageResults['animationSpeed']
   & Omit<PageResults['describe'], 'password'> & PageResults['read'] & PageResults['html']
-  & PageResults['wait'] & PageResults['captureBox'] & PageResults['scroll'] & PageResults['select'] & PageResults['clickPoint'] & PageResults['typeFocus'] & PageResults['settle']
+  & PageResults['wait'] & PageResults['captureBox'] & PageResults['scroll'] & PageResults['select'] & PageResults['clickPoint'] & PageResults['scrollPoint'] & PageResults['typeFocus'] & PageResults['settle']
   & PageResults['closeForeignFrames'] & PageResults['typeLanded'] & PageResults['upload'] & Omit<SigninProbe, 'password'> & { password: boolean | string }>;
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -133,7 +137,7 @@ export interface BrokerResults {
   type: InputResult & { typed: boolean };
   press: InputResult & { pressed: boolean };
   select: InputResult & { selected: boolean };
-  scroll: InputResult & { scrolled: boolean };
+  scroll: InputResult & { scrolled: boolean; position?: { before: ScrollOffset; after: ScrollOffset } };
   hover: InputResult & { hovered: boolean };
   upload: InputResult & { uploaded: boolean; via: 'input' | 'drop' };
 }
@@ -169,6 +173,19 @@ export function versionParam(value: unknown): string | undefined {
   if (value === undefined || value === '') return undefined;
   if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(value)) throw new Error('version must be a short opaque string');
   return value;
+}
+
+// Wheel distances in CSS pixels. Shared by broker and extension, including clients that bypass MCP schemas.
+export const WHEEL_LIMIT = 100000;
+export function wheelParams(params: { dx?: unknown; dy?: unknown }): { dx?: number; dy?: number } {
+  const wheel: { dx?: number; dy?: number } = {};
+  for (const key of ['dx', 'dy'] as const) {
+    const value = params[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > WHEEL_LIMIT) throw new Error(`${key} must be a finite number between -${WHEEL_LIMIT} and ${WHEEL_LIMIT}`);
+    wheel[key] = value;
+  }
+  return wheel;
 }
 
 // Shared by broker and extension, including clients that bypass MCP schemas.

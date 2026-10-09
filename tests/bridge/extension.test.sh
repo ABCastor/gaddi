@@ -8,7 +8,7 @@ export GADDI_BRIDGE_BREAK_SCREENSHOT=0
 export GADDI_BRIDGE_BREAK_TYPE_REPLACEMENT=0 GADDI_BRIDGE_BREAK_INPUT_FOCUS=0
 export GADDI_BRIDGE_BREAK_OUTLINE_STATE=0 GADDI_BRIDGE_BREAK_CHANGED=0 GADDI_BRIDGE_BREAK_CHECKED_DESCRIPTION=0
 export GADDI_BRIDGE_BREAK_PRE_SCROLL_SIGNATURE=0
-export GADDI_BRIDGE_BREAK_FOREIGN_REMOVE=0 GADDI_BRIDGE_BREAK_FOREIGN_SHADOW=0
+export GADDI_BRIDGE_BREAK_FOREIGN_REMOVE=0 GADDI_BRIDGE_BREAK_FOREIGN_SHADOW=0 GADDI_BRIDGE_BREAK_HSCROLL=0
 GADDI_BRIDGE_BREAK_NAMES=0 GADDI_BRIDGE_BREAK_EXPLICIT_CLOSE=0 node tests/bridge/extension.ts || result=$?
 if [[ "$result" != 0 ]]; then exit "$result"; fi
 mkdir -p tests/.state/logs
@@ -171,4 +171,11 @@ if GADDI_BRIDGE_BREAK_VISIBLE=1 node tests/bridge/extension.ts >"$LOG" 2>&1; the
 fi
 if ! rg -q 'AssertionError.*ASSERT_VISIBLE_OUTLINE' "$LOG"; then cat "$LOG"; exit 1; fi
 echo 'FALSIFIED visible look: disabled viewport filter fails ASSERT_VISIBLE_OUTLINE'
+
+LOG=tests/.state/logs/bridge-hscroll-falsified.log
+if GADDI_BRIDGE_BREAK_HSCROLL=1 node tests/bridge/extension.ts >"$LOG" 2>&1; then
+  echo 'FAIL horizontal scroll mutation passed'; exit 1
+fi
+if ! rg -q 'AssertionError.*ASSERT_HSCROLL_PAGE' "$LOG"; then cat "$LOG"; echo 'FAIL horizontal scroll falsification failed for an unrelated reason'; exit 1; fi
+echo 'FALSIFIED horizontal scroll: a wheel that sends deltaX 0 fails ASSERT_HSCROLL_PAGE'
 echo 'PASS bridge extension suite: baseline and all mutation checks passed'

@@ -36,6 +36,7 @@ import { requireHeadless, watchHeadless } from './background.ts';
 import { foreignFrame, writeForeignExtension } from './foreign-frame.ts';
 import { autonomousSetup } from './autonomy-browser.ts';
 import { uploadChecks } from './upload.ts';
+import { hscrollChecks } from './hscroll.ts';
 
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 const root = path.join(repo, 'tests/.state-bridge');
@@ -114,6 +115,13 @@ try {
     const source = fs.readFileSync(file, 'utf8');
     assert.ok(source.includes(marker), `capture mutation marker ${marker}`);
     fs.writeFileSync(file, source.replace(marker, replacement));
+  }
+  if (process.env.GADDI_BRIDGE_BREAK_HSCROLL === '1') {
+    // Disposable copy only: both wheel sends lose their horizontal distance.
+    const source = fs.readFileSync(bg, 'utf8');
+    const wheel = 'deltaX: dx ?? 0';
+    assert.equal(source.split(wheel).length, 3, 'the page wheel and the element wheel both send dx');
+    fs.writeFileSync(bg, source.replaceAll(wheel, 'deltaX: 0'));
   }
   if (brokenInputFocus) {
     const source = fs.readFileSync(bg, 'utf8');
@@ -213,7 +221,7 @@ try {
       fixtureTimers.add(timer);
       return;
     }
-    const filename = req.url?.split(/[?#]/)[0] === '/autonomy.html' ? 'autonomy.html' : req.url?.split(/[?#]/)[0] === '/foreign.html' ? 'foreign.html' : req.url === '/upload.html' ? 'upload.html' : req.url === '/version.html' ? 'version.html' : req.url === '/approval.html' ? 'approval.html' : req.url === '/state.html' ? 'state.html' : req.url === '/actions.html' ? 'actions.html' : req.url === '/input.html' ? 'input.html' : req.url === '/busy.html' ? 'busy.html' : req.url === '/bands.html' ? 'bands.html' : req.url?.split('?')[0] === '/next.html' ? 'next.html' : req.url === '/' ? 'index.html' : null;
+    const filename = req.url?.split(/[?#]/)[0] === '/autonomy.html' ? 'autonomy.html' : req.url?.split(/[?#]/)[0] === '/foreign.html' ? 'foreign.html' : req.url === '/upload.html' ? 'upload.html' : req.url === '/version.html' ? 'version.html' : req.url === '/approval.html' ? 'approval.html' : req.url === '/state.html' ? 'state.html' : req.url === '/actions.html' ? 'actions.html' : req.url === '/hscroll.html' ? 'hscroll.html' : req.url === '/input.html' ? 'input.html' : req.url === '/busy.html' ? 'busy.html' : req.url === '/bands.html' ? 'bands.html' : req.url?.split('?')[0] === '/next.html' ? 'next.html' : req.url === '/' ? 'index.html' : null;
     if (!filename) { res.writeHead(404); res.end(); return; }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(fs.readFileSync(path.join(fixtures, filename)));
@@ -684,6 +692,7 @@ try {
     await pageRecovery({ context, worker, daemon, url, blockedCount: () => blocked, pass });
     await foreignFrame({ context, worker, daemon, url, pass });
     await uploadChecks({ context, daemon, url, pass });
+    await hscrollChecks({ context, daemon, url, pass });
     }
     await browser.close();
     context = undefined;

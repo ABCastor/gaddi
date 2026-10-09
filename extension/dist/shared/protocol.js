@@ -64,6 +64,20 @@ export function versionParam(value) {
         throw new Error('version must be a short opaque string');
     return value;
 }
+// Wheel distances in CSS pixels. Shared by broker and extension, including clients that bypass MCP schemas.
+export const WHEEL_LIMIT = 100000;
+export function wheelParams(params) {
+    const wheel = {};
+    for (const key of ['dx', 'dy']) {
+        const value = params[key];
+        if (value === undefined)
+            continue;
+        if (typeof value !== 'number' || !Number.isFinite(value) || Math.abs(value) > WHEEL_LIMIT)
+            throw new Error(`${key} must be a finite number between -${WHEEL_LIMIT} and ${WHEEL_LIMIT}`);
+        wheel[key] = value;
+    }
+    return wheel;
+}
 // Shared by broker and extension, including clients that bypass MCP schemas.
 export function waitParams(params) {
     const keys = ['text', 'selector', 'url'].filter(key => params[key] !== undefined);

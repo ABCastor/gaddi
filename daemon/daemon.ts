@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { waitParams } from '../shared/protocol.ts';
+import { waitParams, wheelParams } from '../shared/protocol.ts';
 // Thin user-level broker: the extension operates the user's Chrome; this process gates and audits calls.
 import net from 'node:net';
 import type { Socket } from 'node:net';
@@ -346,8 +346,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     args.expression = requiredString(params.expression, 'expression'); check = checkEval(policy, args.expression);
   } else if (method === 'scroll') {
     if (params.selector !== undefined) args.selector = requiredString(params.selector, 'selector');
-    if (params.dy !== undefined) { if (typeof params.dy !== 'number' || !Number.isFinite(params.dy)) throw new Error('dy must be a number'); args.dy = params.dy; }
-    if ((args.selector !== undefined) === (args.dy !== undefined)) throw new Error('scroll requires either dy or selector');
+    Object.assign(args, wheelParams(params));
+    if (args.selector === undefined && args.dx === undefined && args.dy === undefined) throw new Error('scroll requires dx, dy or selector');
   } else if (method === 'screenshot') {
     if (params.fullPage !== undefined && typeof params.fullPage !== 'boolean') throw new Error('fullPage must be boolean');
     args.fullPage = params.fullPage ?? false;

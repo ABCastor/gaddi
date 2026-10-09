@@ -1,5 +1,5 @@
 import type { BrokerParams, BrokerResult, BrokerRequest } from '../shared/protocol.ts';
-import { errorMessage, isRecord, versionParam } from '../shared/protocol.ts';
+import { errorMessage, isRecord, versionParam, WHEEL_LIMIT } from '../shared/protocol.ts';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 // Stdio adapter for the tab broker. All authorization stays in the broker and approval app.
 import net from 'node:net';
@@ -31,6 +31,7 @@ const tab = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const tabs = { type: 'array', items: tab, minItems: 1, maxItems: 100 };
 const version = { ...S, maxLength: 128, pattern: '^[A-Za-z0-9_.:-]*$', description: 'Version from look/action; refuses stale.' };
 const approval = { ...S, description: 'HELD retry ID after user approval.' };
+const wheel = { type: 'number', minimum: -WHEEL_LIMIT, maximum: WHEEL_LIMIT };
 const obj = (properties: Record<string, Field>, required: string[] = []): ToolDefinition['inputSchema'] => ({ type: 'object', properties, required, additionalProperties: false });
 const tool = <M extends string>(name: string, description: string, properties: Record<string, Field> = {}, required: string[] = [], method: M = name as M, format: (result: BrokerResult<M>) => CallToolResult | Promise<CallToolResult> = plainResult): ToolDefinition => ({
   name: 'browser_' + name, description, inputSchema: obj(properties, required),
@@ -62,7 +63,7 @@ const TOOLS: ToolDefinition[] = [
   tool('signin', 'Sign in with 1Password; secrets stay hidden. Default needs_you holds for Touch ID.', { tab, item: S, approval }),
   tool('press', 'Press a key in a tab. Reports changed:true/false.', { tab, version, key: S, approval }, ['key']),
   tool('hover', 'Hover over a CSS selector. Reports changed:true/false.', { tab, version, selector: S }, ['selector']),
-  tool('scroll', 'Scroll by dy pixels or to a CSS selector. Reports changed:true/false.', { tab, version, dy: { type: 'number' }, selector: S }),
+  tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector. Reports changed:true/false.', { tab, version, dx: wheel, dy: wheel, selector: S }),
   tool('select', 'Select an option by value. Reports changed:true/false.', { tab, version, selector: S, value: S }, ['selector', 'value']),
   tool('upload', 'Attach a local file (path) to a file field, its label or a drop zone; held for approval.', { tab, version, selector: S, path: S, approval }, ['selector', 'path']),
   tool('eval', 'Evaluate JavaScript; password reads and user policy matches are denied.', { tab, expression: S }, ['expression'], 'eval', pageJSON),

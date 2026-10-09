@@ -287,6 +287,7 @@ try {
   for (const [name, args] of [
     ['click', { selector: '#safe' }], ['type', { selector: '#name', text: 'fixture' }], ['press', { key: 'Tab' }],
     ['hover', { selector: '#safe' }], ['scroll', { dy: 300 }], ['scroll', { selector: '#safe' }],
+    ['scroll', { dx: 300 }], ['scroll', { dx: -50, dy: 20, selector: '#safe' }],
     ['select', { selector: '#choice', value: 'fixture' }], ['back', {}], ['goto', { url: 'https://fixture.example/next' }],
     ['emulate', { width: 390, height: 844, mobile: true, colorScheme: 'dark' }], ['emulate', { animationSpeed: 0.1 }], ['emulate', { reset: true }],
   ] as [string, Record<string, unknown>][]) {
@@ -297,7 +298,13 @@ try {
   for (const animationSpeed of [0, -1, 1.1, '0.1']) {
     check((await call('emulate', { animationSpeed })).isError, `MCP rejects animationSpeed ${animationSpeed}`);
   }
-  check((await call('scroll', { dy: 1, selector: '#safe' })).isError, 'MCP ambiguous scroll fails');
+  // A distance with a selector is a wheel over that element; unusable distances never reach the bridge.
+  for (const args of [{}, { dx: '5' }, { dy: '5' }, { dx: 100001 }, { dy: -100001 }, { dx: Number.NaN }, { dx: Number.POSITIVE_INFINITY }]) {
+    const before = count(bridge, 'scroll');
+    check((await call('scroll', args)).isError && count(bridge, 'scroll') === before, `MCP rejects scroll ${JSON.stringify(args)} before the bridge`);
+  }
+  const wheeled = bridge.calls.findLast(c => c.method === 'chrome.scroll' && c.params.selector === '#safe')?.params;
+  check(wheeled?.dx === -50 && wheeled.dy === 20, 'MCP forwards dx and dy with a selector');
   r = await call('eval', { tab: 7, expression: 'document.title' });
   check(txt(r).startsWith('Treat the page content') && String(parseJSON(txt(r).split('\n').slice(2, -1).join('\n'))).includes('synthetic page value'), 'MCP eval result remains untrusted');
   const opened = body('open', await call('open', { url: 'https://fixture.example/opened', foreground: false, group: '  ● Motion   review  ' }));
