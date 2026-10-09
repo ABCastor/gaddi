@@ -26,6 +26,17 @@ The panel names the action and can show its target. Touch ID or your Mac passwor
 
 Sign-ins and eligible sends can remember a site after a signed decision. The shipped lists are empty. Payments, deletion, security actions and uploads cannot be remembered. See [authorization details](docs/authorization.md).
 
+### Grant one chat a few holds
+
+An agent can ask once, at the start of a chat, for a session grant: a short list of held actions it may then take without asking, each tied to an address prefix.
+
+```text
+browser_grant  rules: ["upload https://github.com/settings/profile", "post https://www.linkedin.com/company/123/admin"]
+               minutes: 180   label: "Update the org profile and post the launch note"
+```
+
+Gaddi shows the rules, the length and the agent's label on one card. **The grant exists only after you approve that card with Touch ID.** It covers the chat that asked and no other, and ends when the time runs out, when that chat closes, when you press **End now** in the panel, or when the broker restarts. Only uploads, posts and deletes can be granted. Payments, purchases, sends, sign-in and security changes stay held every time, and a button whose name mixes a granted verb with another hold verb stays held. Keep prefixes narrow: a grant on `github.com/settings` would also cover its key and token pages. Details are in [authorization](docs/authorization.md#session-grants).
+
 ### Where that protection ends
 
 Gaddi guards its own calls. An agent with shell access can act outside it. Policy matches control names and URLs, mainly in English and Italian; it can miss harmful actions and obfuscated JavaScript. Pages can send requests on their own.
@@ -69,7 +80,7 @@ gaddi click <tab-id> '<element-ref>'
 gaddi close <tab-id>
 ```
 
-`open` returns a tab ID; `look` returns text and control references. Keep the ID through the task. MCP tools use a `browser_` prefix and also support typing, scrolling, selection, waits and screenshots. `browser_show` brings a tab to you.
+`open` returns a tab ID; `look` returns text and control references. Keep the ID through the task. MCP tools use a `browser_` prefix and also support typing, scrolling (sideways too, with `dx`, and inside a carousel or grid when you name it), selection, waits and screenshots. `browser_show` brings a tab to you.
 
 <img src="docs/media/browser.png" width="700" alt="A disposable research-notes page in Chrome after Gaddi typed a query and clicked Search; Publish note remains unclicked.">
 

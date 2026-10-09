@@ -204,7 +204,8 @@ try {
     assert.deepEqual(await result('signin.remembered'), { sites: [] });
     assert.equal((await call('signin.revoke', { site, proof: revokeProof })).error?.code, 'proof-invalid');
     assert.equal((await signin()).step, 'approval');
-    assert.equal(tools.tools.some(tool => /remember|revoke|grant/.test(tool.name)), false);
+    // browser_grant only asks; the owner's signed decision in the app is what grants (tests/gates/session-grant).
+    assert.equal(tools.tools.some(tool => tool.name !== 'browser_grant' && /remember|revoke|grant/.test(tool.name)), false);
     pass('signed Always skips the next hold on its exact origin; signed Revoke restores it; unsigned RPCs and replay fail');
     const calls = fs.readFileSync(opCalls, 'utf8').trim().split('\n').map(line => JSON.parse(line) as { opEnv: string[] });
     assert.ok(calls.every(call => call.opEnv.length === 0));
