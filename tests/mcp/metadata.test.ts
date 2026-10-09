@@ -64,6 +64,12 @@ try {
   assert.deepEqual(schema('grant').properties.label, { type: 'string', maxLength: 60 }, 'ASSERT_GRANT_SCHEMA');
   assert.match(listed.tools.find(t => t.name === 'browser_grant')!.description!, /Touch ID/, 'ASSERT_GRANT_SCHEMA');
   console.log('PASS ASSERT_GRANT_SCHEMA');
+  for (const axis of ['dx', 'dy']) {
+    assert.deepEqual(schema('scroll').properties[axis], { type: 'number', minimum: -100000, maximum: 100000 }, 'ASSERT_SCROLL_SCHEMA');
+  }
+  assert.deepEqual(schema('scroll').required, [], 'ASSERT_SCROLL_SCHEMA');
+  assert.match(listed.tools.find(t => t.name === 'browser_scroll')!.description!, /dx\/dy wheel pixels \(over selector if given\), or to a selector/, 'ASSERT_SCROLL_SCHEMA');
+  console.log('PASS ASSERT_SCROLL_SCHEMA');
   const shownTab = schema('show').properties.tab; assert.ok(isRecord(shownTab)); assert.equal(shownTab.maximum, Number.MAX_SAFE_INTEGER);
   const estimate = Math.ceil(JSON.stringify(listed).length / 4);
   console.log(`MCP tools/list: ${listed.tools.length} tools, ${estimate} total estimated tokens (JSON characters / 4; limit 2500)`);

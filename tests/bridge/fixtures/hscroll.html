@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Horizontal scroll fixture</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  /* Makes the document itself scroll sideways, for a wheel that names no element. */
+  #wide { width: 3000px; height: 1px; }
+  .strip { margin: 20px; width: 300px; height: 90px; }
+  /* (a) a plain scroller: scrollLeft moves. */
+  #plain { overflow-x: auto; overflow-y: hidden; white-space: nowrap; }
+  #plain div { width: 1200px; height: 60px; background: lightblue; }
+  /* (b) a scroll-snap carousel. */
+  #snap { display: flex; overflow-x: auto; overflow-y: hidden; scroll-snap-type: x mandatory; }
+  #snap .slide { flex: 0 0 300px; height: 70px; scroll-snap-align: start; }
+  #snap .slide:nth-child(odd) { background: khaki; }
+  #snap .slide:nth-child(even) { background: lightgreen; }
+  #spacer { height: 1500px; }
+  /* (c) a wheel-driven virtual grid: overflow is hidden, scrollLeft never moves, a script listens to the wheel. */
+  #grid { overflow: hidden; position: relative; white-space: nowrap; }
+  #track { position: absolute; left: 0; top: 0; }
+  #track span { display: inline-block; width: 100px; height: 60px; border-right: 1px solid gray; }
+</style>
+<div id="wide"></div>
+<div id="plain" class="strip"><div>Plain scroller, twelve hundred pixels of content</div></div>
+<div id="snap" class="strip">
+  <div class="slide">Slide 1</div><div class="slide">Slide 2</div><div class="slide">Slide 3</div>
+  <div class="slide">Slide 4</div><div class="slide">Slide 5</div>
+</div>
+<div id="spacer"></div>
+<div id="grid" class="strip"><div id="track"></div></div>
+<script>
+  // The grid draws only the columns it shows and moves them with a transform.
+  const COLUMN = 100, COLUMNS = 40, VISIBLE = 4;
+  const grid = document.querySelector('#grid'), track = document.querySelector('#track');
+  window.gridOffset = 0;
+  // Every wheel the page receives, and which strip it landed on.
+  window.wheels = [];
+  document.addEventListener('wheel', event => {
+    window.wheels.push({ deltaX: event.deltaX, deltaY: event.deltaY, trusted: event.isTrusted,
+      target: event.target.closest?.('.strip')?.id ?? '' });
+  }, { capture: true, passive: true });
+  function render() {
+    const first = Math.floor(window.gridOffset / COLUMN);
+    track.style.left = `${first * COLUMN}px`;
+    track.style.transform = `translateX(${-window.gridOffset}px)`;
+    track.replaceChildren(...Array.from({ length: VISIBLE + 1 }, (_, i) => {
+      const cell = document.createElement('span'); cell.textContent = `Col ${first + i + 1}`; return cell;
+    }));
+  }
+  grid.addEventListener('wheel', event => {
+    event.preventDefault();
+    window.gridOffset = Math.max(0, Math.min((COLUMNS - VISIBLE) * COLUMN, window.gridOffset + event.deltaX));
+    render();
+  }, { passive: false });
+  render();
+</script>
+</html>

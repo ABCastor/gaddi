@@ -247,6 +247,26 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     while (el?.shadowRoot?.activeElement) el = el.shadowRoot.activeElement;
     return el;
   }
+  // The middle of the part of el inside the viewport, or null when the page shows something else there.
+  function centrePoint(el: PageElement) {
+    const rect = el.getBoundingClientRect();
+    const x = (Math.max(0, rect.left) + Math.min(innerWidth, rect.right)) / 2;
+    const y = (Math.max(0, rect.top) + Math.min(innerHeight, rect.bottom)) / 2;
+    let hit = document.elementFromPoint(x, y);
+    while (hit?.shadowRoot?.elementFromPoint(x, y) && hit.shadowRoot.elementFromPoint(x, y) !== hit) hit = hit.shadowRoot.elementFromPoint(x, y);
+    return hit && (hit === el || el.contains(hit)) ? { x, y } : null;
+  }
+  // The nearest element, from el upwards, that a wheel on this axis can really scroll; else the page.
+  // overflow:hidden is skipped on purpose: the wheel chains past it, so it is not where the scroll lands.
+  function scrollerFor(el: PageElement, axis: 'x' | 'y'): Element {
+    for (let node: Element | null = el; node && node !== document.body && node !== document.documentElement;
+      node = node.parentElement || (node.getRootNode() as ShadowRoot).host || null) {
+      const style = getComputedStyle(node);
+      if (axis === 'x' ? /^(?:auto|scroll|overlay)$/.test(style.overflowX) && node.scrollWidth > node.clientWidth
+        : /^(?:auto|scroll|overlay)$/.test(style.overflowY) && node.scrollHeight > node.clientHeight) return node;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
   function checkDescription(el: PageElement, enter = false) {
     /* CHECKED_DESCRIPTION_TEST_POINT */
     const checked = params.checkedDescription;
@@ -451,7 +471,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     if (activeElement() !== el) throw new Error('Sign-in refused');
     return { selector: selectorFor(el), signature: signinSignature(), combobox: false } satisfies PageResults['signinFocus'];
   }
-  if (params.version && ['describe', 'snapshot', 'pressCheck', 'scroll', 'select', 'upload', 'typeFocus', 'typeCheck', 'clickPoint', 'clickCheck', 'hoverPoint'].includes(action)
+  if (params.version && ['describe', 'snapshot', 'pressCheck', 'scroll', 'scrollPoint', 'select', 'upload', 'typeFocus', 'typeCheck', 'clickPoint', 'clickCheck', 'hoverPoint'].includes(action)
     && params.version !== pageVersion()) {
     throw Object.assign(new Error('the page changed since you looked'), { code: 'stale' });
   }
@@ -693,6 +713,21 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     return { scrolled: true, signature: before } satisfies PageResults['scroll'];
   }
+  if (action === 'scrollPosition') return { left: el.scrollLeft, top: el.scrollTop } satisfies PageResults['scrollPosition'];
+  if (action === 'scrollPoint') {
+    if (!visible(el)) throw new Error('Element is not visible');
+    // Move the page only when the element's centre cannot be reached where it is.
+    let point = centrePoint(el);
+    if (!point) {
+      el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+      point = centrePoint(el);
+    }
+    if (!point) throw new Error('Element centre is obscured');
+    // Baseline after any preparatory scroll, so only the wheel counts as change.
+    const scroller = scrollerFor(el, params.dx ? 'x' : 'y');
+    return { ...point, signature: signature(), scroller: selectorFor(scroller),
+      left: scroller.scrollLeft, top: scroller.scrollTop } satisfies PageResults['scrollPoint'];
+  }
   if (action === 'upload') {
     // The target is a file field, a label or container holding one (often hidden behind an
     // "Upload" button), or a drop zone with no field at all.
@@ -820,12 +855,9 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     if (!visible(el) || action !== 'hoverPoint' && (el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true')) throw new Error('Element is not interactable');
     el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
     const before = action === 'clickCheck' ? '' : signature();
-    const rect = el.getBoundingClientRect();
-    const x = (Math.max(0, rect.left) + Math.min(innerWidth, rect.right)) / 2;
-    const y = (Math.max(0, rect.top) + Math.min(innerHeight, rect.bottom)) / 2;
-    let hit = document.elementFromPoint(x, y);
-    while (hit?.shadowRoot?.elementFromPoint(x, y) && hit.shadowRoot.elementFromPoint(x, y) !== hit) hit = hit.shadowRoot.elementFromPoint(x, y);
-    if (!hit || (hit !== el && !el.contains(hit))) throw new Error('Element centre is obscured');
+    const point = centrePoint(el);
+    if (!point) throw new Error('Element centre is obscured');
+    const { x, y } = point;
     if (action !== 'hoverPoint') checkDescription(el);
     if (action === 'clickCheck') return { x, y } satisfies PageResults['clickCheck'];
     return { x, y, signature: before } satisfies PageResults['clickPoint' | 'hoverPoint'];

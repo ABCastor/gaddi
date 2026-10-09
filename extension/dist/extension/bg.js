@@ -1,7 +1,7 @@
 function actionErrorMessage(error) {
     return error && typeof error === 'object' && 'message' in error && typeof error.message === 'string' ? error.message : '';
 }
-import { waitParams, versionParam, hasErrorCode, isRecord } from '../shared/protocol.js';
+import { waitParams, wheelParams, versionParam, hasErrorCode, isRecord } from '../shared/protocol.js';
 import { pageTask } from './content.js';
 import { manageExtensions } from './extensions.js';
 import { createRecovery, RECOVERY_KEY } from './recovery.js';
@@ -377,6 +377,34 @@ async function afterInput(tab, before, url, scope, combobox = false) {
     }
     finally {
         clearTimeout(timer);
+    }
+}
+// A wheel scroll keeps animating after the input returns. Follow the scroller until it holds still,
+// within a small budget; a page that vanished or cannot be read simply has no position to report.
+async function settledOffset(tab, scroller, before, scope) {
+    const read = async () => {
+        const offset = await onPage(tab, 'scrollPosition', { selector: scroller }, scope.check);
+        return typeof offset.left === 'number' && typeof offset.top === 'number' ? { left: offset.left, top: offset.top } : undefined;
+    };
+    try {
+        let last = await read();
+        for (let i = 0; last && i < 8 && scope.end - Date.now() > 600; i++) {
+            await new Promise(resolve => setTimeout(resolve, 40));
+            const next = await read();
+            if (!next)
+                break;
+            const still = next.left === last.left && next.top === last.top;
+            const moved = next.left !== before.left || next.top !== before.top;
+            last = next;
+            // Still after moving: it landed. Still without moving for 5 reads: nothing there to scroll.
+            if (still && (moved || i >= 4))
+                break;
+        }
+        return last;
+    }
+    catch {
+        scope.check();
+        return undefined;
     }
 }
 // These answers mean Chrome did not send the command at all.
@@ -1041,19 +1069,33 @@ async function dispatchAction({ method, params = {} }, scope) {
                 return { ...result, selected: true, ...await afterInput(tab, before, result.url, scope) };
             });
         if (action === 'scroll') {
-            if ((params.dy !== undefined) === (params.selector !== undefined))
-                throw new Error('Supply dy or selector, exactly one');
-            if (params.selector !== undefined)
+            const { dx, dy } = wheelParams(params), wheel = dx !== undefined || dy !== undefined;
+            if (!wheel && params.selector === undefined)
+                throw new Error('Supply dx, dy or selector');
+            // A selector alone brings the element into view; it sends no wheel.
+            if (!wheel)
                 return emulatedFocus(async () => {
                     const before = await onPage(tab, 'scroll', params, check);
                     return { ...result, scrolled: true, ...await afterInput(tab, before, result.url, scope) };
                 });
-            if (typeof params.dy !== 'number' || !Number.isFinite(params.dy))
-                throw new Error('dy must be finite');
+            if (params.selector === undefined)
+                return trusted(async (send) => {
+                    const before = await onPage(tab, 'snapshot', params, check);
+                    await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 1, y: 1, deltaX: dx ?? 0, deltaY: dy ?? 0 });
+                    return { ...result, scrolled: true, ...await afterInput(tab, before, result.url, scope) };
+                });
+            // The wheel goes to whatever is under the pointer, so move the pointer onto the element first.
             return trusted(async (send) => {
-                const before = await onPage(tab, 'snapshot', params, check);
-                await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 1, y: 1, deltaX: 0, deltaY: params.dy });
-                return { ...result, scrolled: true, ...await afterInput(tab, before, result.url, scope) };
+                const target = await onPage(tab, 'scrollPoint', params, check);
+                const point = { x: target.x, y: target.y }, before = { left: target.left, top: target.top };
+                await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
+                await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: dx ?? 0, deltaY: dy ?? 0 });
+                const observed = await afterInput(tab, target, result.url, scope);
+                const after = await settledOffset(tab, target.scroller, before, scope);
+                const moved = !!after && (after.left !== before.left || after.top !== before.top);
+                // A scroller's own offset is not in the page signature, so a moved carousel counts as a change.
+                return { ...result, scrolled: true, ...observed, ...(moved ? { changed: true } : {}),
+                    ...(after ? { position: { before, after } } : {}) };
             });
         }
         if (action === 'approvalCapture')

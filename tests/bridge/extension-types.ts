@@ -1,4 +1,4 @@
-import type { ElementDescription, TabInfo, ChromeParams } from '../../shared/protocol.ts';
+import type { ElementDescription, TabInfo, ChromeParams, ScrollOffset } from '../../shared/protocol.ts';
 import { isRecord } from '../../shared/protocol.ts';
 import assert from 'node:assert/strict';
 import type { FakeDaemon } from './fake-daemon.ts';
@@ -27,7 +27,8 @@ export interface ChromeResults {
   'chrome.hover': { hovered: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string };
   'chrome.type': { typed: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string };
   'chrome.press': { pressed: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string };
-  'chrome.scroll': { scrolled: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string };
+  'chrome.scroll': { scrolled: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string;
+    position?: { before: ScrollOffset; after: ScrollOffset } };
   'chrome.select': { selected: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string };
 }
 // Decode native replies at the test transport boundary before exposing typed results.
@@ -55,9 +56,11 @@ export function isChromeResult<M extends keyof ChromeResults>(method: M, value: 
     case 'chrome.eval': return 'value' in value;
     default: {
       const fields = { 'chrome.emulate': 'emulated', 'chrome.click': 'clicked', 'chrome.hover': 'hovered', 'chrome.type': 'typed', 'chrome.press': 'pressed', 'chrome.scroll': 'scrolled', 'chrome.select': 'selected' };
+      const offset = (v: unknown) => isRecord(v) && hasFields(v, { left: 'number', top: 'number' });
       return method in fields && typeof value[fields[method as keyof typeof fields]] === 'boolean'
         && (method === 'chrome.emulate' || typeof value.changed === 'boolean' && typeof value.url === 'string'
-          && (value.navigating === undefined || typeof value.navigating === 'boolean'));
+          && (value.navigating === undefined || typeof value.navigating === 'boolean'))
+        && (value.position === undefined || isRecord(value.position) && offset(value.position.before) && offset(value.position.after));
     }
   }
 }
