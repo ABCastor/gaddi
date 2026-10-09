@@ -24,6 +24,12 @@ func headlessCheck() -> Never {
         opened = current
         // Session grants arrive inside the same approvals snapshot; naming them proves the parse.
         if !snapshot.grants.isEmpty { print("GRANTS \(snapshot.grants.map(\.id).joined(separator: ","))") }
+        // Phone approval rides along the same way: its status, which waiting requests it may answer, and what it answered.
+        if snapshot.remote.enabled || snapshot.remote.candidate != nil {
+            print("REMOTE enabled=\(snapshot.remote.enabled) candidate=\(snapshot.remote.candidate.map(shortFingerprint) ?? "none")")
+        }
+        if !snapshot.remoteApprovable.isEmpty { print("REMOTE-APPROVABLE \(snapshot.remoteApprovable.sorted().joined(separator: ","))") }
+        for decision in snapshot.remoteDecisions { print("REMOTE-ANSWERED \(decision.line)") }
         fflush(stdout)
     }
     model.onPending = { approval in

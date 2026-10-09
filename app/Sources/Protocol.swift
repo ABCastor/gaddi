@@ -20,6 +20,13 @@ func displayTime(_ date: Date) -> String {
     formatter.timeStyle = .short
     return formatter.string(from: date)
 }
+/// A standing choice can be days old, so it says the day as well.
+func displayDayAndTime(_ date: Date) -> String {
+    let formatter = DateFormatter()
+    formatter.dateStyle = .medium
+    formatter.timeStyle = .short
+    return formatter.string(from: date)
+}
 
 struct ApprovalBox: Equatable {
     let x: Double
@@ -124,14 +131,64 @@ struct SessionGrant: Equatable {
     /// Canonical rules, e.g. "upload https://github.com/settings".
     let rules: [String]
     let expiresAt: Date
+    /// "remote" when the owner's other device approved it; nil when he did with Touch ID.
+    let approver: String?
     init?(_ object: JSONObject) {
         guard let id = string(object["id"]), !id.isEmpty, let rules = object["rules"] as? [String], !rules.isEmpty,
               let expiresAt = instant(object["expiresAt"]) else { return nil }
         self.id = id; self.rules = rules; self.expiresAt = expiresAt
         caller = object["caller"] as? String ?? "unknown"
         label = (object["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }
+        approver = (object["approver"] as? String).flatMap { $0 == "remote" ? $0 : nil }
     }
     var expired: Bool { expiresAt <= Date() }
+}
+
+/// A key fingerprint is the sha256 of the key in DER form: 64 lowercase hex digits. Anything else is never shown or signed.
+func isKeyFingerprint(_ value: String) -> Bool {
+    value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
+}
+/// The first sixteen digits in groups of four: what the owner compares with what his phone approver shows him.
+func shortFingerprint(_ value: String) -> String {
+    let digits = Array(value.prefix(16))
+    return stride(from: 0, to: digits.count, by: 4).map { String(digits[$0..<min($0 + 4, digits.count)]) }.joined(separator: " ")
+}
+/// What Touch ID signs to turn the phone approver on: the exact key, named by its full fingerprint, and the time.
+func remoteEnableMessage(fingerprint: String, timestamp: Int64) throws -> String {
+    guard isKeyFingerprint(fingerprint) else { throw AppError("Invalid key fingerprint") }
+    return "remote.enable|\(fingerprint)|\(timestamp)"
+}
+
+/// Approving some requests from the owner's other device (a program of his, such as a Telegram bot). Off unless he
+/// turned it on here with Touch ID. `candidate` is the key that program left for Gaddi: it authorizes nothing until
+/// he turns it on.
+struct RemoteStatus: Equatable {
+    var enabled = false
+    var fingerprint: String?
+    var enabledAt: Date?
+    var candidate: String?
+    init() {}
+    init?(_ object: JSONObject) {
+        guard let enabled = object["enabled"] as? Bool else { return nil }
+        self.enabled = enabled
+        // A fingerprint the app cannot read as one is dropped, never shown: a damaged key must not look trusted.
+        fingerprint = (object["fingerprint"] as? String).flatMap { isKeyFingerprint($0) ? $0 : nil }
+        enabledAt = instant(object["enabledAt"])
+        candidate = ((object["candidate"] as? JSONObject)?["fingerprint"] as? String).flatMap { isKeyFingerprint($0) ? $0 : nil }
+    }
+}
+
+/// One request the owner's other device answered, as the panel lists it.
+struct RemoteDecision: Equatable {
+    let approval: Approval
+    let approved: Bool
+    let at: Date
+    init?(_ object: JSONObject) {
+        guard object["by"] as? String == "remote", let status = object["status"] as? String,
+              ["granted", "used", "denied"].contains(status), let approval = Approval(object),
+              let at = instant(object["decidedAt"] ?? object["resolvedAt"]) else { return nil }
+        self.approval = approval; self.approved = status != "denied"; self.at = at
+    }
 }
 
 struct Snapshot: Equatable {
@@ -139,6 +196,11 @@ struct Snapshot: Equatable {
     var rememberedSignins: [String] = []
     var rememberedSends: [SendPermission] = []
     var grants: [SessionGrant] = []
+    var remote = RemoteStatus()
+    /// The waiting approvals the owner's other device may also answer.
+    var remoteApprovable = Set<String>()
+    /// The last answers that device gave, newest first.
+    var remoteDecisions: [RemoteDecision] = []
 }
 
 /// Visibility follows authoritative pending snapshots, never notification delivery.
@@ -215,6 +277,21 @@ final class BrowserModel {
                 guard parsed.count == objects.count else { throw AppError("Daemon returned an invalid session grant") }
                 next.grants = parsed.filter { !$0.expired }.sorted { ($0.expiresAt, $0.id) < ($1.expiresAt, $1.id) }
             }
+            // Approving from the owner's other device has its own status. A broker that does not know the call is
+            // simply older, and nothing is on. Any other failure, and a malformed answer, is an error: a switch the
+            // owner cannot see is authority he cannot end, so the panel must not guess "off".
+            do {
+                let answer = try client.call("remote.status")
+                guard let status = RemoteStatus(answer) else { throw AppError("Daemon returned an invalid phone approval status") }
+                next.remote = status
+            } catch {
+                if !error.localizedDescription.contains("unknown method") { throw error }
+            }
+            next.remoteApprovable = Set(approvalRows.filter { $0["status"] as? String == "pending" && $0["remote"] as? Bool == true }
+                .compactMap { string($0["id"]) })
+            // A request that was granted stays in the waiting list until its agent retries, so both lists are read.
+            let answered = ((approvals["recent"] as? [JSONObject]) ?? []) + approvalRows
+            next.remoteDecisions = Array(answered.compactMap(RemoteDecision.init).sorted { $0.at > $1.at }.prefix(10))
             // Granted records remain in the broker queue until consumed, but need no further human decision.
             next.approvals = approvalRows.filter { $0["status"] as? String == "pending" }.compactMap(Approval.init)
                 .filter { !$0.expired }.sorted { $0.id < $1.id }
@@ -231,7 +308,7 @@ final class BrowserModel {
         let data = event["data"] as? JSONObject ?? event
         onEvent?(name, data)
         switch name {
-        case "approval.pending", "approval.resolved", "signin.remembered", "sends.remembered", "grants.changed":
+        case "approval.pending", "approval.resolved", "signin.remembered", "sends.remembered", "grants.changed", "remote.changed":
             refresh()
         default: break
         }

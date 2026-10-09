@@ -266,7 +266,8 @@ enum ApprovalWords {
 
 /// One held action: what the agent wants, where, what it looks like, and the decision.
 final class ApprovalCard: NSStackView {
-    init(_ approval: Approval, enabled: Bool, decide: @escaping (String) -> Void) {
+    /// `remote` is true while the owner's other device may also answer this request; the card then says so.
+    init(_ approval: Approval, enabled: Bool, remote: Bool = false, decide: @escaping (String) -> Void) {
         super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 0
         let words = ApprovalWords.title(approval)
@@ -299,6 +300,8 @@ final class ApprovalCard: NSStackView {
         let because = NSTextField(wrappingLabelWithString: ApprovalWords.reason(approval.reason))
         because.font = Typeface.interface(13); because.textColor = Palette.inkSoft
         because.setAccessibilityHelp(approval.reason)
+        let phone = NSTextField(wrappingLabelWithString: "Can also be approved from your phone.")
+        phone.font = Typeface.interface(13); phone.textColor = Palette.machine
 
         let deny = PanelButton("Deny", kind: .secondary) { decide("deny") }
         let approve = PanelButton(approval.canRemember ? "Allow once" : "Approve with Touch ID", kind: .primary, symbol: "touchid") { decide("grant") }
@@ -313,7 +316,8 @@ final class ApprovalCard: NSStackView {
             picture.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
             picture.constrainHeight()
         }
-        addArrangedSubview(because); setCustomSpacing(22, after: because)
+        addArrangedSubview(because); setCustomSpacing(remote ? 6 : 22, after: because)
+        if remote { addArrangedSubview(phone); setCustomSpacing(22, after: phone) }
         addArrangedSubview(actions)
         if approval.canRemember {
             // The image-bearing NSButton extends one point below its alignment rectangle.
@@ -325,6 +329,7 @@ final class ApprovalCard: NSStackView {
             row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         for view in [heading, meta, because, actions] { view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
+        if remote { phone.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 }
@@ -376,6 +381,7 @@ extension SessionGrant {
     var summary: String {
         var lines = ["\(caller) · until \(displayTime(expiresAt))"] + rules.map(ApprovalWords.rule)
         if let label { lines.append("Described by the agent as: “\(label)”") }
+        if approver == "remote" { lines.append("Approved from your phone") }
         return lines.joined(separator: "\n")
     }
 }
@@ -390,9 +396,63 @@ extension RememberedPermissionList where Item == SessionGrant {
     }
 }
 
+extension RemoteDecision {
+    /// One line of "answered from your phone": "Approved from phone: codex click “Post” on example.com, 14:02".
+    var line: String {
+        let words = ApprovalWords.title(approval)
+        // A session grant's place is a list of rules, which does not belong in one line.
+        let place = approval.kind == "grant" ? "" : " " + ApprovalWords.place(approval)
+        return "\(approved ? "Approved" : "Denied") from phone: \(approval.caller) \(words.verb) \(words.object)\(place), \(displayTime(at))"
+    }
+}
+
+/// "Approvals from your phone": what the switch allows, what it never allows, the one honest limit, and the switch
+/// itself. Turning it on needs Touch ID; turning it off only removes authority, so it needs none.
+final class RemotePanel: NSStackView {
+    static let title = "Approvals from your phone"
+    init(_ status: RemoteStatus, decisions: [RemoteDecision], canTurnOn: Bool, canTurnOff: Bool,
+         turnOn: @escaping () -> Void, turnOff: @escaping () -> Void) {
+        super.init(frame: .zero)
+        orientation = .vertical; alignment = .leading; spacing = 12
+        let heading = NSTextField(labelWithString: RemotePanel.title)
+        heading.font = Typeface.heading(18); heading.textColor = Palette.ink
+        addArrangedSubview(heading)
+        if status.enabled {
+            let since = status.enabledAt.map { ", since \(displayDayAndTime($0))" } ?? ""
+            let key = status.fingerprint.map(shortFingerprint) ?? "unknown"
+            addLine("On\(since). It answers to the key \(key). Requests it can answer say so on their card.", color: Palette.ink)
+            let off = PanelButton("Turn off", kind: .secondary) { turnOff() }
+            off.isEnabled = canTurnOff
+            addArrangedSubview(off)
+        } else {
+            addLine("Off. Turn it on to approve uploads, posts and deletes on the pages an agent names, and session grants of up to 2 hours, from your phone.")
+            addLine("Payments, purchases, sign-in, security pages and sending messages always need Touch ID on this Mac.")
+            addLine("The limit: a program running as you on this Mac that can read the phone approver's key could approve these requests too.")
+            addLine(status.candidate.map { "A key from your phone approver is waiting: \(shortFingerprint($0)). Check that your phone approver shows the same digits." }
+                ?? "No key from a phone approver has been found yet.", color: Palette.ink)
+            let on = PanelButton("Turn on…", kind: .primary, symbol: "touchid") { turnOn() }
+            on.isEnabled = canTurnOn && status.candidate != nil
+            addArrangedSubview(on)
+        }
+        if !decisions.isEmpty {
+            addLine("Answered from your phone", color: Palette.ink)
+            for decision in decisions { addLine(decision.line) }
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+    private func addLine(_ text: String, color: NSColor = Palette.inkSoft) {
+        let field = NSTextField(wrappingLabelWithString: text)
+        field.font = Typeface.interface(13); field.textColor = color; field.isSelectable = true
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        addArrangedSubview(field)
+        field.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+    }
+}
+
 /// The same pending-action body serves the live panel and the offscreen harness.
 final class ApprovalList: NSStackView {
-    init(_ approvals: [Approval], enabled: Bool, decide: @escaping (Approval, String) -> Void) {
+    /// `remote` holds the ids of the waiting requests the owner's other device may also answer.
+    init(_ approvals: [Approval], enabled: Bool, remote: Set<String> = [], decide: @escaping (Approval, String) -> Void) {
         super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 28
         func add(_ view: NSView) {
@@ -405,7 +465,7 @@ final class ApprovalList: NSStackView {
         }
         for (index, approval) in approvals.enumerated() {
             if index > 0 { add(PanelRule()) }
-            add(ApprovalCard(approval, enabled: enabled && !approval.expired) { decide(approval, $0) })
+            add(ApprovalCard(approval, enabled: enabled && !approval.expired, remote: remote.contains(approval.id)) { decide(approval, $0) })
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }

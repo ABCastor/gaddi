@@ -35,7 +35,11 @@ browser_grant  rules: ["upload https://github.com/settings/profile", "post https
                minutes: 180   label: "Update the org profile and post the launch note"
 ```
 
-Gaddi shows the rules, the length and the agent's label on one card. **The grant exists only after you approve that card with Touch ID.** It covers the chat that asked and no other, and ends when the time runs out, when that chat closes, when you press **End now** in the panel, or when the broker restarts. Only uploads, posts and deletes can be granted. Payments, purchases, sends, sign-in and security changes stay held every time, and a button whose name mixes a granted verb with another hold verb stays held. Keep prefixes narrow: a grant on `github.com/settings` would also cover its key and token pages. Details are in [authorization](docs/authorization.md#session-grants).
+Gaddi shows the rules, the length and the agent's label on one card. **The grant exists only after you approve that card**, with Touch ID, or from your phone if you turned that on (below). It covers the chat that asked and no other, and ends when the time runs out, when that chat closes, when you press **End now** in the panel, or when the broker restarts. Only uploads, posts and deletes can be granted. Payments, purchases, sends, sign-in and security changes stay held every time, and a button whose name mixes a granted verb with another hold verb stays held. Keep prefixes narrow: a grant on `github.com/settings` would also cover its key and token pages. Details are in [authorization](docs/authorization.md#session-grants).
+
+### Approve from your phone (off by default)
+
+A local bot on your Mac, such as a Telegram bot, can answer the same small set of requests from your phone: uploads, posts and deletes on pages that are not protected, and session grants of up to two hours. You turn it on once in Gaddi's panel with Touch ID, which trusts one Ed25519 key the bot published; anyone can turn it off, from the panel, `gaddi remote off` or the bot. Each phone answer is signed, bound to one request and usable once, and the panel lists recent ones. Payments, purchases, sign-in, security pages and sending messages stay Touch ID only. The bot's key is a file your user account can read, so another program running as you could approve these requests too; that is why the scope stays small. The contract is in [authorization](docs/authorization.md#approvals-from-another-device).
 
 ### Where that protection ends
 

@@ -3,7 +3,7 @@
 // mutation in tests/policy/grants.falsify.ts; the broker wiring around these rules is tested in
 // tests/gates/session-grant.test.sh.
 import assert from 'node:assert/strict';
-import { checkGrant, createGrants, durationText, grantDetail, isGrantSpec, parseGrantRequest, parseGrantRules, permissionFor, ruleString } from '../../daemon/grants.ts';
+import { checkGrant, createGrants, durationText, grantDetail, isGrantSpec, parseGrantRequest, parseGrantRules, permissionFor, remoteWaivable, ruleString } from '../../daemon/grants.ts';
 import type { Grant, GrantScope } from '../../daemon/grants.ts';
 import { loadPolicy } from '../../daemon/policy.ts';
 import type { Policy, PolicyCheck } from '../../daemon/policy.ts';
@@ -237,6 +237,40 @@ check('ASSERT_GRANT_FINAL', () => {
   assert.equal(unknown.outcome, 'hold', 'an unknown reason stays held');
 });
 
+// ---------------------------------------------------------------- remote approval asks the same question
+// daemon/remote.ts lets the owner's other device answer a hold only if a session grant covering the whole site
+// could waive it. It shares the scan with checkGrant, so the answer cannot be wider.
+check('ASSERT_GRANT_REMOTE', () => {
+  const ask = (page: string, reason: string, scope: GrantScope, using: Policy = policy) => remoteWaivable(using, page, hold(reason), scope);
+  for (const [page, reason, scope] of [
+    [ACCOUNT, 'upload of a local file', upload], [`${ACCOUNT}/profile?tab=1#x`, 'upload of a local file', upload],
+    [ACCOUNT, 'verb:post', click('Post')], [ACCOUNT, 'verb:delete', click('Delete')], [ACCOUNT, 'enter-submits:post', enter('Post')],
+    [ACCOUNT, 'verb:post', click('Post', `${ACCOUNT}/next`)], [ACCOUNT, 'verb:post', click('Post', `${ACCOUNT}#section`)],
+  ] as const) assert.equal(ask(page, reason, scope), true, `${reason} on ${page}`);
+  for (const [page, reason, scope] of [
+    [ACCOUNT, 'verb:pay now', click('Pay now')], [ACCOUNT, 'verb:send', click('Send')], [ACCOUNT, 'verb:buy', click('Buy')],
+    [ACCOUNT, 'verb:post', click('Post and pay')], [ACCOUNT, 'verb:delete', click('Delete and send')], [ACCOUNT, 'enter-submits:post', enter('Post and pay')],
+    [ACCOUNT, 'verb:post', click('Post', 'https://elsewhere.example/account')], [ACCOUNT, 'verb:post', click('Post', `${ACCOUNT}/checkout`)],
+    ['https://shop.example/checkout', 'upload of a local file', upload], [`${ACCOUNT}?next=/checkout`, 'upload of a local file', upload],
+    ['https://mail.google.com/mail', 'upload of a local file', upload],
+    [ACCOUNT, 'key:Meta+Enter on mail.google.com', enter('')], [ACCOUNT, 'url-pattern:/checkout', click('Read more')],
+    [ACCOUNT, 'sign-in needs owner approval', click('Sign in')], [ACCOUNT, 'disable Chrome extension', click('Disable')],
+  ] as const) assert.equal(ask(page, reason, scope), false, `${reason} on ${page}`);
+  // A page no grant rule could name is never answerable from another device: both are held to the same table.
+  for (const [page, namable] of [['https://shop.example/account', true], ['http://localhost:3000/app', true], ['http://127.0.0.1:8080/app', true],
+    ['http://shop.example/account', false], ['https://user:pw@shop.example/account', false], ['file:///tmp/account', false]] as const) {
+    assert.equal(ask(page, 'upload of a local file', upload), namable, `${page} for remote approval`);
+    let named = true;
+    try { parseGrantRules([`upload ${page}`], policy); } catch { named = false; }
+    assert.equal(named, namable, `${page} as a grant rule`);
+  }
+  assert.equal(remoteWaivable(policy, ACCOUNT, { outcome: 'allow', reason: 'ok' }, click('Post')), false, 'only a hold is ever waived');
+  assert.equal(remoteWaivable(policy, ACCOUNT, { outcome: 'deny', reason: 'verb:post' }, click('Post')), false, 'and a deny never');
+  // An overlay that thins the verb list cannot make "Post and pay" look like "Post".
+  const thin: Policy = { ...policy, hold: { ...policy.hold, verbs: ['post'] } };
+  assert.equal(ask(ACCOUNT, 'verb:post', click('Post and pay'), thin), false);
+});
+
 // ---------------------------------------------------------------- the store: who holds a grant, and how it ends
 function store(minuteMs = 1000) {
   const clock = { now: NOW }, events: [string, unknown][] = [], audits: Record<string, unknown>[] = [];
@@ -331,6 +365,19 @@ check('ASSERT_GRANT_AUDIT_FAILURE', () => {
   assert.equal(logged.length, 1, 'and says so in the log');
   assert.throws(() => grants.activate({ session: 'session:a', caller: 'agent', rules: rulesA, minutes: 5 }), /disk full/, 'a start that cannot be audited does not happen');
   assert.equal(grants.active('session:a').length, 0);
+  grants.stop();
+});
+
+check('ASSERT_GRANT_APPROVER', () => {
+  const { grants, audits } = store();
+  const touch = grants.activate({ session: 'session:a', caller: 'agent', rules: rulesA, minutes: 5 });
+  const remote = grants.activate({ session: 'session:b', caller: 'agent', rules: rulesA, minutes: 5, approver: 'remote' });
+  assert.equal(touch.approver, undefined); assert.equal(remote.approver, 'remote');
+  const listed = grants.list();
+  assert.equal(listed.find(g => g.id === touch.id)?.approver, undefined, 'a Touch ID grant lists no approver');
+  assert.equal(listed.find(g => g.id === remote.id)?.approver, 'remote', 'a remote one says so');
+  assert.equal(audits.find(a => a.method === 'grant.start' && a.grant === touch.id)?.approver, undefined);
+  assert.equal(audits.find(a => a.method === 'grant.start' && a.grant === remote.id)?.approver, 'remote', 'and so does its start');
   grants.stop();
 });
 

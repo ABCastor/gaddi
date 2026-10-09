@@ -66,6 +66,19 @@ const mutations: Mutation[] = [
     old: String.raw`const path = url.pathname.length > 1 ? url.pathname.replace(/\/+$/, '') : '/';`, replacement: 'const path = url.pathname;' },
   { name: 'ORDER', assertion: 'ASSERT_GRANT_RULES',
     old: 'return [...unique].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, rule]) => rule);', replacement: 'return [...unique].map(([, rule]) => rule);' },
+  // Remote approval asks the same question as a session grant, without one.
+  { name: 'REMOTE_ANY', assertion: 'ASSERT_GRANT_REMOTE',
+    old: "return waive((_needed, target) => grantableAddress(target) ? EVERYTHING : undefined, policy, pageURL, check, scope).outcome === 'allow';",
+    replacement: 'return true;' },
+  { name: 'REMOTE_ADDRESS', assertion: 'ASSERT_GRANT_REMOTE', old: 'grantableAddress(target) ? EVERYTHING : undefined', replacement: 'EVERYTHING' },
+  { name: 'REMOTE_ADDRESS_USER', assertion: 'ASSERT_GRANT_REMOTE', old: ' && !url.username && !url.password;', replacement: ';' },
+  { name: 'REMOTE_HOLD', assertion: 'ASSERT_GRANT_REMOTE', old: "if (check.outcome !== 'hold') return false;", replacement: '' },
+  { name: 'APPROVER_RECORD', assertion: 'ASSERT_GRANT_APPROVER',
+    old: '...(spec.approver ? { approver: spec.approver } : {}),', replacement: '' },
+  { name: 'APPROVER_LIST', assertion: 'ASSERT_GRANT_APPROVER',
+    old: ' ...(grant.approver ? { approver: grant.approver } : {}),\n    mine:', replacement: ' mine:' },
+  { name: 'APPROVER_AUDIT', assertion: 'ASSERT_GRANT_APPROVER',
+    old: '...(grant.approver ? { approver: grant.approver } : {}),\n      rules: grant.rules.map(ruleString)', replacement: 'rules: grant.rules.map(ruleString)' },
 ];
 
 fs.mkdirSync(path.join(repo, 'tests/.state'), { recursive: true });

@@ -17,6 +17,7 @@ import { signinSite, listLogins, chooseLogin, runSignin } from '../../daemon/sig
 import { createSigninSecrets } from '../../daemon/signin-secrets.ts';
 import { wakeApprovalApp } from '../../daemon/approval-wake.ts';
 import { createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString } from '../../daemon/grants.ts';
+import { createRemote } from '../../daemon/remote.ts';
 import { readBrowser } from '../../mcp/reader.ts';
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gaddi-signin-output-'));
@@ -61,7 +62,7 @@ const context = vm.createContext({
   console: { error: () => {} }, setInterval: () => ({ unref: () => {} }), clearInterval: () => {},
   loadPolicy, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf,
   createApprovals, GateError, approvalRef, cleanURL, cleanDetail, createProofVerifier, approvalMessage,
-  createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString,
+  createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString, createRemote,
   readUpload, UPLOAD_CHUNK, signinSite, listLogins, chooseLogin, runSignin, createSigninSecrets,
   createBridge: () => bridge, isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, waitParams,
   wakeApprovalApp: (pending: readonly unknown[]) => wakeApprovalApp(pending, { launcher: '/usr/bin/true' }),

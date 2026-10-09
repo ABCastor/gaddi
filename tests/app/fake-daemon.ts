@@ -12,10 +12,16 @@ const mode = process.env.GADDI_FAKE_MODE || 'normal';
 const record = process.env.GADDI_FAKE_RECORD;
 let subscriptions = 0;
 const connections = new Set<net.Socket>();
-const approval = (id: string, caller = 'Café task') => ({ id, kind: 'click', tab: 42, caller,
+const approval = (id: string, caller = 'Café task', remote = false) => ({ id, kind: 'click', tab: 42, caller,
   url: 'https://example.test/cart', detail: 'click Pay café', reason: 'checkout action',
-  status: 'pending', expiresAt: new Date(Date.now() + 600_000).toISOString() });
-const pending = [approval('existing', 'Already pending')];
+  status: 'pending', expiresAt: new Date(Date.now() + 600_000).toISOString(), ...(remote ? { remote: true } : {}) });
+// The first waiting request is one the owner's other device may also answer, as the real broker flags it.
+const pending = [approval('existing', 'Already pending', true)];
+// Phone approval: off, with a key waiting; and one request it answered earlier.
+const fingerprint = 'abcdef0123456789'.repeat(4);
+const answered = { id: 'answered1', kind: 'click', tab: 42, caller: 'Marcus task', url: 'https://example.test/shop', detail: 'Post',
+  reason: 'verb:post', status: 'used', by: 'remote', createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 600_000).toISOString(),
+  decidedAt: new Date().toISOString(), resolvedAt: new Date().toISOString(), usedAt: new Date().toISOString() };
 // One active session grant rides along with every approvals snapshot, as the real broker sends it.
 const grants = [{ id: 'g1', caller: 'Café task', label: 'Update the profile', rules: ['upload https://example.test/profile'],
   createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3_600_000).toISOString(), mine: false }];
@@ -83,7 +89,9 @@ const server = net.createServer(socket => {
       } else if (method === 'approvals.list') {
         if (mode === 'snapshot-error' && Date.now() - started < 2000) {
           socket.end(JSON.stringify({ id, error: { message: 'transient snapshot failure' } }) + '\n');
-        } else { reply(socket, id, { pending, recent: [], grants }); }
+        } else { reply(socket, id, { pending, recent: [answered], grants }); }
+      } else if (method === 'remote.status') {
+        reply(socket, id, { enabled: false, candidate: { fingerprint } });
       } else if (method === 'sends.remembered') {
         reply(socket, id, { rules: [] });
       } else if (method === 'signin.remembered') {

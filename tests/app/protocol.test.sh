@@ -37,6 +37,9 @@ for line in \
   'NOTIFICATION Café task wants to click “click Pay café”' \
   'APPROVAL a1 kind=click tab=42 detail=click Pay café reason=checkout action' \
   'GRANTS g1' \
+  'REMOTE enabled=false candidate=abcd ef01 2345 6789' \
+  'REMOTE-APPROVABLE existing' \
+  'REMOTE-ANSWERED Approved from phone: Marcus task click “Post” on example.test/shop, ' \
   'EVENT approval.resolved' \
   'RESOLVED approval=a1' \
   'RESOLVED approval=existing' \
@@ -47,10 +50,10 @@ node - "$GADDI_FAKE_RECORD" <<'NODE'
 const fs = require('node:fs');
 const rows = fs.readFileSync(process.argv[2], 'utf8').trim().split('\n').map(JSON.parse);
 if (rows.filter(x => x.method === 'events.subscribe').length < 2) throw Error('No reconnect');
-for (const method of ['approvals.list', 'signin.remembered', 'sends.remembered']) {
+for (const method of ['approvals.list', 'signin.remembered', 'sends.remembered', 'remote.status']) {
   if (rows.filter(x => x.method === method).length < 2) throw Error(`No refresh for ${method}`);
 }
-if (rows.some(x => !['events.subscribe', 'approvals.list', 'signin.remembered', 'sends.remembered'].includes(x.method) && !x.method?.startsWith('test.') && !x.subscriptions)) throw Error('App called an unsupported or mutating method');
+if (rows.some(x => !['events.subscribe', 'approvals.list', 'signin.remembered', 'sends.remembered', 'remote.status'].includes(x.method) && !x.method?.startsWith('test.') && !x.subscriptions)) throw Error('App called an unsupported or mutating method');
 NODE
 echo 'PASS app events: existing approvals, Unicode/fragmented events, resolution and reconnect recovery'
 cleanup

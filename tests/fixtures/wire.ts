@@ -2,14 +2,21 @@ import assert from 'node:assert/strict';
 import { isRecord, isBrokerResult, isTabInfo, parseJSON } from '../../shared/protocol.ts';
 import type { BrokerResult, Reply, TabInfo, ChromeRequest } from '../../shared/protocol.ts';
 import type { ApprovalRecord } from '../../daemon/approvals.ts';
-export type PublicApproval = Omit<ApprovalRecord, 'actionHash' | 'grant'>;
+// `remote` and `digest` appear only while the owner's other device may answer the request (remote approval).
+export type PublicApproval = Omit<ApprovalRecord, 'actionHash' | 'grant'> & { remote?: boolean; digest?: string };
 // An active session grant as the broker lists it: never the chat's session key, only whether it is the asker's own.
-export interface PublicGrant { id: string; caller: string; label: string | null; rules: string[]; createdAt: string; expiresAt: string; mine: boolean }
+// `approver` is present only when the owner's other device approved it.
+export interface PublicGrant { id: string; caller: string; label: string | null; rules: string[]; createdAt: string; expiresAt: string; mine: boolean; approver?: 'remote' }
+// What remote.status, remote.enable and remote.disable answer.
+export interface RemoteState { enabled: boolean; fingerprint?: string; enabledAt?: string; candidate: { fingerprint: string } | null }
 export interface AuditEntry { method: string; outcome: string; caller: string; tab: number | null; url: string; changed?: boolean; tabs?: { tab: number; url: string }[]; grant?: string; reason?: string; rules?: string[]; expiresAt?: string }
 interface ExtraResults {
   'approvals.list': { pending: PublicApproval[]; recent: PublicApproval[]; grants: PublicGrant[] };
   approvals: { pending: PublicApproval[]; recent: PublicApproval[]; grants: PublicGrant[] };
   'audit.tail': { entries: AuditEntry[] };
+  'remote.status': RemoteState;
+  'remote.enable': RemoteState;
+  'remote.disable': RemoteState;
   'bridge.status': { connected: boolean };
   status: { version: number };
   eval: { value: unknown };
@@ -21,12 +28,13 @@ interface ExtraResults {
 export type TestResult<M extends string> = M extends keyof ExtraResults ? ExtraResults[M] : BrokerResult<M>;
 export function isApproval(a: unknown): a is PublicApproval {
  return isRecord(a) && ['id','kind','caller','url','detail','reason','status','createdAt','expiresAt'].every(k => typeof a[k] === 'string')
-  && (a.tab === null || typeof a.tab === 'number') && ['resolvedAt','by','usedAt','imagePath','targetSelector'].every(k => a[k] === undefined || typeof a[k] === 'string')
+  && (a.tab === null || typeof a.tab === 'number') && ['resolvedAt','by','decidedAt','usedAt','imagePath','targetSelector','digest'].every(k => a[k] === undefined || typeof a[k] === 'string')
+  && (a.remote === undefined || a.remote === true)
   && (a.box === undefined || isRecord(a.box) && ['x','y','width','height'].every(k => isRecord(a.box) && typeof a.box[k] === 'number' && Number.isFinite(a.box[k])));
 }
 function isGrantView(g: unknown): g is PublicGrant {
  return isRecord(g) && ['id','caller','createdAt','expiresAt'].every(k => typeof g[k] === 'string')
-  && (g.label === null || typeof g.label === 'string') && typeof g.mine === 'boolean'
+  && (g.label === null || typeof g.label === 'string') && typeof g.mine === 'boolean' && (g.approver === undefined || g.approver === 'remote')
   && Array.isArray(g.rules) && g.rules.every(rule => typeof rule === 'string')
   && !Object.hasOwn(g, 'session');
 }
@@ -42,6 +50,9 @@ function isTestResult<M extends string>(method: M, value: unknown): value is Tes
   case 'approvals.list': case 'approvals': return isRecord(value) && Array.isArray(value.pending) && value.pending.every(isApproval) && Array.isArray(value.recent) && value.recent.every(isApproval)
    && Array.isArray(value.grants) && value.grants.every(isGrantView);
   case 'audit.tail': return isRecord(value) && Array.isArray(value.entries) && value.entries.every(isAudit);
+  case 'remote.status': case 'remote.enable': case 'remote.disable': return isRecord(value) && typeof value.enabled === 'boolean'
+   && (value.fingerprint === undefined || typeof value.fingerprint === 'string') && (value.enabledAt === undefined || typeof value.enabledAt === 'string')
+   && (value.candidate === null || isRecord(value.candidate) && typeof value.candidate.fingerprint === 'string');
   case 'bridge.status': return isRecord(value) && typeof value.connected === 'boolean';
   case 'status': return isRecord(value) && typeof value.version === 'number';
   case 'eval': return isRecord(value) && Object.hasOwn(value, 'value');

@@ -9,6 +9,10 @@
 //     the owner saw. Nothing an agent or a page says can create one.
 //  3. A grant belongs to one chat (its session key). A CLI call or another chat never uses it.
 //  4. Grants live in memory only. A restart ends them all: authority is never read back from disk.
+//  5. Remote approval (remote.ts) asks the owner's other device the same question a grant answers, through
+//     the same scan (`waive` below), so it can never waive more than a grant could. It only ever adds a
+//     decision on one request the owner could have approved himself; it creates no standing authority
+//     except through the owner's own grant request, which it may approve for at most two hours.
 import crypto from 'node:crypto';
 import { isRecord } from '../shared/protocol.ts';
 import { UPLOAD_HOLD, fold, hostOf, phraseIn, protections, rx } from './policy.ts';
@@ -17,7 +21,8 @@ import type { Policy, PolicyCheck } from './policy.ts';
 export type GrantPermission = 'upload' | 'post' | 'delete';
 export interface GrantRule { permission: GrantPermission; origin: string; path: string }
 export interface GrantSpec { session: string; rules: GrantRule[]; minutes: number; label?: string }
-export interface Grant extends GrantSpec { id: string; caller: string; createdAt: number; expiresAt: number }
+// `approver` is set only when the owner answered from another device (remote.ts); a Touch ID grant has none.
+export interface Grant extends GrantSpec { id: string; caller: string; createdAt: number; expiresAt: number; approver?: 'remote' }
 export type GrantCheck = PolicyCheck & { grant?: string };
 export interface GrantScope { kind: 'click' | 'press' | 'upload'; name?: string; destination?: string }
 export type GrantEnd = 'expired' | 'session-ended' | 'revoked';
@@ -142,22 +147,24 @@ function protectedAddress(policy: Policy, url: URL) {
   return patterns.some(pattern => rx(pattern)?.test(url.href)) || hosts.some(host => rx(host)?.test(hostOf(url.href)));
 }
 
+// Which rule set, if any, covers `needed` at `target`. A session grant answers from its own rules; remote
+// approval (below) answers "yes, anywhere" because the owner decides that one request by hand.
+type Cover = (needed: GrantPermission, target: URL) => { id: string } | undefined;
+
 // Turns a hold into an allow only when every one of these holds; otherwise the hold is returned untouched.
 // A deny is never changed, and with policy off nothing is held, so nothing here can add authority.
 //  - the hold maps to a permission in the tables above (invariant 1);
-//  - this chat has an unexpired grant with a rule of that permission covering the page (invariant 3 is
-//    the caller's job: it passes only the calling chat's own grants, none for a CLI call);
+//  - the cover has a rule of that permission covering the page (invariant 3 is the caller's job: a session
+//    grant passes only the calling chat's own grants, none for a CLI call);
 //  - the page is not a protected address;
-//  - every hold verb in the full accessible name maps to a permission granted on this page, so
+//  - every hold verb in the full accessible name maps to a permission covered on this page, so
 //    "Post and pay" stays held even though "post" alone would be waived;
-//  - a link's destination is on the same site, inside a granted prefix of the same permission, and not protected.
-export function checkGrant(grants: readonly Grant[], policy: Policy, pageURL: string, check: PolicyCheck, scope: GrantScope): GrantCheck {
-  if (check.outcome !== 'hold' || grants.length === 0) return check;
+//  - a link's destination is on the same site, covered for the same permission, and not protected.
+// Session grants and remote approval share this one scan; neither has a copy of it to drift.
+function waive(coveredBy: Cover, policy: Policy, pageURL: string, check: PolicyCheck, scope: GrantScope): GrantCheck {
   const permission = permissionFor(scope.kind, check.reason);
   const page = parseURL(pageURL);
   if (!permission || !page || protectedAddress(policy, page)) return check;
-  const coveredBy = (needed: GrantPermission, target: URL) =>
-    grants.find(grant => grant.rules.some(rule => rule.permission === needed && covers(rule, target)));
   const grant = coveredBy(permission, page);
   if (!grant) return check;
   if (scope.kind !== 'upload') {
@@ -174,6 +181,28 @@ export function checkGrant(grants: readonly Grant[], policy: Policy, pageURL: st
   return { outcome: 'allow', reason: 'session grant', grant: grant.id };
 }
 
+export function checkGrant(grants: readonly Grant[], policy: Policy, pageURL: string, check: PolicyCheck, scope: GrantScope): GrantCheck {
+  if (check.outcome !== 'hold' || grants.length === 0) return check;
+  return waive((needed, target) =>
+    grants.find(grant => grant.rules.some(rule => rule.permission === needed && covers(rule, target))), policy, pageURL, check, scope);
+}
+
+// The addresses a grant rule can name: https, or http on this Mac, with no credentials in the address (parseRule
+// refuses everything else). A page a rule could never name is never covered by any grant, so it is never answerable
+// from another device either. tests/policy/grants.ts holds the two lists to the same table.
+function grantableAddress(url: URL) {
+  return (url.protocol === 'https:' || url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname)) && !url.username && !url.password;
+}
+
+// Whether this hold is one a session grant covering the whole site could waive. Remote approval (remote.ts)
+// uses it to decide which requests may be answered from another device: the same permissions, the same
+// protected addresses, the same mixed-name and destination rules, the same addresses, and nothing else.
+const EVERYTHING = { id: 'remote' };
+export function remoteWaivable(policy: Policy, pageURL: string, check: PolicyCheck, scope: GrantScope): boolean {
+  if (check.outcome !== 'hold') return false;
+  return waive((_needed, target) => grantableAddress(target) ? EVERYTHING : undefined, policy, pageURL, check, scope).outcome === 'allow';
+}
+
 // ---------------------------------------------------------------- the store
 // Invariant 4: this map is the only place a grant exists. Nothing is written to disk or read back.
 export function createGrants({ minuteMs = 60000, now = Date.now, emit = () => {}, audit = () => {}, log = () => {} }: {
@@ -185,6 +214,7 @@ export function createGrants({ minuteMs = 60000, now = Date.now, emit = () => {}
   // The public shape never carries the session key: it is what ties a grant to its chat.
   const view = (grant: Grant, mine?: string) => ({ id: grant.id, caller: grant.caller, label: grant.label ?? null,
     rules: grant.rules.map(ruleString), createdAt: iso(grant.createdAt), expiresAt: iso(grant.expiresAt),
+    ...(grant.approver ? { approver: grant.approver } : {}),
     mine: mine !== undefined && grant.session === mine });
   const snapshot = (mine?: string) => [...entries.values()].map(entry => view(entry.grant, mine));
   function end(id: string, reason: GrantEnd) {
@@ -202,13 +232,15 @@ export function createGrants({ minuteMs = 60000, now = Date.now, emit = () => {}
   function expireDue() {
     for (const [id, entry] of [...entries]) if (entry.grant.expiresAt <= now()) end(id, 'expired');
   }
-  function activate(spec: GrantSpec & { caller: string }): Grant {
+  function activate(spec: GrantSpec & { caller: string; approver?: 'remote' }): Grant {
     const created = now();
     const grant: Grant = { id: crypto.randomBytes(8).toString('hex'), session: spec.session, caller: spec.caller,
       ...(spec.label ? { label: spec.label } : {}), rules: spec.rules, minutes: spec.minutes, createdAt: created,
+      ...(spec.approver ? { approver: spec.approver } : {}),
       expiresAt: created + spec.minutes * minuteMs };
     // Fail closed: a grant whose start cannot be written to the audit does not come into being.
     audit({ ts: iso(created), caller: grant.caller, method: 'grant.start', tab: null, url: '', grant: grant.id,
+      ...(grant.approver ? { approver: grant.approver } : {}),
       rules: grant.rules.map(ruleString), expiresAt: iso(grant.expiresAt), outcome: 'allow', ms: 0 });
     const timer = setTimeout(() => end(grant.id, 'expired'), Math.max(0, grant.expiresAt - created));
     timer.unref();

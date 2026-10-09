@@ -6,8 +6,11 @@ import type { Socket } from 'node:net';
 import { isRecord, parseJSON, errorMessage, hasErrorCode, versionParam } from '../shared/protocol.ts';
 import type { IncomingParams, ChromeParams, WireError, BrokerResults, SigninResult } from '../shared/protocol.ts';
 import type { PolicyCheck } from './policy.ts';
-import type { ApprovalAction, StoredApprovalRef } from './approvals.ts';
-interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: unknown; url: string }[]; upload?: { name: string; bytes?: number }; signin?: SigninResult; grantId?: string }
+import type { ApprovalAction, StoredApprovalRef, StoredApproval, RemoteFacts } from './approvals.ts';
+// `decision` and `remoteKey` exist only to be written to the audit: who answered from another device and what,
+// never the signature or the nonce.
+interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: unknown; url: string }[]; upload?: { name: string; bytes?: number }; signin?: SigninResult; grantId?: string;
+  decision?: { approval: string; kind?: string; verb?: string }; remoteKey?: string }
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -22,6 +25,7 @@ import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail } from '
 import { createProofVerifier, approvalMessage, signinRevokeMessage, sendRevokeMessage } from './proof.ts';
 import { createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString } from './grants.ts';
 import type { GrantScope } from './grants.ts';
+import { createRemote } from './remote.ts';
 import { createBridge } from './bridge.ts';
 import { extensionCall } from './extensions.ts';
 import { wakeApprovalApp } from './approval-wake.ts';
@@ -40,7 +44,7 @@ const policyPath = path.join(home, 'policy.json');
 let policy = loadPolicy({ overlay: policyPath, log });
 const signinSecrets = createSigninSecrets();
 const subscribers = new Set<Socket>(), connections = new Set<Socket>();
-const nonAuditedMethods = new Set(['status', 'approvals.list', 'signin.remembered', 'sends.remembered', 'bridge.status', 'bridge.health', 'events.subscribe', 'session.begin']);
+const nonAuditedMethods = new Set(['status', 'approvals.list', 'signin.remembered', 'sends.remembered', 'bridge.status', 'bridge.health', 'events.subscribe', 'session.begin', 'remote.status']);
 interface Session { caller: string; owned: Set<number>; lastActivity: number; endedAt?: number }
 const sessions = new Map<string, Session>();
 // A tab put in front of the user is his from then on, whichever agent brought it forward.
@@ -125,11 +129,17 @@ function emit(event: string, data: unknown) {
 const bridge = createBridge({ emit });
 const proofs = createProofVerifier({ publicKeyPath: process.env.GADDI_APPROVER_PUB || path.join(os.homedir(), 'Library/Application Support/Gaddi/approver.pub'),
   usedPath: path.join(home, 'used-proofs.log') });
+// Approving some holds from another device (remote.ts). Off until the owner turns it on with Touch ID; the saved
+// choice is read back here. The drop-in file is only a candidate key: it authorizes nothing by itself.
+const remote = createRemote({ statePath: path.join(home, 'remote.json'),
+  keyPath: process.env.GADDI_REMOTE_KEY || path.join(home, 'remote-approver.pub'), proofs, emit, log });
 const approvals = createApprovals({ imageRoot: path.join(home, 'approvals'), log, ttlMinutes: Number(policy.approvals.ttl_minutes) > 0 ? Number(policy.approvals.ttl_minutes) : 10,
   onChange: () => {
     fs.writeFileSync(statePath + '.tmp', JSON.stringify({ approvals: approvals.persistable() }), { mode: 0o600 });
     fs.renameSync(statePath + '.tmp', statePath);
-  }, emit });
+  },
+  // Whether the owner's other device may answer this record right now, judged from the live policy and state.
+  remote: (a, facts) => remote.eligible(a, facts, policy), emit });
 try {
   const state = parseJSON(fs.readFileSync(statePath, 'utf8'));
   if (state === null) throw new TypeError("Cannot read properties of null (reading 'approvals')");
@@ -140,7 +150,9 @@ approvals.pruneImages();
 // Invariant: grants exist only in this process. Nothing is loaded at startup, so a restart ends every one.
 const grants = createGrants({ minuteMs: GRANT_MINUTE_MS, emit, audit, log });
 
-async function gate({ kind, meta, detail, action, check, approval, capture, targetSelector }: { kind: string; meta: CallMeta; detail: string; action: ApprovalAction; check: PolicyCheck; approval: unknown; capture?: () => Promise<unknown>; targetSelector?: string }) {
+async function gate({ kind, meta, detail, action, check, approval, capture, targetSelector, remoteScope }: { kind: string; meta: CallMeta; detail: string; action: ApprovalAction; check: PolicyCheck; approval: unknown; capture?: () => Promise<unknown>; targetSelector?: string;
+  // The page and the raw name and destination the grant scan reads, kept beside the hold for remote approval.
+  remoteScope?: Omit<RemoteFacts, 'reason'> }) {
   // Only isolated-world references are retained; raw selectors may contain page data.
   const targetRef = typeof targetSelector === 'string' && /^@[A-Za-z0-9_-]{6}:[0-9a-z]+$/.test(targetSelector) ? targetSelector : undefined;
   if (check.outcome === 'deny') throw new GateError('denied', `denied: ${check.reason} (no approval path)`);
@@ -153,7 +165,9 @@ async function gate({ kind, meta, detail, action, check, approval, capture, targ
     try { picture = await capture(); }
     catch (error) { log('approval capture unavailable:', /deadline|timeout|within 25 seconds/.test(errorMessage(error)) ? 'deadline exceeded' : 'bridge failed'); }
   }
-  const a = existing || approvals.hold({ kind, ...meta, detail, action, reason: check.reason, rememberable: check.rememberable, picture, targetSelector: targetRef });
+  const remoteFacts = remoteScope ? { ...remoteScope, reason: check.reason } : undefined;
+  const a = existing || approvals.hold({ kind, ...meta, detail, action, reason: check.reason, rememberable: check.rememberable, picture, targetSelector: targetRef, remoteFacts });
+  if (existing) approvals.attach(existing, remoteFacts);
   throw new GateError('held', `held: ${check.reason}; approve ${a.id} in Gaddi, then retry with its id`, approvalRef(a));
 }
 const browserMethods = new Set(['tabs', 'bookmarks', 'look', 'wait', 'html', 'screenshot', 'open', 'goto', 'back', 'click', 'type', 'press', 'hover', 'scroll', 'select', 'upload', 'eval', 'emulate', 'close', 'show', 'group', 'signin']);
@@ -283,9 +297,13 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   // Invariant: a hold becomes an allow here only through the calling chat's own unexpired session
   // grant (grants.ts). A CLI call has no session, so grantSession is undefined and it gets none.
   let grantId: string | undefined;
+  // What remote approval will judge again if this call becomes a hold: the page as it is now, with its query
+  // (a query can make a page protected), and the same raw name and destination the grant scan reads.
+  let remoteScope: Omit<RemoteFacts, 'reason'> | undefined;
   const grantCheck = (held: PolicyCheck, scope: GrantScope) => {
     const decision = checkGrant(grants.active(grantSession(params)), policy, pageURL, held, scope);
     grantId = decision.grant;
+    remoteScope = { pageURL, scope };
     return decision;
   };
   const args: ChromeParams = { tab: resolvedTab };
@@ -411,7 +429,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   if (method === 'select') {
     if (typeof params.value !== 'string') throw new Error('value must be a string'); args.value = params.value;
   }
-  await gate({ kind: method, meta, detail, check, approval: params.approval, targetSelector,
+  await gate({ kind: method, meta, detail, check, approval: params.approval, targetSelector, remoteScope,
     capture: targetSelector ? () => bridge.request('chrome.approvalCapture', { tab: resolvedTab,
       selector: targetSelector, checkedDescription: args._description, ...(method === 'press' ? { key: args.key } : {}) },
       connection, Math.min(deadline, Date.now() + 3000)) : undefined,
@@ -506,15 +524,19 @@ function activateGrant(id: unknown, proof: unknown, remember: unknown) {
   // owner signed exactly the rules, duration and label the grant is made from.
   const record = approvals.get(id);
   approvals.signed(id, 'grant', proof, proofs, approvalMessage, { remember });
+  return startGrant(id, record);
+}
+// The record is "granted" now, by a Touch ID signature or by the owner's remote approver (remote.ts, which may
+// approve only a request of two hours or less). Everything below is synchronous: nothing can slip in between.
+function startGrant(id: unknown, record: StoredApproval, approver?: 'remote') {
   const spec = record.grant;
-  // Signed and "granted" now. Everything below is synchronous: nothing can slip in between.
   if (!isGrantSpec(spec) || !liveSessions.has(spec.session)) {
     approvals.cancel(id);
     throw new GateError('approval-invalid', 'the chat that asked has ended, so nothing was granted');
   }
   // If the grant cannot start (for instance its audit line cannot be written), the signed answer is
-  // spent and the request closed: nothing runs unrecorded.
-  try { grants.activate({ ...spec, caller: String(record.caller) }); }
+  // spent and the request closed: nothing runs unrecorded. A remote grant says so in its list and its audit line.
+  try { grants.activate({ ...spec, caller: String(record.caller), ...(approver ? { approver } : {}) }); }
   catch (error) { approvals.cancel(id); throw error; }
   return approvals.complete(id);
 }
@@ -527,7 +549,34 @@ function releaseSession(key: string) {
   for (const request of pendingGrantsOf(key)) approvals.cancel(request.id);
 }
 
-const methods: Record<string, (params: IncomingParams, conn: Socket) => unknown> = {
+// ---------------------------------------------------------------- approving from another device
+// The owner's phone approver (remote.ts) answers a request this broker says it may answer: an upload, post or delete
+// on a page a session grant could cover, or a session-grant request of two hours or less. Everything from the first
+// check to the decision runs without an await, so nothing can change in between.
+function remoteDecision(params: IncomingParams, meta: CallMeta) {
+  const verb = params.verb === 'grant' || params.verb === 'deny' ? params.verb : undefined;
+  const id = typeof params.id === 'string' && /^[A-Za-z0-9_-]{1,64}$/.test(params.id) ? params.id : undefined;
+  if (id !== undefined) meta.decision = { approval: id, ...(verb ? { verb } : {}) };
+  if (!remote.enabled()) throw new GateError('denied', 'approving from another device is turned off');
+  // One answer for a request that is unknown, already answered, expired, or not one a remote device may answer,
+  // so a caller learns nothing about records it may not decide.
+  const refuse = () => new GateError('approval-invalid', 'that request is not waiting, or cannot be answered from another device');
+  const record = id === undefined ? undefined : pendingRecord(id);
+  if (id === undefined || !record || !approvals.remotable(record)) throw refuse();
+  meta.tab = record.tab; meta.url = record.url;
+  meta.decision = { approval: id, kind: String(record.kind), ...(verb ? { verb } : {}) };
+  // Signature, freshness and single use. After this line the decision is spent, whatever happens next.
+  const decided = remote.verify(record, params);
+  if (decided === 'deny') return approvals.resolveRemote(id, 'deny');
+  if (record.kind !== 'grant') return approvals.resolveRemote(id, 'grant');
+  approvals.resolveRemote(id, 'grant');
+  return startGrant(id, record, 'remote');
+}
+function pendingRecord(id: string): StoredApproval | undefined {
+  try { return approvals.get(id); } catch { return undefined; }
+}
+
+const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallMeta) => unknown> = {
   'session.begin': (params, conn) => serial(async () => {
     const key = validSession(params.session);
     if (key && !sessionConnections.has(conn)) {
@@ -578,6 +627,15 @@ const methods: Record<string, (params: IncomingParams, conn: Socket) => unknown>
     });
   },
   'approval.deny': ({ id, proof, remember }) => approvals.signed(id, 'deny', proof, proofs, approvalMessage, { remember }),
+  // Approving from another device. Status is read-only; turning ON needs the owner's Touch ID signature over the
+  // key's fingerprint; turning OFF only removes authority, so it needs no proof and any client may do it.
+  'remote.status': () => remote.status(),
+  'remote.enable': ({ fingerprint, proof }, _conn, meta) => {
+    if (typeof fingerprint === 'string' && /^[a-f0-9]{64}$/.test(fingerprint)) meta.remoteKey = fingerprint.slice(0, 16);
+    return remote.enable(fingerprint, proof);
+  },
+  'remote.disable': () => remote.disable(),
+  'approval.remote': (params, _conn, meta) => remoteDecision(params, meta),
   'signin.remembered': () => ({ sites: policy.signin?.remember ?? [] }),
   'signin.revoke': ({ site, proof }) => {
     if (typeof site !== 'string' || signinSite(site) !== site) throw new GateError('approval-invalid', 'exact sign-in origin required');
@@ -689,7 +747,7 @@ async function handle(input: unknown, conn: Socket) {
       if (typeof method === 'string' && ['approval.grant', 'approval.deny', 'approval.cancel'].includes(method)) {
         const record = approvals.get(params.id); meta.tab = record.tab; meta.url = record.url;
       }
-      result = await methods[methodName](params, conn);
+      result = await methods[methodName](params, conn, meta);
     }
     else throw new Error(`unknown method: ${method}`);
   } catch (e) {
@@ -705,10 +763,13 @@ async function handle(input: unknown, conn: Socket) {
       ...(typeof params.harness === 'string' ? { harness: params.harness } : {}), method, tab: meta.tab,
       url: cleanURL(meta.url), ...(meta.tabs ? { tabs: meta.tabs } : {}), ...(meta.upload ? { upload: meta.upload } : {}),
       ...(meta.grantId ? { grant: meta.grantId } : {}),
+      // A decision from another device names who, which request and what was decided: never its signature or nonce.
+      ...(meta.decision ? { approver: 'remote', kind: meta.decision.kind, verb: meta.decision.verb } : {}),
+      ...(meta.remoteKey ? { fingerprint: meta.remoteKey } : {}),
       ...(typeof method === 'string' && ['click', 'hover', 'type', 'press', 'select', 'scroll', 'upload'].includes(method)
         && isRecord(result) && typeof result.changed === 'boolean' ? { changed: result.changed } : {}),
       outcome: error ? error.code === 'held' ? 'hold' : error.code === 'denied' ? 'deny' : 'error' : 'allow',
-      approval: error?.approval?.id ?? params.approval, error: error?.code, ms: Date.now() - start });
+      approval: error?.approval?.id ?? meta.decision?.approval ?? params.approval, error: error?.code, ms: Date.now() - start });
   }
   // The caller's correlation ID and wire keys are protocol, never page-derived credentials.
   if (!conn.destroyed) conn.write(JSON.stringify(error ? { id, error: signinSecrets.redact(error, undefined, false) }

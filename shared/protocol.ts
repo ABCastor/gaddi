@@ -28,6 +28,9 @@ export interface BrokerParams extends ChromeParams {
   remember?: boolean; site?: string; reason?: string;
   // browser_grant: what to waive (`<upload|post|delete> <address prefix>`), for how long, and the agent's own words.
   rules?: string[]; minutes?: number; label?: string;
+  // Approving from another device (the owner's phone approver; no MCP tool ever sends these): `fingerprint` names
+  // the key that Touch ID turns on, and one decision is `{ id, verb, nonce, ts, sig }`.
+  fingerprint?: string; verb?: string; nonce?: string; ts?: number; sig?: string;
 }
 type ExtensionOperation = 'list' | 'reload' | 'enable' | 'disable' | 'uninstall' | 'install';
 export interface ExtensionInfo {

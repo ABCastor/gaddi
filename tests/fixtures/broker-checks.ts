@@ -1,6 +1,7 @@
 import net from 'node:net';
 import type { Socket } from 'node:net';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
+import type { KeyObject } from 'node:crypto';
 import type { ChromeRequest, ElementDescription, TabInfo, WireError, Reply, IncomingParams, CloseResult } from '../../shared/protocol.ts';
 import { checkedReply, checkedResult, checkedRequest, isRecord, parseJSON, isApproval } from './wire.ts';
 import type { PublicApproval, TestResult } from './wire.ts';
@@ -29,14 +30,25 @@ const publicPath = path.join(home, 'approver.pub');
 const launchLog = path.join(home, 'app-launches.jsonl');
 const launcher = path.join(home, 'launch-app.ts');
 fs.writeFileSync(launcher, `#!${process.execPath}\nimport fs from 'node:fs'; fs.appendFileSync(${JSON.stringify(launchLog)}, JSON.stringify(process.argv.slice(2)) + '\\n');\n`, { mode: 0o700 });
+// A sign-in hold needs a login to choose: for remote approval's checks a fake 1Password CLI offers one for the fixture site.
+if (scenario === 'remote-approver') {
+  fs.mkdirSync(path.join(home, 'fake-op'));
+  fs.writeFileSync(path.join(home, 'fake-op', 'op'),
+    `#!${process.execPath}\nconsole.log(JSON.stringify([{ id: 'fixture-item', title: 'Fixture login', urls: [{ href: 'https://unseen.example' }] }]));\n`, { mode: 0o700 });
+}
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 fs.writeFileSync(publicPath, publicKey.export({ type: 'spki', format: 'pem' }));
 fs.writeFileSync(path.join(home, 'policy.json'), JSON.stringify({ approvals: { ttl_minutes: scenario === 'approval' ? 0.03 : scenario === 'approval-picture' ? 0.1 : 10 }, deny: { type_into: ['input[type=password]', 'input[autocomplete=current-password]', '.sensitive'] } }));
 if (scenario === 'eval-overlay') fs.copyFileSync(path.join(repo, 'tests/fixtures/eval-overlay.json'), path.join(home, 'policy.json'));
 const env = { ...process.env, GADDI_APP_LAUNCHER: launcher, OMNIREAD_BIN: path.join(home, 'missing-omniread'), GADDI_HOME: home, GADDI_SOCKET: socket, GADDI_APPROVER_PUB: publicPath,
+  // Never the owner's own drop-in file, whatever his shell has set.
+  GADDI_REMOTE_KEY: path.join(home, 'remote-approver.pub'),
   GADDI_STATE: path.join(home, 'state.json'), GADDI_AUDIT: path.join(home, 'audit.jsonl'),
   ...(scenario === 'sessions' ? { GADDI_SESSION_IDLE_MS: '4000', GADDI_SESSION_END_MS: '400', GADDI_SESSION_SWEEP_MS: '20' } : {}),
   ...(scenario === 'upload' ? { HOME: person } : {}),
+  // Remote approval answers uploads too, so the broker's home folder is the disposable person folder; and its
+  // sign-in check finds the fake 1Password CLI first on PATH.
+  ...(scenario === 'remote-approver' ? { HOME: person, PATH: `${path.join(home, 'fake-op')}:${process.env.PATH}` } : {}),
   // A grant "minute" is 400 ms here, so a five-minute grant can be watched ending without a long wait.
   ...(scenario === 'session-grant' ? { HOME: person, GADDI_GRANT_MINUTE_MS: '400' } : {}) };
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
@@ -97,6 +109,8 @@ async function fakeBridge() {
     describeSelector: undefined as string | undefined,
     // What the next describe says the clicked control is called and where it leads (session grant checks).
     describeName: undefined as string | undefined, describeHref: undefined as string | undefined,
+    // What Chrome says an extension is (remote approval checks: an extension operation is never answered remotely).
+    extension: undefined as Record<string, unknown> | undefined,
     capture: 'none' as 'none' | 'image' | 'error' | 'missing-box' | 'hang', captureWidth: 8, captureHeight: 8 };
   let buffer = '', nextTab = 11;
   let ready: () => void;
@@ -175,6 +189,7 @@ async function fakeBridge() {
         case 'chrome.eval': result = { tab: tab.id, value: 'fixture-result' }; break;
         case 'chrome.uploadChunk': assert.ok(msg.params.upload && typeof msg.params.upload.data === 'string'); result = { stored: msg.params.upload.index }; break;
         case 'chrome.upload': result = { tab: tab.id, url: tab.url, uploaded: true, via: 'input', changed: true }; break;
+        case 'chrome.extensions': result = control.extension ?? { tab: tab.id, ok: true, url: tab.url }; break;
         default: result = { tab: tab.id, ok: true, url: tab.url };
       }
       if (control.resultExtras && isRecord(result) && !['chrome.describe', 'chrome.active', 'chrome.tabs'].includes(msg.method)) result = { ...result, ...control.resultExtras };
@@ -1442,6 +1457,548 @@ async function sessionGrant(c: Client, b: Bridge) {
     assert.ok(!fs.readFileSync(path.join(home, 'state.json'), 'utf8').includes(SESSION_PREFIX), 'no session id was written to disk');
   });
 }
+// What a test may bend when it builds one decision of the owner's other device (daemon/remote.ts): the key, the
+// time, the nonce, what the signature covers, and what is sent.
+interface Tweak { key?: KeyObject; ts?: number; nonce?: string; signs?: Partial<Record<'verb' | 'id' | 'kind' | 'digest', string>>; sends?: Record<string, unknown>;
+  // A field left out of the signed text altogether (what a broker that forgot to bind it would accept).
+  omit?: 'verb' | 'id' | 'kind' | 'digest' }
+// Approving some holds from another device, against the real broker, a fake Chrome, the test owner key (standing
+// in for the Secure Enclave key) and Ed25519 keys for a would-be bot. Every check begins from a known state, so one
+// failing check never hides another; the mutation harness (tests/gates/remote-approver-mutations.test.sh) breaks
+// the broker once per check and wants that check, by name, to turn red.
+async function remoteApprover(c: Client, b: Bridge) {
+  // The daemon is restarted by some checks, which replaces both of these.
+  let conn: Client = c, bridge: Bridge = b;
+  const check = async (name: string, fn: () => Promise<void>) => {
+    try { await fn(); pass(name); }
+    catch (error) {
+      failed++; process.exitCode = 1;
+      console.log(`FAIL ASSERTION remote-approver: ${name}: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}`);
+    }
+  };
+  const SHOP = 'https://unseen.example/shop';
+  const shopURL = b.tabs[0].url;
+  const AGENT = { caller: 'remote-agent' };
+  const avatar = path.join(person, 'Pictures/avatar.png');
+  fs.mkdirSync(path.dirname(avatar), { recursive: true }); fs.writeFileSync(avatar, 'fixture picture');
+  const bot = crypto.generateKeyPairSync('ed25519'), stranger = crypto.generateKeyPairSync('ed25519');
+  const wrongOwner = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey;
+  const dropIn = path.join(home, 'remote-approver.pub'), saved = path.join(home, 'remote.json');
+  const pem = (key: KeyObject) => String(key.export({ type: 'spki', format: 'pem' }));
+  // The contract's own words, built here and not by importing the broker's helpers: a fingerprint is the sha256 of
+  // the key's DER SPKI, and a digest is the sha256 of `kind|id|detail`.
+  const fingerprintOf = (key: KeyObject) => crypto.createHash('sha256').update(key.export({ type: 'spki', format: 'der' })).digest('hex');
+  const digestOf = (a: { kind: string; id: string; detail: string }) => crypto.createHash('sha256').update(`${a.kind}|${a.id}|${a.detail}`).digest('hex');
+  // Every nonce and signature the bot ever sent: none may appear in the audit, the state or the events.
+  const secrets: string[] = [];
+  // Everything the broker says to a subscriber, whole, so a leaked nonce or signature can be searched for. A restart
+  // closes this connection, so the restart helper below subscribes again.
+  const watched: string[] = [];
+  function watchEverything() {
+    const listener = net.connect(socket); clients.push(listener);
+    listener.setEncoding('utf8'); listener.on('error', () => {}); listener.on('data', data => { watched.push(String(data)); });
+    listener.write(JSON.stringify({ id: 'watch', method: 'events.subscribe', params: { caller: 'watcher' } }) + '\n');
+  }
+  watchEverything();
+
+  let lastStamp = 0;
+  const stamp = () => (lastStamp = Math.max(Date.now(), lastStamp + 1));
+  // The owner's Touch ID answer to "turn this key on". Two of them never share a millisecond.
+  function enableProof(fingerprint: string, options: { ts?: number; key?: KeyObject; text?: string } = {}) {
+    const ts = options.ts ?? stamp();
+    const message = options.text ?? `remote.enable|${fingerprint}|${ts}`;
+    return { ts, sig: crypto.sign('sha256', Buffer.from(message), options.key ?? privateKey).toString('base64') };
+  }
+  // One decision of the bot, built from the public contract: it signs gaddi-remote|verb|id|kind|digest|nonce|ts.
+  function decision(a: { id: string; kind: string; detail: string }, verb: 'grant' | 'deny', tweak: Tweak = {}) {
+    const nonce = tweak.nonce ?? crypto.randomBytes(12).toString('base64url');
+    const ts = tweak.ts ?? Date.now();
+    const signed = { verb: String(verb), id: a.id, kind: a.kind, digest: digestOf(a), ...tweak.signs };
+    const parts = ['gaddi-remote', signed.verb, signed.id, signed.kind, signed.digest, nonce, String(ts)];
+    const skipped = tweak.omit === undefined ? -1 : { verb: 1, id: 2, kind: 3, digest: 4 }[tweak.omit];
+    const message = parts.filter((_, index) => index !== skipped).join('|');
+    const sig = crypto.sign(null, Buffer.from(message), tweak.key ?? bot.privateKey).toString('base64');
+    secrets.push(nonce, sig);
+    const params: IncomingParams = { id: a.id, verb, nonce, ts, sig, ...tweak.sends };
+    return params;
+  }
+  const answer = (params: IncomingParams) => conn.call('approval.remote', params);
+  const refusedWith = (params: IncomingParams, code: string) => rejected(conn, 'approval.remote', params, code);
+  const recordOf = async (id: string) => {
+    const list = await result(conn, 'approvals.list');
+    const found = [...list.pending, ...list.recent].find(a => a.id === id);
+    assert.ok(found, `approval ${id} is listed`);
+    return found;
+  };
+  const heldRecord = async (reply: Reply) => {
+    assert.equal(reply.error?.code, 'held', JSON.stringify(reply));
+    assert.ok(reply.error);
+    return pending(conn, reply.error);
+  };
+  // The holds an agent can cause. What Chrome says the clicked control is called, and where it leads, is bent by
+  // the fake bridge; the agent's call is always the same.
+  async function clickAs(name: string, href?: string, extra: IncomingParams = {}) {
+    bridge.control.describeName = name; bridge.control.describeHref = href;
+    try { return await conn.call('click', { ...AGENT, selector: '#plain', ...extra }); }
+    finally { bridge.control.describeName = undefined; bridge.control.describeHref = undefined; }
+  }
+  async function enterOn(name: string) {
+    bridge.control.focusSubmit = name;
+    try { return await conn.call('press', { ...AGENT, key: 'Enter' }); }
+    finally { bridge.control.focusSubmit = 'Search'; }
+  }
+  const uploadHold = (extra: IncomingParams = {}) => conn.call('upload', { ...AGENT, selector: '#avatar', path: avatar, ...extra });
+  async function onPage(url: string, fn: () => Promise<Reply>) {
+    bridge.tabs[0].url = url;
+    try { return await fn(); } finally { bridge.tabs[0].url = shopURL; }
+  }
+  const lifetimes = new Map<string, Client>();
+  let sequence = 0;
+  async function liveSession() {
+    const session = `gaddi-remote-session-${++sequence}-${crypto.randomBytes(3).toString('hex')}`;
+    const lifetime = client();
+    await result(lifetime, 'session.begin', { session, caller: 'grant-agent' });
+    lifetimes.set(session, lifetime);
+    return session;
+  }
+  const askGrant = (session: string, minutes: number, rules = [`upload ${SHOP}`]) =>
+    conn.call('grant.request', { session, caller: 'grant-agent', rules, minutes });
+  const grantsOf = async (session: string) => (await result(conn, 'approvals.list', { session })).grants.filter(g => g.mine);
+  async function watching() { const watcher = client(); await result(watcher, 'events.subscribe'); return watcher; }
+  const until = async (predicate: () => boolean | Promise<boolean>, ms = 1500) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { if (await predicate()) return true; await delay(20); }
+    return predicate();
+  };
+  const auditLines = () => fs.readFileSync(path.join(home, 'audit.jsonl'), 'utf8').trim().split('\n').filter(Boolean)
+    .map(line => parseJSON(line)).filter(isRecord);
+  // Back to a known state: off, no key file, nothing waiting, the fake Chrome as it was.
+  async function reset() {
+    await result(conn, 'remote.disable');
+    fs.rmSync(dropIn, { force: true }); // This scenario's disposable key file only.
+    for (const a of (await result(conn, 'approvals.list')).pending) await conn.call('approval.cancel', { id: a.id });
+    bridge.control.extension = undefined; bridge.tabs[0].url = shopURL;
+  }
+  // The bot drops its key and the owner turns it on with Touch ID (here: the test owner key signs the fingerprint).
+  async function turnOn(key: KeyObject = bot.publicKey) {
+    fs.writeFileSync(dropIn, pem(key));
+    const fingerprint = fingerprintOf(key);
+    await result(conn, 'remote.enable', { fingerprint, proof: enableProof(fingerprint) });
+    return fingerprint;
+  }
+  // Stops the broker, lets a test change what is on disk, starts it again, and reconnects.
+  async function restart(between: () => void = () => {}) {
+    const stopped = once(daemon, 'exit'); daemon.kill('SIGTERM'); await stopped;
+    between();
+    await startDaemon();
+    conn = client(); bridge = await fakeBridge();
+    watchEverything();
+  }
+
+  await check('ASSERT_REMOTE_OFF', async () => {
+    await reset();
+    const first = await result(conn, 'remote.status');
+    assert.equal(first.enabled, false, 'off by default');
+    assert.equal(first.candidate, null, 'no key has been dropped');
+    assert.ok(!fs.existsSync(saved), 'nothing is saved');
+    fs.writeFileSync(dropIn, pem(bot.publicKey));
+    const dropped = await result(conn, 'remote.status');
+    assert.equal(dropped.enabled, false, 'a key in the drop-in file is only a candidate');
+    assert.equal(dropped.candidate?.fingerprint, fingerprintOf(bot.publicKey), 'but it is shown as one');
+    const post = await heldRecord(await clickAs('Post'));
+    assert.equal(post.remote, undefined, 'no remote flag while it is off'); assert.equal(post.digest, undefined);
+    await refusedWith(decision(post, 'grant'), 'denied');
+    assert.equal((await recordOf(post.id)).status, 'pending', 'a correctly signed answer decided nothing');
+    const asked = await heldRecord(await askGrant(await liveSession(), 60));
+    assert.equal(asked.remote, undefined, 'a session-grant request carries no flag either');
+    await refusedWith(decision(asked, 'grant'), 'denied');
+  });
+
+  await check('ASSERT_REMOTE_ENABLE', async () => {
+    await reset();
+    const fp = fingerprintOf(bot.publicKey), other = fingerprintOf(stranger.publicKey);
+    fs.writeFileSync(dropIn, pem(bot.publicKey));
+    await rejected(conn, 'remote.enable', { fingerprint: fp }, 'proof-invalid');
+    await rejected(conn, 'remote.enable', { fingerprint: fp, proof: enableProof(fp, { key: wrongOwner }) }, 'proof-invalid');
+    for (const offset of [-61000, 61000]) {
+      await rejected(conn, 'remote.enable', { fingerprint: fp, proof: enableProof(fp, { ts: Date.now() + offset }) }, 'proof-invalid');
+    }
+    const ts = stamp();
+    await rejected(conn, 'remote.enable', { fingerprint: fp, proof: enableProof(fp, { ts, text: `remote.enable|${other}|${ts}` }) }, 'proof-invalid');
+    const mismatch = await rejected(conn, 'remote.enable', { fingerprint: other, proof: enableProof(other) }, 'approval-invalid');
+    assert.match(mismatch.message, /no longer the key you were shown/, 'a key the owner signed for is not the key in the file');
+    for (const bad of [undefined, '', 'abc', fp.toUpperCase(), fp.slice(0, 63)]) {
+      await rejected(conn, 'remote.enable', { fingerprint: bad, proof: enableProof(fp) }, 'approval-invalid');
+    }
+    assert.equal((await result(conn, 'remote.status')).enabled, false, 'none of that turned it on');
+    assert.ok(!fs.existsSync(saved), 'and none of it saved anything');
+    fs.writeFileSync(dropIn, publicKey.export({ type: 'spki', format: 'pem' }));
+    assert.equal((await result(conn, 'remote.status')).candidate, null, 'a key of another kind is not a candidate');
+    fs.writeFileSync(dropIn, bot.privateKey.export({ type: 'pkcs8', format: 'pem' }));
+    assert.equal((await result(conn, 'remote.status')).candidate, null, 'a private key is not a candidate');
+    fs.rmSync(dropIn, { force: true }); // This scenario's disposable key file only.
+    await rejected(conn, 'remote.enable', { fingerprint: fp, proof: enableProof(fp) }, 'approval-invalid');
+    fs.writeFileSync(dropIn, pem(bot.publicKey));
+    const events = await watching();
+    const signed = enableProof(fp);
+    const on = await result(conn, 'remote.enable', { fingerprint: fp, proof: signed });
+    assert.equal(on.enabled, true, 'a valid signature over the shown fingerprint turns it on');
+    assert.equal(on.fingerprint, fp);
+    assert.ok(Number.isFinite(Date.parse(String(on.enabledAt))), 'and it says since when');
+    assert.deepEqual(on.candidate, { fingerprint: fp });
+    const state = parseJSON(fs.readFileSync(saved, 'utf8'));
+    assert.ok(isRecord(state)); assert.equal(state.fingerprint, fp); assert.equal(state.publicKey, pem(bot.publicKey));
+    assert.equal(fs.statSync(saved).mode & 0o777, 0o600, 'the saved choice is private to the owner');
+    assert.ok(!fs.readFileSync(saved, 'utf8').includes('PRIVATE'), 'no private key is stored');
+    assert.ok(await until(() => events.events.some(e => e.event === 'remote.changed')), 'the change is announced');
+    await rejected(conn, 'remote.enable', { fingerprint: fp, proof: signed }, 'proof-invalid');
+  });
+
+  await check('ASSERT_REMOTE_SWAP', async () => {
+    await reset();
+    const fp = await turnOn(bot.publicKey);
+    fs.writeFileSync(dropIn, pem(stranger.publicKey));
+    const shown = await result(conn, 'remote.status');
+    assert.equal(shown.enabled, true); assert.equal(shown.fingerprint, fp, 'still the key the owner turned on');
+    assert.equal(shown.candidate?.fingerprint, fingerprintOf(stranger.publicKey), 'the swapped file is only a candidate');
+    const post = await heldRecord(await clickAs('Post'));
+    assert.equal(post.remote, true);
+    await refusedWith(decision(post, 'grant', { key: stranger.privateKey }), 'proof-invalid');
+    assert.equal((await recordOf(post.id)).status, 'pending', 'the swapped key decided nothing');
+    const honest = await answer(decision(post, 'grant'));
+    assert.equal(honest.error, undefined, JSON.stringify(honest));
+    assert.equal((await recordOf(post.id)).status, 'granted', 'the key the owner turned on still answers');
+  });
+
+  await check('ASSERT_REMOTE_DISABLE', async () => {
+    await reset();
+    await turnOn();
+    const events = await watching();
+    const post = await heldRecord(await clickAs('Post'));
+    assert.equal(post.remote, true);
+    const off = await result(conn, 'remote.disable');
+    assert.equal(off.enabled, false, 'turning it off needs no proof');
+    assert.ok(!fs.existsSync(saved), 'and the saved choice is gone');
+    assert.equal((await recordOf(post.id)).remote, undefined, 'the flag goes with it');
+    await refusedWith(decision(post, 'grant'), 'denied');
+    assert.equal((await recordOf(post.id)).status, 'pending', 'the very next answer is refused');
+    assert.ok(await until(() => events.events.some(e => e.event === 'remote.changed')), 'turning it off is announced');
+    assert.equal((await result(conn, 'remote.disable')).enabled, false, 'turning it off twice is fine');
+    await turnOn();
+    const shown = await runCLI(['remote']);
+    assert.ok(isRecord(shown.result) && shown.result.enabled === true, 'gaddi remote shows that it is on');
+    const switched = await runCLI(['remote', 'off']);
+    assert.ok(isRecord(switched.result) && switched.result.enabled === false, 'gaddi remote off turns it off');
+    assert.equal((await result(conn, 'remote.status')).enabled, false);
+    await runCLI(['remote', 'on'], 2);
+    await runCLI(['remote', 'sideways'], 2);
+    assert.equal((await result(conn, 'remote.status')).enabled, false, 'the command line cannot turn it on');
+  });
+
+  await check('ASSERT_REMOTE_SIGNER', async () => {
+    await reset();
+    await turnOn();
+    const post = await heldRecord(await clickAs('Post'));
+    const attempts: [string, IncomingParams][] = [
+      ['another Ed25519 key', decision(post, 'grant', { key: stranger.privateKey })],
+      ['the owner approver key', { ...decision(post, 'grant'), sig: crypto.sign('sha256', Buffer.from('anything'), privateKey).toString('base64') }],
+      ['too short', { ...decision(post, 'grant'), sig: 'AAAA' }],
+      ['empty', { ...decision(post, 'grant'), sig: '' }],
+      ['missing', { ...decision(post, 'grant'), sig: undefined }],
+    ];
+    for (const [why, params] of attempts) {
+      const error = await refusedWith(params, 'proof-invalid');
+      assert.ok(error.message, why);
+    }
+    assert.equal((await recordOf(post.id)).status, 'pending', 'no forged answer decided anything');
+    assert.equal((await answer(decision(post, 'grant'))).error, undefined, 'the real key answers');
+  });
+
+  await check('ASSERT_REMOTE_BINDING', async () => {
+    await reset();
+    await turnOn();
+    const post = await heldRecord(await clickAs('Post'));
+    const up = await heldRecord(await uploadHold());
+    const attempts: [string, IncomingParams][] = [
+      ['signed for another request', decision(post, 'grant', { sends: { id: up.id } })],
+      ['signed for the wrong kind', decision(post, 'grant', { signs: { kind: 'upload' } })],
+      ['signed with another request\'s kind', decision(up, 'grant', { signs: { kind: 'click' } })],
+      ['approval sent as a denial', decision(post, 'grant', { sends: { verb: 'deny' } })],
+      ['denial sent as an approval', decision(post, 'deny', { sends: { verb: 'grant' } })],
+      ['signed over another request\'s text', decision(post, 'grant', { signs: { digest: digestOf(up) } })],
+      ['signed over changed text', decision({ ...post, detail: 'Post!' }, 'grant')],
+      ['signed without the id', decision(post, 'grant', { omit: 'id' })],
+      ['signed without the kind', decision(post, 'grant', { omit: 'kind' })],
+      ['signed without the verb', decision(post, 'grant', { omit: 'verb' })],
+      ['signed without the text digest', decision(post, 'grant', { omit: 'digest' })],
+    ];
+    for (const [why, params] of attempts) {
+      const error = await refusedWith(params, 'proof-invalid');
+      assert.ok(error.message, why);
+    }
+    assert.equal((await recordOf(post.id)).status, 'pending', 'nothing was decided by a decision made for something else');
+    assert.equal((await recordOf(up.id)).status, 'pending');
+    assert.equal((await answer(decision(post, 'grant'))).error, undefined, 'the honest approval works');
+    assert.equal((await answer(decision(up, 'deny'))).error, undefined, 'and so does the honest denial');
+    assert.equal((await recordOf(up.id)).status, 'denied');
+  });
+
+  await check('ASSERT_REMOTE_FRESH', async () => {
+    await reset();
+    await turnOn();
+    const post = await heldRecord(await clickAs('Post'));
+    for (const offset of [-130000, 130000]) await refusedWith(decision(post, 'grant', { ts: Date.now() + offset }), 'proof-invalid');
+    await refusedWith(decision(post, 'grant', { ts: Date.now() + 0.5 }), 'proof-invalid');
+    await refusedWith(decision(post, 'grant', { sends: { ts: String(Date.now()) } }), 'proof-invalid');
+    await refusedWith(decision(post, 'grant', { sends: { ts: undefined } }), 'proof-invalid');
+    for (const nonce of ['short', 'bad nonce bad nonce!', 'n'.repeat(129)]) await refusedWith(decision(post, 'grant', { nonce }), 'proof-invalid');
+    assert.equal((await recordOf(post.id)).status, 'pending', 'no stale or malformed time or nonce decided anything');
+    assert.equal((await answer(decision(post, 'grant', { ts: Date.now() - 100000 }))).error, undefined, 'a phone is allowed to be slower than a fingerprint reader');
+  });
+
+  await check('ASSERT_REMOTE_REPLAY', async () => {
+    await reset();
+    await turnOn();
+    const first = await heldRecord(await clickAs('Post'));
+    const second = await heldRecord(await uploadHold());
+    const nonce = crypto.randomBytes(12).toString('base64url');
+    const taken = decision(first, 'grant', { nonce });
+    assert.equal((await answer(taken)).error, undefined, 'the first use works');
+    const reuse = await refusedWith(decision(second, 'grant', { nonce }), 'proof-invalid');
+    assert.match(reuse.message, /already used/, 'a nonce is used once, whoever signs');
+    assert.equal((await recordOf(second.id)).status, 'pending');
+    // A restart returns the granted request to pending, and the agent's retry gives the broker its facts back.
+    // The journal on disk still refuses what was already used.
+    await restart();
+    const events = await watching();
+    const again = await heldRecord(await clickAs('Post'));
+    assert.equal(again.id, first.id, 'the same request is waiting again');
+    assert.equal(again.remote, true);
+    assert.ok(await until(() => events.events.some(e => e.event === 'approval.pending' && e.data.approval?.id === again.id && e.data.approval.remote === true)),
+      'the retry announces that the request can now be answered from the phone');
+    const replay = await refusedWith(taken, 'proof-invalid');
+    assert.match(replay.message, /already used/, 'the exact answer is refused after a restart');
+    await refusedWith(decision(again, 'grant', { nonce }), 'proof-invalid');
+    assert.equal((await answer(decision(again, 'grant'))).error, undefined, 'a fresh signature with a fresh nonce is fine');
+  });
+
+  await check('ASSERT_REMOTE_STATE', async () => {
+    await reset();
+    await turnOn();
+    const post = await heldRecord(await clickAs('Post'));
+    for (const id of ['0123456789abcdef', 'nosuchapproval', '', 'a'.repeat(100), 42, null, {}, ['x']]) {
+      await refusedWith({ ...decision(post, 'grant'), id }, 'approval-invalid');
+    }
+    assert.equal((await answer(decision(post, 'grant'))).error, undefined);
+    await refusedWith(decision(post, 'grant'), 'approval-invalid');
+    assert.equal((await recordOf(post.id)).remote, undefined, 'a request that was answered no longer carries the flag');
+    const deleted = await heldRecord(await clickAs('Delete'));
+    assert.equal((await answer(decision(deleted, 'deny'))).error, undefined);
+    await refusedWith(decision(deleted, 'grant'), 'approval-invalid');
+    const withdrawn = await heldRecord(await clickAs('Share'));
+    await result(conn, 'approval.cancel', { id: withdrawn.id });
+    await refusedWith(decision(withdrawn, 'grant'), 'approval-invalid');
+  });
+
+  await check('ASSERT_REMOTE_SCOPE', async () => {
+    await reset();
+    await turnOn();
+    const events = await watching();
+    const EXTENSION = 'a'.repeat(32);
+    const session = await liveSession();
+    const cases: [string, () => Promise<Reply>, boolean][] = [
+      ['click Post', () => clickAs('Post'), true],
+      ['click Delete', () => clickAs('Delete'), true],
+      ['click Pubblica', () => clickAs('Pubblica'), true],
+      ['click Share', () => clickAs('Share'), true],
+      ['click Delete forever', () => clickAs('Delete forever'), true],
+      ['Post that leads to a page of the same site', () => clickAs('Post', '/shop/after'), true],
+      ['Post that leads to an anchor', () => clickAs('Post', '#section'), true],
+      ['Post that leads to another site', () => clickAs('Post', 'https://elsewhere.example/shop/post'), false],
+      ['Post that leads to a protected address', () => clickAs('Post', '/shop/checkout'), false],
+      ['Post that leads to a payment address', () => clickAs('Post', '/payment/new'), false],
+      ['link to a protected address', () => clickAs('Read more', '/shop/checkout'), false],
+      ...['Pay now', 'Buy now', 'Send', 'Confirm order', 'Procedi al pagamento', 'Change password', 'Unsubscribe', 'Close account',
+        'Post and pay', 'Delete and send', 'Share and remove phone', 'Publish and change password']
+        .map((name): [string, () => Promise<Reply>, boolean] => [`click ${name}`, () => clickAs(name), false]),
+      ['Enter on a Post form', () => enterOn('Post'), true],
+      ['Enter on a Pay now form', () => enterOn('Pay now'), false],
+      ['Enter on a Send form', () => enterOn('Send'), false],
+      ['Cmd+Enter in Gmail', () => conn.call('press', { ...AGENT, tab: 8, key: 'Meta+Enter' }), false],
+      ['upload on an ordinary page', () => uploadHold(), true],
+      ['upload on a checkout page', () => onPage('https://unseen.example/shop/checkout', () => uploadHold()), false],
+      ['upload on a payment page', () => onPage('https://unseen.example/payment/new', () => uploadHold()), false],
+      ['upload on a page whose query is protected', () => onPage(`${SHOP}?next=/checkout`, () => uploadHold()), false],
+      ['upload on a security page', () => onPage(`${SHOP}/settings/security`, () => uploadHold()), false],
+      ['upload in Gmail', () => uploadHold({ tab: 8 }), false],
+      ['upload on a plain http page, which no grant could name', () => onPage('http://unseen.example/shop', () => uploadHold()), false],
+      ['click Post on a checkout page', () => onPage('https://unseen.example/shop/checkout', () => clickAs('Post')), false],
+      ['click Post on a page whose query is protected', () => onPage(`${SHOP}?next=/checkout`, () => clickAs('Post')), false],
+      ['navigation to a protected address', () => conn.call('goto', { ...AGENT, url: 'https://never-seen.example/checkout' }), false],
+      ['a new tab on a protected address', () => conn.call('open', { ...AGENT, url: 'https://unseen.example/checkout' }), false],
+      ['disabling an extension', async () => {
+        bridge.control.extension = { id: EXTENSION, name: 'Fixture extension', version: '1.0', installType: 'normal', type: 'extension',
+          enabled: true, mayDisable: true, self: false };
+        try { return await conn.call('extensions', { ...AGENT, operation: 'disable', extensionId: EXTENSION }); }
+        finally { bridge.control.extension = undefined; }
+      }, false],
+      ...[[5, true], [60, true], [120, true], [121, false], [180, false], [720, false]]
+        .map(([minutes, expected]): [string, () => Promise<Reply>, boolean] => [`session grant for ${minutes} minutes`, () => askGrant(session, Number(minutes)), expected === true]),
+    ];
+    for (const [label, make, expected] of cases) {
+      const record = await heldRecord(await make());
+      assert.equal(record.remote === true, expected, `${label}: remote flag`);
+      assert.equal(record.digest, expected ? digestOf(record) : undefined, `${label}: digest`);
+      const announced = await until(() => events.events.some(e => e.event === 'approval.pending' && e.data.approval?.id === record.id));
+      assert.ok(announced, `${label}: announced`);
+      const event = events.events.find(e => e.event === 'approval.pending' && e.data.approval?.id === record.id);
+      assert.equal(event?.data.approval?.remote === true, expected, `${label}: the announcement agrees`);
+      if (!expected) {
+        await refusedWith(decision(record, 'grant'), 'approval-invalid');
+        assert.equal((await recordOf(record.id)).status, 'pending', `${label}: a signed answer decided nothing`);
+      }
+    }
+  });
+
+  await check('ASSERT_REMOTE_SIGNIN', async () => {
+    await reset();
+    await turnOn();
+    // A sign-in hold comes back as a result ("needs_you"), not an error, and waits for the owner at the Mac.
+    const reply = await conn.call('signin', { ...AGENT });
+    assert.equal(reply.error, undefined, JSON.stringify(reply));
+    assert.ok(isRecord(reply.result) && reply.result.outcome === 'needs_you', `the sign-in waits for the owner: ${JSON.stringify(reply)}`);
+    const waiting = (await result(conn, 'approvals.list')).pending.find(a => a.kind === 'signin');
+    assert.ok(waiting, 'and a sign-in request is waiting');
+    assert.equal(waiting.remote, undefined, 'a sign-in is never marked as answerable from another device');
+    assert.equal(waiting.digest, undefined);
+    await refusedWith(decision(waiting, 'grant'), 'approval-invalid');
+    assert.equal((await recordOf(waiting.id)).status, 'pending', 'and a correctly signed answer decided nothing');
+  });
+
+  await check('ASSERT_REMOTE_CONSUME', async () => {
+    await reset();
+    await turnOn();
+    const events = await watching();
+    const clicks = () => bridge.calls.filter(m => m.method === 'chrome.click').length;
+    const post = await heldRecord(await clickAs('Post'));
+    assert.equal(post.remote, true);
+    assert.ok(await until(() => events.events.some(e => e.event === 'approval.pending' && e.data.approval?.id === post.id && e.data.approval.remote === true)),
+      'the first announcement already says it may be answered remotely');
+    const before = clicks();
+    const answered = await answer(decision(post, 'grant'));
+    assert.equal(answered.error, undefined, JSON.stringify(answered));
+    const granted = await recordOf(post.id);
+    assert.equal(granted.status, 'granted'); assert.equal(granted.by, 'remote', 'the record says who decided');
+    assert.equal(typeof granted.decidedAt, 'string');
+    assert.equal(clicks(), before, 'answering clicks nothing: the agent retries');
+    assert.equal((await clickAs('Post', undefined, { approval: post.id })).error, undefined, 'the retry runs');
+    assert.equal(clicks(), before + 1);
+    assert.equal((await clickAs('Post', undefined, { approval: post.id })).error?.code, 'approval-used', 'once');
+    assert.equal(clicks(), before + 1);
+    const del = await heldRecord(await clickAs('Delete'));
+    assert.equal((await answer(decision(del, 'grant'))).error, undefined);
+    assert.equal((await clickAs('Post', undefined, { approval: del.id })).error?.code, 'approval-mismatch', 'an approval is for the action it was asked for');
+    assert.equal((await clickAs('Delete', undefined, { approval: del.id })).error, undefined);
+    const risky = await heldRecord(await clickAs('Share'));
+    assert.equal((await answer(decision(risky, 'deny'))).error, undefined);
+    const refused = await recordOf(risky.id);
+    assert.equal(refused.status, 'denied'); assert.equal(refused.by, 'remote');
+    assert.equal((await clickAs('Share', undefined, { approval: risky.id })).error?.code, 'denied', 'a remote denial stops the retry');
+    const sent = bridge.calls.filter(m => m.method === 'chrome.upload').length;
+    const file = await heldRecord(await uploadHold());
+    assert.equal((await answer(decision(file, 'grant'))).error, undefined);
+    assert.equal((await uploadHold({ approval: file.id })).error, undefined, 'an upload retried with its approval runs');
+    assert.equal(bridge.calls.filter(m => m.method === 'chrome.upload').length, sent + 1);
+  });
+
+  await check('ASSERT_REMOTE_GRANT', async () => {
+    await reset();
+    await turnOn();
+    const session = await liveSession();
+    const request = await heldRecord(await askGrant(session, 60));
+    assert.equal(request.kind, 'grant'); assert.equal(request.remote, true);
+    assert.equal(request.digest, digestOf(request));
+    assert.equal((await grantsOf(session)).length, 0, 'nothing is granted yet');
+    const answered = await answer(decision(request, 'grant'));
+    assert.equal(answered.error, undefined, JSON.stringify(answered));
+    const mine = (await grantsOf(session))[0];
+    assert.ok(mine, 'the chat has its grant'); assert.equal(mine.approver, 'remote', 'and the list says who approved it');
+    assert.equal((await uploadHold({ session })).error, undefined, 'it works like one approved with Touch ID');
+    const closed = await recordOf(request.id);
+    assert.equal(closed.status, 'used'); assert.equal(closed.by, 'remote');
+    assert.equal(auditLines().find(e => e.method === 'grant.start' && e.grant === mine.id)?.approver, 'remote', 'the start is audited with who approved it');
+    const touch = await liveSession();
+    const touchRequest = await heldRecord(await askGrant(touch, 60));
+    await result(conn, 'approval.grant', { id: touchRequest.id, proof: proof(touchRequest) });
+    const touchGrant = (await grantsOf(touch))[0];
+    assert.ok(touchGrant); assert.equal(touchGrant.approver, undefined, 'a Touch ID grant says nothing of the kind');
+    const refused = await liveSession();
+    const declined = await heldRecord(await askGrant(refused, 30));
+    assert.equal((await answer(decision(declined, 'deny'))).error, undefined);
+    assert.equal((await recordOf(declined.id)).status, 'denied');
+    assert.equal((await grantsOf(refused)).length, 0, 'a remote denial grants nothing');
+    const ended = await liveSession();
+    const gone = await heldRecord(await askGrant(ended, 45));
+    lifetimes.get(ended)!.conn.destroy();
+    assert.ok(await until(async () => !(await result(conn, 'approvals.list')).pending.some(a => a.id === gone.id)), 'the request of a chat that ended is withdrawn');
+    await refusedWith(decision(gone, 'grant'), 'approval-invalid');
+    assert.equal((await grantsOf(ended)).length, 0, 'and answering it grants nothing');
+  });
+
+  await check('ASSERT_REMOTE_AUDIT', async () => {
+    await reset();
+    await turnOn();
+    const post = await heldRecord(await clickAs('Post'));
+    await refusedWith(decision(post, 'grant', { key: stranger.privateKey }), 'proof-invalid');
+    assert.equal((await answer(decision(post, 'grant'))).error, undefined);
+    await result(conn, 'remote.status');
+    await delay(100);
+    const lines = auditLines();
+    const decided = lines.findLast(e => e.method === 'approval.remote' && e.outcome === 'allow');
+    assert.ok(decided, 'a decision is audited');
+    assert.equal(decided.approver, 'remote'); assert.equal(decided.approval, post.id);
+    assert.equal(decided.kind, 'click'); assert.equal(decided.verb, 'grant');
+    const attempt = lines.findLast(e => e.method === 'approval.remote' && e.outcome === 'error');
+    assert.ok(attempt, 'a refused decision is audited too');
+    assert.equal(attempt.error, 'proof-invalid'); assert.equal(attempt.approver, 'remote'); assert.equal(attempt.approval, post.id);
+    const enabled = lines.findLast(e => e.method === 'remote.enable');
+    assert.ok(enabled && /^[a-f0-9]{16}$/.test(String(enabled.fingerprint)), 'turning it on is audited with a short fingerprint');
+    assert.ok(lines.some(e => e.method === 'remote.disable'), 'turning it off is audited');
+    assert.ok(!lines.some(e => e.method === 'remote.status'), 'a read-only status is not audited');
+    const sources: Record<string, string> = { 'audit.jsonl': fs.readFileSync(path.join(home, 'audit.jsonl'), 'utf8'),
+      'state.json': fs.readFileSync(path.join(home, 'state.json'), 'utf8'), events: watched.join(''), stderr };
+    assert.ok(secrets.length > 10, 'the scenario used many nonces and signatures');
+    for (const [name, text] of Object.entries(sources)) {
+      for (const secret of secrets) assert.ok(!text.includes(secret), `${name} must never carry a nonce or a signature`);
+    }
+    for (const name of ['audit.jsonl', 'state.json']) assert.ok(!sources[name].includes('PRIVATE_'), `${name} carries no page query: the facts stay in memory`);
+  });
+
+  await check('ASSERT_REMOTE_RESTART', async () => {
+    await reset();
+    const fp = await turnOn();
+    await restart();
+    const after = await result(conn, 'remote.status');
+    assert.equal(after.enabled, true, 'still on after a restart'); assert.equal(after.fingerprint, fp);
+    const post = await heldRecord(await clickAs('Post'));
+    assert.equal(post.remote, true);
+    assert.equal((await answer(decision(post, 'grant'))).error, undefined, 'and the same key still answers');
+    const now = new Date().toISOString();
+    const broken: [string, string][] = [
+      ['not JSON', 'not json at all'],
+      ['a key of the wrong kind', JSON.stringify({ publicKey: String(publicKey.export({ type: 'spki', format: 'pem' })), fingerprint: fp, enabledAt: now })],
+      ['a fingerprint that is not the key\'s', JSON.stringify({ publicKey: pem(bot.publicKey), fingerprint: fingerprintOf(stranger.publicKey), enabledAt: now })],
+      ['a missing field', JSON.stringify({ publicKey: pem(bot.publicKey), fingerprint: fp })],
+    ];
+    for (const [why, text] of broken) {
+      await restart(() => fs.writeFileSync(saved, text, { mode: 0o600 }));
+      assert.equal((await result(conn, 'remote.status')).enabled, false, `${why}: it stays off`);
+      const waiting = await heldRecord(await clickAs('Post'));
+      assert.equal(waiting.remote, undefined, `${why}: no flag`);
+      await refusedWith(decision(waiting, 'grant'), 'denied');
+    }
+  });
+}
 try {
   await startDaemon();
   const c = client(); await result(c, 'status'); const b = await fakeBridge();
@@ -1457,6 +2014,7 @@ try {
   else if (scenario === 'chrome-bridge') await chromeBridge(c, b);
   else if (scenario === 'upload') await uploadChecks(c, b);
   else if (scenario === 'session-grant') await sessionGrant(c, b);
+  else if (scenario === 'remote-approver') await remoteApprover(c, b);
   else throw new Error('unknown scenario');
   console.log(`== ${scenario} (${mode}): ${passed} passed, ${failed} failed`);
 } catch (e) {

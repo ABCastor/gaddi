@@ -389,6 +389,84 @@ import AppKit
         let frozenGrants = SessionGrantList(activeGrants, enabled: false) { _ in fatalError("disabled end ran") }
         check(descendants(frozenGrants).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }, "a disconnected panel cannot end a grant")
 
+        // Approving from the owner's other device: the switch, what it allows and never allows, the honest limit, the
+        // answers it gave, and the cards it may also answer.
+        let phoneKey = String(repeating: "0123456789abcdef", count: 4)
+        let phoneOffStatus = RemoteStatus(["enabled": false, "candidate": ["fingerprint": phoneKey]])!
+        let phoneNoKeyStatus = RemoteStatus(["enabled": false, "candidate": NSNull()])!
+        let phoneOnStatus = RemoteStatus(["enabled": true, "fingerprint": phoneKey, "enabledAt": "2099-01-01T00:00:00.000Z"])!
+        let phoneAnswers = [
+            RemoteDecision(["id": "pa1", "kind": "click", "caller": "Marcus", "url": "https://example.test/shop", "detail": "Post",
+                "status": "used", "by": "remote", "decidedAt": "2099-01-01T14:02:00.000Z"])!,
+            RemoteDecision(["id": "pa2", "kind": "upload", "caller": "codex", "url": "https://example.test/profile", "detail": "avatar.png (4 KB)",
+                "status": "denied", "by": "remote", "decidedAt": "2099-01-01T13:00:00.000Z"])!,
+        ]
+        for (theme, appearance) in [("light", NSAppearance(named: .aqua)!), ("dark", NSAppearance(named: .darkAqua)!)] {
+            for width: CGFloat in [528, 408] {
+                let tag = "phone-off-\(theme)-\(Int(width))"
+                var pressed: [String] = []
+                let panel = RemotePanel(phoneOffStatus, decisions: phoneAnswers, canTurnOn: true, canTurnOff: true,
+                    turnOn: { pressed.append("on") }, turnOff: { pressed.append("off") })
+                _ = try render(panel, width: width, name: tag, appearance: appearance)
+                let texts = descendants(panel).compactMap { $0 as? NSTextField }.map(\.stringValue)
+                check(texts.contains(RemotePanel.title)
+                      && texts.contains("Payments, purchases, sign-in, security pages and sending messages always need Touch ID on this Mac.")
+                      && texts.contains("The limit: a program running as you on this Mac that can read the phone approver's key could approve these requests too.")
+                      && texts.contains("A key from your phone approver is waiting: 0123 4567 89ab cdef. Check that your phone approver shows the same digits."),
+                      "\(tag): what it allows, what it never does, the honest limit and the key to compare")
+                check(texts.contains { $0.hasPrefix("Approved from phone: Marcus click “Post” on example.test/shop, ") }
+                      && texts.contains { $0.hasPrefix("Denied from phone: codex upload “avatar.png (4 KB)” on example.test/profile, ") },
+                      "\(tag): what the phone answered is listed")
+                let buttons = descendants(panel).compactMap { $0 as? PanelButton }
+                check(buttons.map(\.title) == ["Turn on…"] && buttons.allSatisfy { $0.isEnabled }, "\(tag): one usable Turn on… button")
+                buttons.first!.performClick(nil)
+                check(pressed == ["on"], "\(tag): Turn on… asks to turn on and does nothing else")
+                check(descendants(panel).compactMap { $0 as? NSTextField }.allSatisfy { fits($0, within: panel) }, "\(tag): every line fits")
+            }
+        }
+        for (theme, appearance) in [("light", NSAppearance(named: .aqua)!), ("dark", NSAppearance(named: .darkAqua)!)] {
+            for width: CGFloat in [528, 408] {
+                let tag = "phone-on-\(theme)-\(Int(width))"
+                var pressed: [String] = []
+                let panel = RemotePanel(phoneOnStatus, decisions: [], canTurnOn: true, canTurnOff: true,
+                    turnOn: { pressed.append("on") }, turnOff: { pressed.append("off") })
+                _ = try render(panel, width: width, name: tag, appearance: appearance)
+                let texts = descendants(panel).compactMap { $0 as? NSTextField }.map(\.stringValue)
+                check(texts.contains { $0.hasPrefix("On, since ") && $0.hasSuffix("It answers to the key 0123 4567 89ab cdef. Requests it can answer say so on their card.") },
+                      "\(tag): it says it is on, since when, and for which key")
+                let buttons = descendants(panel).compactMap { $0 as? PanelButton }
+                check(buttons.map(\.title) == ["Turn off"] && buttons.allSatisfy { $0.isEnabled }, "\(tag): one usable Turn off button")
+                buttons.first!.performClick(nil)
+                check(pressed == ["off"], "\(tag): Turn off ends it and does nothing else")
+                check(descendants(panel).compactMap { $0 as? NSTextField }.allSatisfy { fits($0, within: panel) }, "\(tag): every line fits")
+            }
+        }
+        let phoneNoKey = RemotePanel(phoneNoKeyStatus, decisions: [], canTurnOn: true, canTurnOff: true,
+            turnOn: { fatalError("turned on with no key") }, turnOff: { fatalError("turned off while off") })
+        check(descendants(phoneNoKey).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }
+              && descendants(phoneNoKey).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "No key from a phone approver has been found yet." },
+              "with no key waiting, Turn on… is disabled and says why")
+        let phoneBusy = RemotePanel(phoneOffStatus, decisions: [], canTurnOn: false, canTurnOff: true,
+            turnOn: { fatalError("busy turn on ran") }, turnOff: { fatalError("busy turn off ran") })
+        check(descendants(phoneBusy).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }, "while the app is busy or cannot sign, Turn on… is disabled")
+        let phoneFrozen = RemotePanel(phoneOnStatus, decisions: [], canTurnOn: true, canTurnOff: false,
+            turnOn: { fatalError("frozen turn on ran") }, turnOff: { fatalError("frozen turn off ran") })
+        check(descendants(phoneFrozen).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }, "a disconnected panel cannot turn it off")
+        let phoneCard = ApprovalCard(approval, enabled: true, remote: true) { _ in }
+        _ = try render(phoneCard, width: 528, name: "phone-card-light-528", appearance: NSAppearance(named: .aqua)!)
+        check(descendants(phoneCard).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Can also be approved from your phone." },
+              "a request the phone may answer says so")
+        check(descendants(phoneCard).compactMap { $0 as? PanelButton }.map(\.title).sorted() == ["Approve with Touch ID", "Deny"].sorted(),
+              "and its buttons stay Touch ID")
+        let plainCard = ApprovalCard(approval, enabled: true) { _ in }
+        check(!descendants(plainCard).compactMap { $0 as? NSTextField }.contains { $0.stringValue.contains("phone") }, "a request it may not answer says nothing of the phone")
+        let mixedList = ApprovalList([approval, signin], enabled: true, remote: [approval.id]) { _, _ in }
+        let mixedCards = mixedList.arrangedSubviews.compactMap { $0 as? ApprovalCard }
+        let mixedSays = mixedCards.map { card in
+            descendants(card).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Can also be approved from your phone." }
+        }
+        check(mixedCards.count == 2 && mixedSays == [true, false], "only the request the broker flagged says it can be answered from the phone")
+
         let disabled = ApprovalCard(signin, enabled: false) { _ in fatalError("disabled decision ran") }
         check(descendants(disabled).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }, "busy/disconnected sign-in choices are disabled")
         let disabledRevoke = RememberedSigninList([signin.site!], enabled: false) { _ in fatalError("disabled revoke ran") }
