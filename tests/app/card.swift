@@ -328,6 +328,67 @@ import AppKit
         check(descendants(emptySignin).compactMap { $0 as? PanelButton }.isEmpty && descendants(emptySend).compactMap { $0 as? PanelButton }.isEmpty, "empty permission lists have no revoke controls")
         check(descendants(disabledSend).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }, "busy/disconnected send revoke is disabled")
 
+        // Session grants: the request card and the list of what is running unattended.
+        let grantApproval = Approval(["id": "grantcheck", "kind": "grant", "caller": "codex", "reason": "session grant",
+            "detail": "post on www.linkedin.com/company\nupload on github.com/settings\nfor 3 hours\n“Update the profile”",
+            "expiresAt": Date().addingTimeInterval(540).timeIntervalSince1970 * 1000])!
+        for (theme, appearance) in [("light", NSAppearance(named: .aqua)!), ("dark", NSAppearance(named: .darkAqua)!)] {
+            for width: CGFloat in [528, 408] {
+                var choices: [String] = []
+                let card = ApprovalCard(grantApproval, enabled: true) { choices.append($0) }
+                _ = try render(card, width: width, name: "grant-\(theme)-\(Int(width))", appearance: appearance)
+                let buttons = descendants(card).compactMap { $0 as? PanelButton }
+                let labels = descendants(card).compactMap { $0 as? NSTextField }
+                let visible = labels.map(\.stringValue)
+                check(buttons.map(\.title).sorted() == ["Approve with Touch ID", "Deny"].sorted(),
+                      "grant-\(theme)-\(Int(width)): approve and deny only, never Always allow")
+                check(visible.contains("codex wants to work without asking you for 3 hours")
+                      && visible.contains("post on www.linkedin.com/company\nupload on github.com/settings\nDescribed by the agent as: “Update the profile”")
+                      && visible.contains("Payments, purchases, sending messages, sign-in and security changes still ask you every time."),
+                      "grant-\(theme)-\(Int(width)): the heading, every rule and the fixed sentence are visible")
+                check(visible.contains { $0.hasPrefix("decide by ") } && !visible.contains { $0.hasPrefix("until ") },
+                      "grant-\(theme)-\(Int(width)): the time shown is the time to answer, not the grant's length")
+                // The image-bearing button overhangs the card's last row by a point on every card without an
+                // "Always allow" row (an existing quirk), so only the horizontal fit of the controls is checked.
+                check(labels.allSatisfy { fits($0, within: card) }
+                      && buttons.allSatisfy { let frame = $0.convert($0.bounds, to: card); return frame.minX >= -1 && frame.maxX <= card.bounds.width + 1 },
+                      "grant-\(theme)-\(Int(width)): text and controls fit across the card")
+                for title in ["Approve with Touch ID", "Deny"] { buttons.first { $0.title == title }!.performClick(nil) }
+                check(choices == ["grant", "deny"], "grant-\(theme)-\(Int(width)): the buttons keep their decisions")
+            }
+        }
+        let activeGrants = [
+            SessionGrant(["id": "g1", "caller": "codex", "label": "Update the profile",
+                "rules": ["upload https://github.com/settings", "post https://www.linkedin.com/company"],
+                "expiresAt": Date().addingTimeInterval(10800).timeIntervalSince1970 * 1000])!,
+            SessionGrant(["id": "g2", "caller": "claude-code", "rules": ["delete https://shop.example/account/items"],
+                "expiresAt": Date().addingTimeInterval(1800).timeIntervalSince1970 * 1000])!,
+        ]
+        for (theme, appearance) in [("light", NSAppearance(named: .aqua)!), ("dark", NSAppearance(named: .darkAqua)!)] {
+            for width: CGFloat in [528, 408] {
+                var ended: [String] = []
+                let list = SessionGrantList(activeGrants, enabled: true) { ended.append($0.id) }
+                _ = try render(list, width: width, name: "session-grants-\(theme)-\(Int(width))", appearance: appearance)
+                let texts = descendants(list).compactMap { $0 as? NSTextField }.map(\.stringValue)
+                check(texts.contains("Session grants")
+                      && texts.contains { $0.hasPrefix("codex · until ") && $0.contains("upload on github.com/settings") && $0.contains("post on www.linkedin.com/company")
+                          && $0.contains("Described by the agent as: “Update the profile”") }
+                      && texts.contains { $0.hasPrefix("claude-code · until ") && $0.contains("delete on shop.example/account/items") },
+                      "session-grants-\(theme)-\(Int(width)): who, until when, what is waived and the agent's own words")
+                check(descendants(list).compactMap { $0 as? NSTextField }.allSatisfy { fits($0, within: list) },
+                      "session-grants-\(theme)-\(Int(width)): every row fits")
+                let ends = descendants(list).compactMap { $0 as? PanelButton }
+                check(ends.map(\.title) == ["End now", "End now"], "session-grants-\(theme)-\(Int(width)): one End now per grant")
+                for button in ends { button.performClick(nil) }
+                check(ended == ["g1", "g2"], "session-grants-\(theme)-\(Int(width)): End now selects exactly its grant")
+            }
+        }
+        let noGrants = SessionGrantList([], enabled: true) { _ in fatalError("empty grant list ended something") }
+        check(descendants(noGrants).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "No session grants. An agent can ask for one at the start of a chat." }
+              && descendants(noGrants).compactMap { $0 as? PanelButton }.isEmpty, "the empty grant list explains itself and has no controls")
+        let frozenGrants = SessionGrantList(activeGrants, enabled: false) { _ in fatalError("disabled end ran") }
+        check(descendants(frozenGrants).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }, "a disconnected panel cannot end a grant")
+
         let disabled = ApprovalCard(signin, enabled: false) { _ in fatalError("disabled decision ran") }
         check(descendants(disabled).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }, "busy/disconnected sign-in choices are disabled")
         let disabledRevoke = RememberedSigninList([signin.site!], enabled: false) { _ in fatalError("disabled revoke ran") }

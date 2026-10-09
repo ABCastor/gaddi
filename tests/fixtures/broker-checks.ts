@@ -36,7 +36,9 @@ if (scenario === 'eval-overlay') fs.copyFileSync(path.join(repo, 'tests/fixtures
 const env = { ...process.env, GADDI_APP_LAUNCHER: launcher, OMNIREAD_BIN: path.join(home, 'missing-omniread'), GADDI_HOME: home, GADDI_SOCKET: socket, GADDI_APPROVER_PUB: publicPath,
   GADDI_STATE: path.join(home, 'state.json'), GADDI_AUDIT: path.join(home, 'audit.jsonl'),
   ...(scenario === 'sessions' ? { GADDI_SESSION_IDLE_MS: '4000', GADDI_SESSION_END_MS: '400', GADDI_SESSION_SWEEP_MS: '20' } : {}),
-  ...(scenario === 'upload' ? { HOME: person } : {}) };
+  ...(scenario === 'upload' ? { HOME: person } : {}),
+  // A grant "minute" is 400 ms here, so a five-minute grant can be watched ending without a long wait.
+  ...(scenario === 'session-grant' ? { HOME: person, GADDI_GRANT_MINUTE_MS: '400' } : {}) };
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const clients: Socket[] = [], bridges: Socket[] = [];
 let daemon: ChildProcessWithoutNullStreams;
@@ -93,6 +95,8 @@ async function fakeBridge() {
     resultExtras: undefined as Record<string, unknown> | undefined,
     actionError: undefined as WireError | undefined,
     describeSelector: undefined as string | undefined,
+    // What the next describe says the clicked control is called and where it leads (session grant checks).
+    describeName: undefined as string | undefined, describeHref: undefined as string | undefined,
     capture: 'none' as 'none' | 'image' | 'error' | 'missing-box' | 'hang', captureWidth: 8, captureHeight: 8 };
   let buffer = '', nextTab = 11;
   let ready: () => void;
@@ -128,10 +132,10 @@ async function fakeBridge() {
         case 'chrome.describe': {
           const s = msg.params.selector; assert.ok(typeof s === 'string');
           const names: Record<string, string> = { '#pay': 'Procedi al pagamento', '#confirm': 'Confirm order', '#del': 'Delete', '#send': 'Send', '#plain': 'Read more' };
-          const description: ElementDescription = { name: names[s] || (s.startsWith('a[href=') ? 'Pay' : 'Read more'),
+          const description: ElementDescription = { name: control.describeName ?? (names[s] || (s.startsWith('a[href=') ? 'Pay' : 'Read more')),
             tag: ['#password', '#current', '#sensitive'].includes(s) ? 'input' : 'button',
             type: s === '#password' ? 'password' : 'text', autocomplete: s === '#current' ? 'current-password' : '',
-            href: s === '#checkout-link' ? '/checkout?token=PRIVATE_LINK_QUERY' : s === '#read-link' ? '/article?token=PRIVATE_LINK_QUERY' : '', submitName: control.focusSubmit,
+            href: control.describeHref ?? (s === '#checkout-link' ? '/checkout?token=PRIVATE_LINK_QUERY' : s === '#read-link' ? '/article?token=PRIVATE_LINK_QUERY' : ''), submitName: control.focusSubmit,
             matched: s === '#sensitive' ? ['.sensitive'] : [] };
           if (control.omitHref) delete description.href;
           if (control.omitSubmit) delete description.submitName;
@@ -990,6 +994,436 @@ async function sessionChecks(c: Client, b: Bridge) {
     for (const adapter of adapters) await adapter.close();
   }
 }
+// Session grants against the real broker, a fake Chrome and a test approver key. Every check runs
+// on its own session and grant, so one failing check never hides another; the mutation harness
+// (tests/gates/session-grant-mutations.test.sh) breaks the broker once per check and wants that
+// check, by name, to turn red.
+async function sessionGrant(c: Client, b: Bridge) {
+  const check = async (name: string, fn: () => Promise<void>) => {
+    try { await fn(); pass(name); }
+    catch (error) {
+      failed++; process.exitCode = 1;
+      console.log(`FAIL ASSERTION session-grant: ${name}: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}`);
+    }
+  };
+  const SESSION_PREFIX = 'gaddi-grant-session';
+  const SHOP = 'https://unseen.example/shop';
+  const shopURL = b.tabs[0].url;
+  const file = (relative: string, content = 'fixture') => {
+    const target = path.join(person, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, content); return target;
+  };
+  const avatar = file('Pictures/avatar.png', 'fixture picture');
+  const privateKeyFile = file('.ssh/id_ed25519', 'fixture key');
+  // Everything the broker says to a subscriber, kept whole so a leak of the session key can be searched for.
+  const watched: string[] = [];
+  const watcher = net.connect(socket); clients.push(watcher);
+  watcher.setEncoding('utf8'); watcher.on('error', () => {}); watcher.on('data', data => { watched.push(String(data)); });
+  watcher.write(JSON.stringify({ id: 'watch', method: 'events.subscribe', params: { caller: 'watcher' } }) + '\n');
+  // A line still arriving when this is read is skipped rather than failing the check.
+  const watchedEvents = () => watched.join('').split('\n').filter(Boolean).flatMap(line => {
+    try { const value = parseJSON(line); return isRecord(value) ? [value] : []; } catch { return []; }
+  });
+  const lifetimes = new Map<string, Client>();
+  let sequence = 0;
+  async function liveSession() {
+    const session = `${SESSION_PREFIX}-${++sequence}-${crypto.randomBytes(3).toString('hex')}`;
+    const lifetime = client();
+    await result(lifetime, 'session.begin', { session, caller: 'grant-agent' });
+    lifetimes.set(session, lifetime);
+    return session;
+  }
+  async function ask(session: string, rules: string[], minutes = 720, label?: string) {
+    return c.call('grant.request', { session, caller: 'grant-agent', rules, minutes, ...(label ? { label } : {}) });
+  }
+  // A request is always answered HELD with the pending record's id; this reads that record back.
+  async function asked(reply: Reply) {
+    assert.equal(reply.error?.code, 'held', JSON.stringify(reply));
+    assert.ok(reply.error);
+    return pending(c, reply.error);
+  }
+  async function grantTo(session: string, rules: string[], options: { minutes?: number; label?: string } = {}) {
+    const approval = await asked(await ask(session, rules, options.minutes, options.label));
+    await result(c, 'approval.grant', { id: approval.id, proof: proof(approval) });
+    return approval;
+  }
+  async function freshGrant(rules: string[], options: { minutes?: number; label?: string } = {}) {
+    const session = await liveSession();
+    const approval = await grantTo(session, rules, options);
+    return { session, approval };
+  }
+  const grantsOf = async (session?: string) => (await result(c, 'approvals.list', session ? { session } : {})).grants;
+  const base = (session?: string) => session ? { session, caller: 'grant-agent' } : { caller: 'grant-agent' };
+  const upload = (session?: string, params: IncomingParams = {}) => c.call('upload', { ...base(session), selector: '#avatar', path: avatar, ...params });
+  const click = (session?: string, params: IncomingParams = {}) => c.call('click', { ...base(session), selector: '#plain', ...params });
+  const enter = (session?: string) => c.call('press', { ...base(session), key: 'Enter' });
+  const outcome = async (reply: Promise<Reply>) => (await reply).error?.code ?? 'allowed';
+  const auditLines = () => fs.readFileSync(path.join(home, 'audit.jsonl'), 'utf8').trim().split('\n').filter(Boolean)
+    .map(line => parseJSON(line)).filter(isRecord);
+  const until = async (predicate: () => Promise<boolean>, ms = 1500) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { if (await predicate()) return true; await delay(20); }
+    return predicate();
+  };
+  const on = async (url: string, fn: () => Promise<void>) => {
+    b.tabs[0].url = url;
+    try { await fn(); } finally { b.tabs[0].url = shopURL; }
+  };
+  const named = async (name: string, fn: () => Promise<void>, href?: string) => {
+    b.control.describeName = name; b.control.describeHref = href;
+    try { await fn(); } finally { b.control.describeName = undefined; b.control.describeHref = undefined; }
+  };
+
+  await check('ASSERT_GRANT_NEEDED', async () => {
+    const session = await liveSession();
+    assert.equal(await outcome(upload(session)), 'held', 'an upload without a grant is held');
+    await named('Post', async () => assert.equal(await outcome(click(session)), 'held', 'a post without a grant is held'));
+    await named('Delete', async () => assert.equal(await outcome(click(session)), 'held', 'a delete without a grant is held'));
+  });
+
+  await check('ASSERT_GRANT_UPLOAD', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`]);
+    const before = (await result(c, 'approvals.list')).pending.length, sent = b.calls.filter(m => m.method === 'chrome.upload').length;
+    assert.equal(await outcome(upload(session)), 'allowed', 'an in-scope upload runs');
+    assert.equal(b.calls.filter(m => m.method === 'chrome.upload').length, sent + 1, 'the file reached the page');
+    assert.equal((await result(c, 'approvals.list')).pending.length, before, 'without a new hold');
+  });
+
+  await check('ASSERT_GRANT_CLICK', async () => {
+    const { session } = await freshGrant([`post ${SHOP}`, `delete ${SHOP}`]);
+    for (const name of ['Post', 'Publish', 'Pubblica', 'Share', 'Delete', 'Delete forever', 'Elimina']) {
+      await named(name, async () => assert.equal(await outcome(click(session)), 'allowed', `${name} on a granted page`));
+    }
+  });
+
+  await check('ASSERT_GRANT_ENTER', async () => {
+    const { session } = await freshGrant([`post ${SHOP}`]);
+    try {
+      b.control.focusSubmit = 'Post';
+      assert.equal(await outcome(enter(session)), 'allowed', 'Enter on a Post form');
+      b.control.focusSubmit = 'Pay now';
+      assert.equal(await outcome(enter(session)), 'held', 'Enter on a Pay form is not waived');
+    } finally { b.control.focusSubmit = 'Search'; }
+  });
+
+  await check('ASSERT_GRANT_BOUNDARY', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`]);
+    for (const [url, expected] of [[`${SHOP}/`, 'allowed'], [`${SHOP}/deep/page?x=1`, 'allowed'], [`${SHOP}X`, 'held'],
+      [`${SHOP}-x/y`, 'held'], ['https://unseen.example/', 'held']] as const) {
+      await on(url, async () => assert.equal(await outcome(upload(session)), expected, url));
+    }
+  });
+
+  await check('ASSERT_GRANT_ORIGIN', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`]);
+    for (const url of ['https://other.example/shop', 'http://unseen.example/shop', 'https://unseen.example:8443/shop', 'https://sub.unseen.example/shop']) {
+      await on(url, async () => assert.equal(await outcome(upload(session)), 'held', url));
+    }
+  });
+
+  await check('ASSERT_GRANT_PERMISSION', async () => {
+    const posting = await freshGrant([`post ${SHOP}`]), deleting = await freshGrant([`delete ${SHOP}`]);
+    assert.equal(await outcome(upload(posting.session)), 'held', 'a post grant does not cover an upload');
+    await named('Delete', async () => assert.equal(await outcome(click(posting.session)), 'held', 'a post grant does not cover a delete'));
+    await named('Post', async () => assert.equal(await outcome(click(deleting.session)), 'held', 'a delete grant does not cover a post'));
+    await named('Post', async () => assert.equal(await outcome(click(posting.session)), 'allowed', 'but it covers a post'));
+  });
+
+  await check('ASSERT_GRANT_DESTINATION', async () => {
+    const { session } = await freshGrant([`post ${SHOP}`]);
+    await named('Post', async () => {
+      for (const [href, expected] of [['https://elsewhere.example/shop/post', 'held'], ['/other', 'held'], ['/shop/checkout', 'held'],
+        ['/shop/after', 'allowed'], ['#section', 'allowed']] as const) {
+        b.control.describeHref = href;
+        assert.equal(await outcome(click(session)), expected, `a Post that leads to ${href}`);
+      }
+    });
+  });
+
+  await check('ASSERT_GRANT_MIXED', async () => {
+    const { session } = await freshGrant([`post ${SHOP}`, `delete ${SHOP}`]);
+    for (const name of ['Post and pay', 'Pay and publish', 'Delete and send', 'Share and remove phone', 'Publish and change password']) {
+      await named(name, async () => assert.equal(await outcome(click(session)), 'held', name));
+    }
+    const postOnly = await freshGrant([`post ${SHOP}`]);
+    await named('Post and delete', async () => assert.equal(await outcome(click(postOnly.session)), 'held', 'a delete the grant does not cover'));
+    try {
+      b.control.focusSubmit = 'Post and pay';
+      assert.equal(await outcome(enter(session)), 'held', 'Enter on a Post and pay form');
+    } finally { b.control.focusSubmit = 'Search'; }
+  });
+
+  await check('ASSERT_GRANT_PROTECTED', async () => {
+    const { session } = await freshGrant(['upload https://unseen.example/', 'post https://unseen.example/']);
+    for (const url of [`${SHOP}/checkout`, 'https://unseen.example/payment/new', `${SHOP}?next=/checkout`, `${SHOP}/settings/security`]) {
+      await on(url, async () => {
+        assert.equal(await outcome(upload(session)), 'held', `upload on ${url}`);
+        await named('Post', async () => assert.equal(await outcome(click(session)), 'held', `post on ${url}`));
+      });
+    }
+    assert.equal(await outcome(upload(session)), 'allowed', 'while an ordinary page of the same site is waived');
+  });
+
+  await check('ASSERT_GRANT_NEVER_WAIVED', async () => {
+    const { session } = await freshGrant(['upload https://unseen.example/', 'post https://unseen.example/', 'delete https://unseen.example/']);
+    for (const name of ['Pay now', 'Buy now', 'Confirm order', 'Send', 'Procedi al pagamento', 'Change password', 'Unsubscribe',
+      'Close account', 'Delete account', 'Cancel subscription', 'Turn off 2-step verification', 'Transfer', 'Ricarica']) {
+      await named(name, async () => assert.equal(await outcome(click(session)), 'held', name));
+    }
+    await named('Read more', async () => assert.equal(await outcome(click(session)), 'held', 'a link to a protected address'), '/checkout');
+    assert.equal(await outcome(c.call('goto', { ...base(session), url: 'https://never-seen.example/checkout' })), 'held', 'navigation to a protected address');
+  });
+
+  await check('ASSERT_GRANT_NEVER', async () => {
+    const session = await liveSession();
+    const before = (await result(c, 'approvals.list')).pending.filter(a => a.kind === 'grant').length;
+    for (const word of ['send', 'pay', 'signin', 'purchase', 'buy', 'checkout', 'transfer', 'unsubscribe', 'password', 'Send']) {
+      const reply = await ask(session, [`${word} https://unseen.example/`], 60);
+      assert.equal(reply.error?.code, 'error', `${word} must be refused`);
+      assert.match(reply.error?.message ?? '', /can never be granted/, word);
+    }
+    const mixed = await ask(session, [`upload ${SHOP}`, 'send https://unseen.example/'], 60);
+    assert.equal(mixed.error?.code, 'error', 'one ungrantable rule refuses the whole request');
+    assert.equal((await result(c, 'approvals.list')).pending.filter(a => a.kind === 'grant').length, before, 'and no card was raised');
+  });
+
+  await check('ASSERT_GRANT_GMAIL', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`, `post ${SHOP}`]);
+    const reply = await ask(await liveSession(), ['post https://mail.google.com/', 'upload https://mail.google.com/mail/u/0'], 60);
+    assert.equal(reply.error?.code, 'error', 'Gmail cannot be named in a grant');
+    await named('Send', async () => assert.equal(await outcome(c.call('click', { ...base(session), tab: 8, selector: '#send' })), 'denied', 'a Gmail send stays denied'));
+    assert.equal(await outcome(c.call('press', { ...base(session), tab: 8, key: 'Meta+Enter' })), 'held', 'Cmd+Enter in Gmail stays held');
+  });
+
+  await check('ASSERT_GRANT_SECRET', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`]);
+    for (const target of [privateKeyFile, path.join(person, '.ssh')]) {
+      const reply = await upload(session, { path: target });
+      assert.equal(reply.error?.code, 'denied', `${target} is refused whatever the grant`);
+      assert.match(reply.error?.message ?? '', /^upload refused: /);
+    }
+  });
+
+  await check('ASSERT_GRANT_OTHER_SESSION', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`]);
+    const stranger = await liveSession();
+    assert.equal(await outcome(upload(session)), 'allowed', 'the chat that was granted');
+    assert.equal(await outcome(upload(stranger)), 'held', 'another chat, same caller name');
+    assert.equal(await outcome(upload(`${session}-twin`)), 'held', 'an id that merely resembles the granted one');
+  });
+
+  await check('ASSERT_GRANT_CLI', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`]);
+    assert.equal(await outcome(upload(session)), 'allowed', 'the chat that was granted');
+    assert.equal(await outcome(upload(undefined)), 'held', 'a CLI call carries no session');
+    assert.equal(await outcome(upload(undefined, { session: 'bad session!' })), 'held', 'a malformed session is no session');
+    assert.equal(await outcome(upload(undefined, { session: '' })), 'held', 'an empty session is no session');
+  });
+
+  await check('ASSERT_GRANT_LIVE_REQUIRED', async () => {
+    for (const extra of [{}, { session: 'never-began' }, { session: 'bad session!' }, { session: '' }]) {
+      const reply = await c.call('grant.request', { caller: 'grant-agent', rules: [`upload ${SHOP}`], minutes: 60, ...extra });
+      assert.equal(reply.error?.code, 'error', JSON.stringify(extra));
+      assert.match(reply.error?.message ?? '', /live agent chat/);
+    }
+    const session = await liveSession();
+    lifetimes.get(session)!.conn.destroy();
+    assert.ok(await until(async () => (await ask(session, [`upload ${SHOP}`], 60)).error?.code === 'error'), 'a chat that has ended can no longer ask');
+  });
+
+  await check('ASSERT_GRANT_PROOF', async () => {
+    const session = await liveSession();
+    const a = await asked(await ask(session, [`upload ${SHOP}`], 60));
+    const wrongKey = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey;
+    await rejected(c, 'approval.grant', { id: a.id }, 'proof-invalid');
+    await rejected(c, 'approval.grant', { id: a.id, proof: proof(a, 'grant', Date.now(), wrongKey) }, 'proof-invalid');
+    for (const offset of [-61000, 61000]) await rejected(c, 'approval.grant', { id: a.id, proof: proof(a, 'grant', Date.now() + offset) }, 'proof-invalid');
+    await rejected(c, 'approval.grant', { id: a.id, proof: proof(a, 'deny') }, 'proof-invalid');
+    for (const change of [{ tab: 8 }, { detail: 'upload on unseen.example/shop\nfor 12 hours' }, { kind: 'goto' }]) {
+      await rejected(c, 'approval.grant', { id: a.id, proof: proof({ ...a, ...change }) }, 'proof-invalid');
+    }
+    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 0, 'no unsigned, forged, stale or altered answer made a grant');
+    assert.equal(await outcome(upload(session)), 'held', 'so the upload is still held');
+    const signed = proof(a);
+    await result(c, 'approval.grant', { id: a.id, proof: signed });
+    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 1, 'the real signature made exactly one');
+    await rejected(c, 'approval.grant', { id: a.id, proof: signed }, 'approval-invalid');
+    const other = await liveSession();
+    const second = await asked(await ask(other, [`upload ${SHOP}`], 45));
+    await rejected(c, 'approval.grant', { id: second.id, proof: signed }, 'proof-invalid');
+    assert.equal((await grantsOf(other)).filter(g => g.mine).length, 0, 'a replayed signature grants nothing');
+  });
+
+  await check('ASSERT_GRANT_REMEMBER', async () => {
+    const session = await liveSession();
+    const a = await asked(await ask(session, [`upload ${SHOP}`], 60)), signed = proof(a);
+    const refused = await rejected(c, 'approval.grant', { id: a.id, remember: true, proof: signed }, 'approval-invalid');
+    assert.match(refused.message, /cannot be remembered/);
+    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 0, 'remembering is not a thing for a session grant');
+    await result(c, 'approval.grant', { id: a.id, proof: signed });
+    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 1, 'the refused attempt left the signature unused');
+  });
+
+  await check('ASSERT_GRANT_DENY', async () => {
+    const session = await liveSession();
+    const a = await asked(await ask(session, [`upload ${SHOP}`], 60));
+    await result(c, 'approval.deny', { id: a.id, proof: proof(a, 'deny') });
+    assert.equal((await result(c, 'approvals.list')).recent.find(x => x.id === a.id)?.status, 'denied');
+    await rejected(c, 'approval.grant', { id: a.id, proof: proof(a) }, 'approval-invalid');
+    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 0);
+    assert.equal(await outcome(upload(session)), 'held');
+  });
+
+  await check('ASSERT_GRANT_ONE_OPEN', async () => {
+    const session = await liveSession();
+    const rules = [`upload ${SHOP}`];
+    const first = (await ask(session, rules, 30)).error, again = (await ask(session, rules, 30)).error, changed = (await ask(session, rules, 45)).error;
+    assert.equal(first?.code, 'held');
+    assert.equal(again?.approval?.id, first?.approval?.id, 'the same request returns the same pending record');
+    assert.notEqual(changed?.approval?.id, first?.approval?.id, 'a changed request is a new record');
+    const listed = await result(c, 'approvals.list');
+    assert.ok(!listed.pending.some(a => a.id === first?.approval?.id), 'and it replaces the old one');
+    assert.ok(listed.pending.some(a => a.id === changed?.approval?.id));
+    assert.equal(listed.recent.find(a => a.id === first?.approval?.id)?.status, 'cancelled');
+  });
+
+  await check('ASSERT_GRANT_DETAIL', async () => {
+    const session = await liveSession();
+    const a = await asked(await ask(session, [`upload ${SHOP}`, `post ${SHOP}/`], 180, 'Update the shop page'));
+    assert.equal(a.kind, 'grant'); assert.equal(a.reason, 'session grant'); assert.equal(a.tab, null); assert.equal(a.url, '');
+    assert.equal(a.caller, 'grant-agent');
+    assert.equal(a.detail, 'post on unseen.example/shop\nupload on unseen.example/shop\nfor 3 hours\n“Update the shop page”');
+    // What the owner signs is the text the broker built, not a cleaned copy: a bare local origin keeps no added slash.
+    const local = await asked(await ask(session, ['post http://localhost:3000'], 5));
+    assert.equal(local.detail, 'post on http://localhost:3000\nfor 5 minutes');
+  });
+
+  await check('ASSERT_GRANT_LIST', async () => {
+    const { session, approval } = await freshGrant([`upload ${SHOP}`, `post ${SHOP}`], { label: 'Update the shop page' });
+    const mine = (await grantsOf(session)).find(g => g.mine);
+    assert.ok(mine, 'the asking chat sees its grant as its own');
+    assert.equal(mine.caller, 'grant-agent'); assert.equal(mine.label, 'Update the shop page');
+    assert.deepEqual(mine.rules, [`post ${SHOP}`, `upload ${SHOP}`]);
+    assert.equal(Date.parse(mine.expiresAt) - Date.parse(mine.createdAt), 720 * 400, 'twelve hours, in test minutes');
+    const seen = (await grantsOf(`${session}-other`)).find(g => g.id === mine.id);
+    assert.ok(seen && !seen.mine, 'another chat sees it, but not as its own');
+    const anonymous = (await grantsOf()).find(g => g.id === mine.id);
+    assert.ok(anonymous && !anonymous.mine, 'a client with no session sees it too');
+    const record = (await result(c, 'approvals.list')).recent.find(a => a.id === approval.id);
+    assert.equal(record?.status, 'used', 'the request is closed once the grant exists');
+  });
+
+  await check('ASSERT_GRANT_NO_SESSION_LEAK', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`]);
+    const open = await liveSession();
+    const request = await asked(await ask(open, [`post ${SHOP}`], 30));
+    await delay(100);
+    const sources: Record<string, string> = {
+      'approvals.list': JSON.stringify(await result(c, 'approvals.list', { session })),
+      events: watched.join(''), 'state.json': fs.readFileSync(path.join(home, 'state.json'), 'utf8'),
+      'audit.jsonl': fs.readFileSync(path.join(home, 'audit.jsonl'), 'utf8'), stderr,
+    };
+    for (const [name, text] of Object.entries(sources)) assert.ok(!text.includes(SESSION_PREFIX), `${name} must never carry a session id`);
+    assert.ok(!sources['state.json'].includes(request.id), 'a grant request is never written to disk');
+  });
+
+  await check('ASSERT_GRANT_AUDIT', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`]);
+    const id = (await grantsOf(session)).find(g => g.mine)?.id;
+    assert.ok(id);
+    assert.equal(await outcome(upload(session)), 'allowed');
+    let lines = auditLines();
+    assert.equal(lines.findLast(e => e.method === 'upload' && e.outcome === 'allow')?.grant, id, 'an allowed action names the grant');
+    const start = lines.find(e => e.method === 'grant.start' && e.grant === id);
+    assert.ok(start, 'the start is audited');
+    assert.deepEqual(start.rules, [`upload ${SHOP}`]); assert.equal(typeof start.expiresAt, 'string'); assert.equal(start.caller, 'grant-agent');
+    assert.ok(lines.some(e => e.method === 'grant.request' && e.outcome === 'hold'), 'the request is audited as a hold');
+    assert.ok(!Object.hasOwn(lines.findLast(e => e.method === 'upload' && e.outcome === 'hold') ?? {}, 'grant'), 'a held action names no grant');
+    await result(c, 'grants.revoke', { id });
+    lines = auditLines();
+    const ends = lines.filter(e => e.method === 'grant.end' && e.grant === id);
+    assert.equal(ends.length, 1, 'the end is audited once'); assert.equal(ends[0].reason, 'revoked');
+    assert.ok(!JSON.stringify(lines).includes('PRIVATE_'), 'no query reaches the audit');
+  });
+
+  await check('ASSERT_GRANT_APPROVAL_CONSUMED', async () => {
+    const session = await liveSession();
+    const held = await asked(await upload(session));
+    await grantTo(session, [`upload ${SHOP}`]);
+    await result(c, 'approval.grant', { id: held.id, proof: proof(held) });
+    assert.equal((await upload(session, { approval: 'unknownapproval' })).error?.code, 'approval-unknown', 'a supplied approval id is still checked, whatever the grant would allow');
+    assert.equal(await outcome(upload(session, { approval: held.id })), 'allowed', 'and a real one is consumed as always');
+    await rejected(c, 'upload', { ...base(session), selector: '#avatar', path: avatar, approval: held.id }, 'approval-used');
+    const used = auditLines().findLast(e => e.method === 'upload' && e.outcome === 'allow');
+    assert.equal(used?.approval, held.id, 'the audit names the approval');
+    assert.ok(!Object.hasOwn(used ?? {}, 'grant'), 'and does not credit the grant');
+    assert.equal(await outcome(upload(session)), 'allowed', 'without an approval the grant does the work');
+    assert.equal(typeof auditLines().findLast(e => e.method === 'upload' && e.outcome === 'allow')?.grant, 'string', 'and is named');
+  });
+
+  await check('ASSERT_GRANT_EXPIRY', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`], { minutes: 5 });
+    const id = (await grantsOf(session)).find(g => g.mine)?.id;
+    assert.ok(id);
+    assert.equal(await outcome(upload(session)), 'allowed', 'active at first');
+    await delay(2700);
+    assert.equal(await outcome(upload(session)), 'held', 'held again once the time is up');
+    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 0, 'and gone from the list');
+    assert.equal(auditLines().filter(e => e.method === 'grant.end' && e.grant === id && e.reason === 'expired').length, 1);
+    assert.ok(watchedEvents().filter(e => e.event === 'grants.changed').length >= 2, 'start and end were announced');
+  });
+
+  await check('ASSERT_GRANT_REVOKE', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`]);
+    const id = (await grantsOf(session)).find(g => g.mine)?.id;
+    assert.ok(id);
+    assert.equal(await outcome(upload(session)), 'allowed');
+    await result(c, 'grants.revoke', { id });
+    assert.equal(await outcome(upload(session)), 'held', 'held again after an end');
+    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 0);
+    await rejected(c, 'grants.revoke', { id }, 'error');
+    await rejected(c, 'grants.revoke', { id: 'nosuchgrant' }, 'error');
+    await rejected(c, 'grants.revoke', { id: 42 }, 'error');
+  });
+
+  await check('ASSERT_GRANT_SESSION_END', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`]);
+    const id = (await grantsOf(session)).find(g => g.mine)?.id;
+    assert.ok(id);
+    assert.equal(await outcome(upload(session)), 'allowed');
+    lifetimes.get(session)!.conn.destroy();
+    assert.ok(await until(async () => (await grantsOf(session)).filter(g => g.mine).length === 0), 'closing the chat ends its grants');
+    assert.equal(await outcome(upload(session)), 'held', 'held again');
+    assert.equal(auditLines().filter(e => e.method === 'grant.end' && e.grant === id && e.reason === 'session-ended').length, 1);
+    await result(client(), 'session.begin', { session, caller: 'grant-agent' });
+    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 0, 'reconnecting does not bring it back');
+    assert.equal(await outcome(upload(session)), 'held');
+  });
+
+  await check('ASSERT_GRANT_ENDED_ASK', async () => {
+    const session = await liveSession();
+    const a = await asked(await ask(session, [`upload ${SHOP}`], 60));
+    lifetimes.get(session)!.conn.destroy();
+    assert.ok(await until(async () => !(await result(c, 'approvals.list')).pending.some(x => x.id === a.id)), 'its request is withdrawn');
+    const late = await c.call('approval.grant', { id: a.id, proof: proof(a) });
+    assert.equal(late.error?.code, 'approval-invalid', 'approving a request whose chat has gone does nothing');
+    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 0);
+  });
+
+  await check('ASSERT_GRANT_RESTART', async () => {
+    const { session } = await freshGrant([`upload ${SHOP}`]);
+    assert.equal(await outcome(upload(session)), 'allowed', 'granted before the restart');
+    const stopped = once(daemon, 'exit'); daemon.kill('SIGTERM'); await stopped;
+    await startDaemon();
+    const restarted = client(); const bridge = await fakeBridge();
+    await result(restarted, 'session.begin', { session, caller: 'grant-agent' });
+    assert.equal((await result(restarted, 'approvals.list', { session })).grants.length, 0, 'no grant survives a restart');
+    const reply = await restarted.call('upload', { ...base(session), selector: '#avatar', path: avatar });
+    assert.equal(reply.error?.code, 'held', 'held again');
+    assert.equal(bridge.calls.filter(m => m.method === 'chrome.upload').length, 0, 'and nothing was sent');
+    assert.ok(!fs.readFileSync(path.join(home, 'state.json'), 'utf8').includes(SESSION_PREFIX), 'no session id was written to disk');
+  });
+}
 try {
   await startDaemon();
   const c = client(); await result(c, 'status'); const b = await fakeBridge();
@@ -1004,6 +1438,7 @@ try {
   else if (scenario === 'page-version') await pageVersions(c, b);
   else if (scenario === 'chrome-bridge') await chromeBridge(c, b);
   else if (scenario === 'upload') await uploadChecks(c, b);
+  else if (scenario === 'session-grant') await sessionGrant(c, b);
   else throw new Error('unknown scenario');
   console.log(`== ${scenario} (${mode}): ${passed} passed, ${failed} failed`);
 } catch (e) {

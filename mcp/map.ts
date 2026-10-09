@@ -26,6 +26,17 @@ export function mapSocketError(error: unknown): CallToolResult {
   return { content: [{ type: 'text', text: `ERROR: ${e.message || 'unknown error'}` }], isError: true };
 }
 
+// A session grant is never retried: the broker acts on the owner's signed answer by itself, so the
+// generic "retry with approval=<id>" advice would be wrong here. Everything else maps as usual.
+export function mapGrantError(error: unknown): CallToolResult {
+  const e: Record<string, unknown> = isRecord(error) ? error : {};
+  if (e.code !== 'held') return mapSocketError(error);
+  const approval: Record<string, unknown> = isRecord(e.approval) ? e.approval : {};
+  const id = approval.id != null ? String(approval.id) : 'unknown';
+  const expiry = approval.expiresAt ?? approval.expires;
+  return text(`HELD (approval ${id}): session grant. The owner decides with Touch ID in the Gaddi app. It takes effect as soon as they approve: do not retry, just keep working. browser_approvals lists the grants that are active.${expiry ? ` The request expires ${expiry}.` : ''}`);
+}
+
 function text(s: unknown): { content: [{ type: 'text'; text: string }] } {
   return { content: [{ type: 'text', text: String(s) }] };
 }

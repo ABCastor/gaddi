@@ -6,6 +6,8 @@ Approve and Deny require authentication and a Secure Enclave signature. Authenti
 
 Eligible sends use the sign-in panel's existing "Always allow on this site" choice. Authentication signs the exact origin and hold kind: Send with Enter and Send button are separate permissions. Remembered sends appear in the same panel with a signed Revoke action, and the default list is empty. Payment, deletion, security pages, uploads and refused actions never offer Always allow.
 
+An agent can also ask, once per chat, to skip a few holds for a while (uploads, posts, deletes on pages it names). That request arrives as a card with its rules and length, approved with the same Touch ID signature. Active grants are listed in the panel under **Session grants**, with **End now**, which asks for no Touch ID because it only removes authority. See [authorization](../docs/authorization.md#session-grants).
+
 ## Build and install
 
 Requires macOS 26 or later and Xcode:

@@ -84,7 +84,7 @@ r=$(js "(()=>{const a=read('$ORIG/.claude.json'),b=read('$ROOT/.claude.json');co
 # settings.json: parses, allow gained exactly the tool names, everything else identical
 r=$(js "(()=>{const a=read('$ORIG/.claude/settings.json'),b=read('$ROOT/.claude/settings.json');const ours=b.permissions.allow.filter(x=>x.startsWith('mcp__gaddi__'));b.permissions.allow=b.permissions.allow.filter(x=>!x.startsWith('mcp__gaddi__'));const sorted=eq(ours,[...ours].sort())&&new Set(ours).size===ours.length;return [eq(a,b), ours.length, sorted].join(' ')})()")
 ntools=$(node "$REPO/mcp/server.mjs" --list-tools | wc -l | tr -d ' ')
-[[ "$ntools" == "25" ]] || fail exact-tool-count "$ntools"
+[[ "$ntools" == "26" ]] || fail exact-tool-count "$ntools"
 [[ "$r" == "true $ntools true" ]] && pass claude-settings "allow gained $ntools sorted unique rules; rest identical" || fail claude-settings "$r (expected true $ntools true)"
 # desktop: other kept, entry present
 r=$(js "(()=>{const a=read('$ORIG/Library/Application Support/Claude/claude_desktop_config.json'),b=read('$ROOT/Library/Application Support/Claude/claude_desktop_config.json');const e=b.mcpServers['gaddi'];delete b.mcpServers['gaddi'];return [eq(a,b), !!b.mcpServers.other, !!e && e.env.GADDI_HARNESS==='claude-desktop'].join(' ')})()")
@@ -155,7 +155,8 @@ if GADDI_CONFIG_ROOT="$UPDATED" register_harnesses > "$WORK/update.log" 2>&1; th
   if python3 - "$UPDATED" "$WORK/tools" <<'PYVERIFY'
 import json, pathlib, re, sys
 root, names = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2]).read_text().splitlines()
-assert len(names) == 25
+assert len(names) == 26
+assert 'browser_grant' in names
 assert 'browser_signin' in names
 assert 'browser_wait' in names
 settings = json.loads((root / '.claude/settings.json').read_text())
@@ -171,7 +172,7 @@ assert 'approval_mode = "auto"' not in toml
 assert '[mcp_servers.other]\ncommand = "fixture"' in toml
 assert 'chrome_tabs' not in toml and 'browser_watch' not in toml
 PYVERIFY
-  then pass update-tool-rules "25 Claude rules and 25 Codex approve tables; auto replaced; obsolete rules removed; unrelated entries kept"
+  then pass update-tool-rules "26 Claude rules and 26 Codex approve tables; auto replaced; obsolete rules removed; unrelated entries kept"
   else fail update-tool-rules "registered config mismatch"; fi
 else fail update-tool-rules "editor failure"; cat "$WORK/update.log"; fi
 cp "$UPDATED/.codex/config.toml" "$WORK/codex-approved.toml"

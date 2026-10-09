@@ -32,5 +32,12 @@ assert.throws(() => proofs.verify(fixture.sendRevoke, sendRevokeMessage({ ...rul
 proofs.verify(fixture.sendRevoke, sendRevokeMessage(rule, fixture.sendRevoke.ts));
 console.log('PASS Swift send grant/revoke signatures verify in Node; hold reason, kind and remember choice tampering fail');
 console.log('PASS Swift software signatures verify in the production Node verifier; choice tampering and replay are refused');
-console.log('== app remember interoperability: 2 passed, 0 failed');
+const grantRecord = fixture.sessionGrantApproval;
+assert.throws(() => proofs.verify(fixture.sessionGrant, approvalMessage('grant', { ...grantRecord, detail: grantRecord.detail + ' ' }, fixture.sessionGrant.ts)), /verification failed/);
+assert.throws(() => proofs.verify(fixture.sessionGrant, approvalMessage('grant', { ...grantRecord, detail: grantRecord.detail.replace('3 hours', '12 hours') }, fixture.sessionGrant.ts)), /verification failed/);
+assert.throws(() => proofs.verify(fixture.sessionGrant, approvalMessage('grant', { ...grantRecord, kind: 'goto' }, fixture.sessionGrant.ts)), /verification failed/);
+proofs.verify(fixture.sessionGrant, approvalMessage('grant', grantRecord, fixture.sessionGrant.ts));
+assert.throws(() => proofs.verify(fixture.sessionGrant, approvalMessage('grant', grantRecord, fixture.sessionGrant.ts)), /already used/);
+console.log('PASS Swift session-grant signature verifies in Node; any change to the signed text or kind fails, and replay is refused');
+console.log('== app remember interoperability: 3 passed, 0 failed');
 NODE

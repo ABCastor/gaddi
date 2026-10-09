@@ -2,11 +2,13 @@ import assert from 'node:assert/strict';
 import { isRecord, isBrokerResult, isTabInfo, parseJSON } from '../../shared/protocol.ts';
 import type { BrokerResult, Reply, TabInfo, ChromeRequest } from '../../shared/protocol.ts';
 import type { ApprovalRecord } from '../../daemon/approvals.ts';
-export type PublicApproval = Omit<ApprovalRecord, 'actionHash'>;
-export interface AuditEntry { method: string; outcome: string; caller: string; tab: number | null; url: string; changed?: boolean; tabs?: { tab: number; url: string }[] }
+export type PublicApproval = Omit<ApprovalRecord, 'actionHash' | 'grant'>;
+// An active session grant as the broker lists it: never the chat's session key, only whether it is the asker's own.
+export interface PublicGrant { id: string; caller: string; label: string | null; rules: string[]; createdAt: string; expiresAt: string; mine: boolean }
+export interface AuditEntry { method: string; outcome: string; caller: string; tab: number | null; url: string; changed?: boolean; tabs?: { tab: number; url: string }[]; grant?: string; reason?: string; rules?: string[]; expiresAt?: string }
 interface ExtraResults {
-  'approvals.list': { pending: PublicApproval[]; recent: PublicApproval[] };
-  approvals: { pending: PublicApproval[]; recent: PublicApproval[] };
+  'approvals.list': { pending: PublicApproval[]; recent: PublicApproval[]; grants: PublicGrant[] };
+  approvals: { pending: PublicApproval[]; recent: PublicApproval[]; grants: PublicGrant[] };
   'audit.tail': { entries: AuditEntry[] };
   'bridge.status': { connected: boolean };
   status: { version: number };
@@ -22,15 +24,23 @@ export function isApproval(a: unknown): a is PublicApproval {
   && (a.tab === null || typeof a.tab === 'number') && ['resolvedAt','by','usedAt','imagePath','targetSelector'].every(k => a[k] === undefined || typeof a[k] === 'string')
   && (a.box === undefined || isRecord(a.box) && ['x','y','width','height'].every(k => isRecord(a.box) && typeof a.box[k] === 'number' && Number.isFinite(a.box[k])));
 }
+function isGrantView(g: unknown): g is PublicGrant {
+ return isRecord(g) && ['id','caller','createdAt','expiresAt'].every(k => typeof g[k] === 'string')
+  && (g.label === null || typeof g.label === 'string') && typeof g.mine === 'boolean'
+  && Array.isArray(g.rules) && g.rules.every(rule => typeof rule === 'string')
+  && !Object.hasOwn(g, 'session');
+}
 function isAudit(a: unknown): a is AuditEntry {
  return isRecord(a) && ['method','outcome','caller','url'].every(k => typeof a[k] === 'string')
   && (a.tab === null || typeof a.tab === 'number')
+  && (a.grant === undefined || typeof a.grant === 'string')
   && (a.changed === undefined || typeof a.changed === 'boolean')
   && (a.tabs === undefined || Array.isArray(a.tabs) && a.tabs.every(t => isRecord(t) && typeof t.tab === 'number' && typeof t.url === 'string'));
 }
 function isTestResult<M extends string>(method: M, value: unknown): value is TestResult<M> {
  switch (method) {
-  case 'approvals.list': case 'approvals': return isRecord(value) && Array.isArray(value.pending) && value.pending.every(isApproval) && Array.isArray(value.recent) && value.recent.every(isApproval);
+  case 'approvals.list': case 'approvals': return isRecord(value) && Array.isArray(value.pending) && value.pending.every(isApproval) && Array.isArray(value.recent) && value.recent.every(isApproval)
+   && Array.isArray(value.grants) && value.grants.every(isGrantView);
   case 'audit.tail': return isRecord(value) && Array.isArray(value.entries) && value.entries.every(isAudit);
   case 'bridge.status': return isRecord(value) && typeof value.connected === 'boolean';
   case 'status': return isRecord(value) && typeof value.version === 'number';

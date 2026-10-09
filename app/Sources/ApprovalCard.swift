@@ -190,9 +190,34 @@ enum ApprovalWords {
         if detail.hasPrefix("-> ") { return ("", String(detail.dropFirst(3))) }
         return (detail.trimmingCharacters(in: .whitespacesAndNewlines), nil)
     }
+    /// A session grant's `detail` is the text the owner signs: one line per rule, then "for 3 hours",
+    /// then, if the agent wrote one, its own description in quotes. The card is drawn from that text
+    /// alone, so what the owner reads is exactly what his signature covers.
+    static func grantParts(_ detail: String) -> (rules: [String], duration: String?, label: String?) {
+        var rules: [String] = []
+        var duration: String?
+        var label: String?
+        for raw in detail.components(separatedBy: "\n") {
+            let line = raw.trimmingCharacters(in: .whitespaces)
+            if line.isEmpty { continue }
+            if duration == nil, line.hasPrefix("for ") { duration = String(line.dropFirst(4)) } else if label == nil, line.hasPrefix("“") {
+                label = line.trimmingCharacters(in: CharacterSet(charactersIn: "“”"))
+            } else { rules.append(line) }
+        }
+        return (rules, duration, label)
+    }
+    /// "upload https://github.com/settings" as the card lists it: "upload on github.com/settings".
+    static func rule(_ canonical: String) -> String {
+        let parts = canonical.split(separator: " ", maxSplits: 1).map(String.init)
+        guard parts.count == 2, let url = URL(string: parts[1]), let host = url.host else { return canonical }
+        let scheme = url.scheme == "https" ? "" : "\(url.scheme ?? "")://"
+        let port = url.port.map { ":\($0)" } ?? ""
+        return "\(parts[0]) on \(scheme)\(host)\(port)\(url.path == "/" ? "" : url.path)"
+    }
     static func title(_ approval: Approval) -> (verb: String, object: String) {
         let name = clickParts(approval.detail).name
         switch approval.kind {
+        case "grant": return ("work without asking you", "for \(grantParts(approval.detail).duration ?? "a while")")
         case "signin": return ("sign in with", "“\(name)”")
         case "click": return ("click", name.isEmpty ? "an unnamed control" : "“\(name)”")
         case "press": return ("press", name.isEmpty ? "a key" : name)
@@ -210,6 +235,11 @@ enum ApprovalWords {
         return host(destination)
     }
     static func place(_ approval: Approval) -> String {
+        if approval.kind == "grant" {
+            let parts = grantParts(approval.detail)
+            let described = parts.label.map { ["Described by the agent as: “\($0)”"] } ?? []
+            return (parts.rules + described).joined(separator: "\n")
+        }
         if approval.kind.hasPrefix("extension.") { return "in Chrome" }
         if approval.canRemember, let site = approval.site { return "on \(site)" }
         if ["open", "goto"].contains(approval.kind) { return "to \(host(approval.detail))" }
@@ -224,6 +254,8 @@ enum ApprovalWords {
     }
     static func reason(_ reason: String) -> String {
         func after(_ prefix: String) -> String? { reason.hasPrefix(prefix) ? String(reason.dropFirst(prefix.count)) : nil }
+        // The one thing every session grant card says, whatever was asked for.
+        if reason == "session grant" { return "Payments, purchases, sending messages, sign-in and security changes still ask you every time." }
         if let word = after("verb:") { return "Held because its name contains “\(word)”." }
         if let word = after("enter-submits:") { return "Held because Enter would activate a button or link with “\(word)” in its name." }
         if after("url-pattern:") != nil { return "Held because this address is on the protected list." }
@@ -258,7 +290,8 @@ final class ApprovalCard: NSStackView {
         let where_ = NSTextField(wrappingLabelWithString: ""); where_.attributedStringValue = place
         where_.lineBreakMode = .byWordWrapping; where_.maximumNumberOfLines = 0; where_.isSelectable = true
         where_.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        let until = NSTextField(labelWithString: approval.expiresAt.map { "until \(displayTime($0))" } ?? "")
+        // For a session grant this is the time to answer, not how long the grant would last.
+        let until = NSTextField(labelWithString: approval.expiresAt.map { "\(approval.kind == "grant" ? "decide by" : "until") \(displayTime($0))" } ?? "")
         until.font = Typeface.figures(12); until.textColor = Palette.inkSoft
         until.setContentHuggingPriority(.required, for: .horizontal)
         let meta = NSStackView(views: [where_, until]); meta.distribution = .fill; meta.spacing = 16; meta.alignment = .top
@@ -297,7 +330,7 @@ final class ApprovalCard: NSStackView {
 }
 
 final class RememberedPermissionList<Item>: NSStackView {
-    init(_ items: [Item], title: String, explanation: String, enabled: Bool, label: (Item) -> String, revoke: @escaping (Item) -> Void) {
+    init(_ items: [Item], title: String, explanation: String, enabled: Bool, action: String = "Revoke", label: (Item) -> String, revoke: @escaping (Item) -> Void) {
         super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 12
         let heading = NSTextField(labelWithString: title)
@@ -311,7 +344,7 @@ final class RememberedPermissionList<Item>: NSStackView {
             let label = NSTextField(wrappingLabelWithString: label(item))
             label.font = Typeface.interface(13); label.textColor = Palette.ink; label.isSelectable = true
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-            let button = PanelButton("Revoke", kind: .secondary) { revoke(item) }
+            let button = PanelButton(action, kind: .secondary) { revoke(item) }
             button.isEnabled = enabled
             let row = NSStackView(views: [label, button]); row.spacing = 12; row.alignment = .centerY
             addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
@@ -321,6 +354,7 @@ final class RememberedPermissionList<Item>: NSStackView {
 }
 typealias RememberedSigninList = RememberedPermissionList<String>
 typealias RememberedSendList = RememberedPermissionList<SendPermission>
+typealias SessionGrantList = RememberedPermissionList<SessionGrant>
 extension RememberedPermissionList where Item == String {
     convenience init(_ sites: [String], enabled: Bool, revoke: @escaping (String) -> Void) {
         self.init(sites, title: "Remembered sign-ins", explanation: sites.isEmpty
@@ -334,6 +368,25 @@ extension RememberedPermissionList where Item == SendPermission {
             ? "No sends are remembered. Sending waits for your approval."
             : "Only these send actions on these exact sites run without asking. Revoke to require approval again.", enabled: enabled,
             label: { "\($0.site)\n\($0.label) (\($0.reason.components(separatedBy: ":").last ?? "send"))" }, revoke: revoke)
+    }
+}
+
+extension SessionGrant {
+    /// What the panel shows for one active grant: who, until when, what is waived, and the agent's own words.
+    var summary: String {
+        var lines = ["\(caller) · until \(displayTime(expiresAt))"] + rules.map(ApprovalWords.rule)
+        if let label { lines.append("Described by the agent as: “\(label)”") }
+        return lines.joined(separator: "\n")
+    }
+}
+extension RememberedPermissionList where Item == SessionGrant {
+    /// Always shown, even when empty, so the owner can see that nothing is running unattended.
+    /// Ending a grant only removes authority, which is why this list asks for no Touch ID.
+    convenience init(_ grants: [SessionGrant], enabled: Bool, end: @escaping (SessionGrant) -> Void) {
+        self.init(grants, title: "Session grants", explanation: grants.isEmpty
+            ? "No session grants. An agent can ask for one at the start of a chat."
+            : "Each chat below can do its listed actions without asking, until the time shown. End one to make it ask again.",
+            enabled: enabled, action: "End now", label: { $0.summary }, revoke: end)
     }
 }
 

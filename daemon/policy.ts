@@ -29,6 +29,8 @@ const DEFAULT_POLICY = path.join(HERE, '..', 'policy', 'policy.default.json');
 const ALLOW = (reason = 'ok'): PolicyCheck => ({ outcome: 'allow', reason });
 const HOLD = (reason: string): PolicyCheck => ({ outcome: 'hold', reason });
 const DENY = (reason: string): PolicyCheck => ({ outcome: 'deny', reason });
+// The one reason string an upload hold carries; session grants recognise an upload by it.
+export const UPLOAD_HOLD = 'upload of a local file';
 
 // Deep merge: objects recurse, arrays and scalars from the overlay replace the base.
 function merge(base: unknown, overlay: unknown): unknown {
@@ -159,6 +161,16 @@ const sameSendRule = (a: SendRule, b: SendRule) => a.site === b.site && a.kind =
 
 // Reject refused hosts and protected pages even when an overlay loosens ordinary holds.
 const builtInPolicy: PolicyData = JSON.parse(fs.readFileSync(DEFAULT_POLICY, 'utf8'));
+// Invariant: the built-in refused hosts, protected addresses and hold verbs always apply on top of
+// the owner's overlay, which replaces arrays rather than extending them. Session grants read this
+// so that loosening an ordinary hold can never widen what a grant may waive.
+export function protections(policy: Policy) {
+  return {
+    hosts: [...builtInPolicy.deny.verbs_on_hosts, ...policy.deny.verbs_on_hosts].map(rule => rule.host),
+    patterns: [...builtInPolicy.hold.url_patterns, ...policy.hold.url_patterns],
+    verbs: [...builtInPolicy.hold.verbs, ...policy.hold.verbs],
+  };
+}
 export function sendRule(url: unknown, kind: unknown, reason: unknown): SendRule | undefined {
   if (!(kind === 'click' && typeof reason === 'string' && reason.startsWith('verb:')
     || kind === 'press' && typeof reason === 'string' && reason.startsWith('enter-submits:')) || !sendReason(reason)) return;
@@ -198,12 +210,12 @@ export function hostOf(url: string) {
   try { return new URL(url).hostname.toLowerCase().replace(/\.$/, ''); } catch { return ''; }
 }
 // Fold accents, lowercase, collapse whitespace: "Procedi  al PAGAMENTO" -> "procedi al pagamento"
-function fold(s: unknown) {
+export function fold(s: unknown) {
   return String(s || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
 }
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 // whole word / phrase match of a folded verb inside a folded name
-function phraseIn(name: unknown, verb: unknown) {
+export function phraseIn(name: unknown, verb: unknown) {
   const n = fold(name), v = fold(verb);
   if (!n || !v) return false;
   return new RegExp(`(^|[^a-z0-9])${esc(v)}([^a-z0-9]|$)`).test(n);
@@ -214,7 +226,7 @@ function matchVerb(name: unknown, verbs: string[]) {
   for (const v of verbs || []) if (phraseIn(name, v) && (!best || fold(v).length > fold(best).length)) best = v;
   return best;
 }
-function rx(pattern: string) { try { return new RegExp(pattern, 'i'); } catch { return null; } }
+export function rx(pattern: string) { try { return new RegExp(pattern, 'i'); } catch { return null; } }
 // Action URL holds apply on every host.
 export function checkNavigation(policy: Policy, url: string) {
   if (policy.off) return ALLOW('policy-off');
@@ -289,7 +301,7 @@ export function checkType(policy: Policy, info: Record<string, unknown>) {
 // Attaching a local file sends it to the site: one-way unless the person's policy says otherwise.
 export function checkUpload(policy: Policy) {
   if (policy.off) return ALLOW('policy-off');
-  return policy.hold.uploads === false ? ALLOW() : HOLD('upload of a local file');
+  return policy.hold.uploads === false ? ALLOW() : HOLD(UPLOAD_HOLD);
 }
 
 export function checkExtension(policy: Policy, operation: string, ownRepo = false): PolicyCheck {

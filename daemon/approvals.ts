@@ -7,8 +7,9 @@ import type { createProofVerifier, approvalMessage } from './proof.ts';
 import { signinSite } from './signin.ts';
 import { sendRule } from './policy.ts';
 import type { SendRule } from './policy.ts';
+import type { GrantSpec } from './grants.ts';
 
-export interface ApprovalRecord { id: string; kind: string; tab: number | null; caller: string; url: string; detail: string; reason: string; actionHash: string; status: string; createdAt: string; expiresAt: string; resolvedAt?: string; by?: string; usedAt?: string; imagePath?: string; box?: ImageBox; targetSelector?: string; rememberable?: boolean }
+export interface ApprovalRecord { id: string; kind: string; tab: number | null; caller: string; url: string; detail: string; reason: string; actionHash: string; status: string; createdAt: string; expiresAt: string; resolvedAt?: string; by?: string; usedAt?: string; imagePath?: string; box?: ImageBox; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec }
 export type Emit = (event: string, data: unknown) => void;
 export type ApprovalAction = { method: string; caller: string; url: string; [key: string]: unknown };
 // Persisted JSON is retained verbatim. Only its action binding was historically required.
@@ -37,7 +38,10 @@ export function cleanDetail(value: unknown) {
   return String(value ?? '').replace(/(?:https?|file):\/\/[^\s"'<>]+/gi, cleanURL)
     .replace(/\?[^\s<>]*/g, '');
 }
-export function publicView({ actionHash, targetSelector, ...record }: StoredApproval) {
+// Invariant: a session grant request names its chat by session key. That key is the only thing
+// that ties the grant to one chat, so it never leaves the broker: not in lists, events or state.
+// The owner sees and signs the request's `detail` text, which carries everything he decides on.
+export function publicView({ actionHash, targetSelector, grant, ...record }: StoredApproval) {
   const site = record.kind === 'signin' ? signinSite(record.url)
     : record.rememberable === true ? sendRule(record.url, record.kind, record.reason)?.site : undefined;
   return site ? { ...record, site } : record;
@@ -95,11 +99,13 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
       delete a.imagePath; delete a.box;
     }
   }
-  function persistable() { return [...entries.values()]; }
+  // Invariant: a session grant request is never written to disk. It names a chat by its session key,
+  // and that chat does not survive a restart, so a restored request could never be honoured.
+  function persistable() { return [...entries.values()].filter(a => a.kind !== 'grant'); }
   function restore(list: unknown) {
     // Invariant: approval records without an action binding cannot authorize a tab action.
     if (list && !Array.isArray(list) && typeof list !== 'string') throw new TypeError('(list || []) is not iterable');
-    for (const a of Array.isArray(list) || typeof list === 'string' ? list : []) if (isRecord(a) && a.id && /^[a-f0-9]{64}$/.test(String(a.actionHash))) {
+    for (const a of Array.isArray(list) || typeof list === 'string' ? list : []) if (isRecord(a) && a.id && /^[a-f0-9]{64}$/.test(String(a.actionHash)) && a.kind !== 'grant') {
       // A restored sign-in must have a valid origin before snapshots or expiry can expose it.
       if (a.kind === 'signin') {
         try { signinSite(a.url); } catch { continue; }
@@ -127,14 +133,17 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
     expire();
     return [...entries.values()].find(a => a.status === 'pending' && a.actionHash === actionHash(action) && a.targetSelector === targetSelector);
   }
-  function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean }) {
+  function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false, grant }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec }) {
     expire();
     const hash = actionHash(action);
     const existing = pendingFor(action, targetSelector);
     if (existing) return existing;
     const now = Date.now();
     const a = { id: crypto.randomBytes(8).toString('hex'), kind, tab, caller, url: cleanURL(url),
-      ...(rememberable ? { rememberable: true } : {}), ...(targetSelector ? { targetSelector } : {}), detail: cleanDetail(detail), reason: cleanDetail(reason), actionHash: hash, status: 'pending',
+      ...(rememberable ? { rememberable: true } : {}), ...(targetSelector ? { targetSelector } : {}), ...(grant ? { grant } : {}),
+      // A session grant's text is built by the broker from validated parts (no queries; its label is cleaned
+      // first) and is exactly what the owner signs, so it is stored as built and never rewritten.
+      detail: kind === 'grant' ? detail : cleanDetail(detail), reason: cleanDetail(reason), actionHash: hash, status: 'pending',
       createdAt: new Date(now).toISOString(), expiresAt: new Date(now + ttlMinutes * 60000).toISOString() };
     savePicture(a, picture);
     entries.set(a.id, a);
@@ -185,11 +194,25 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
     resolve(a, 'cancelled');
     return publicView(a);
   }
+  // A session grant has no agent retry: the broker acts on the signed decision itself, then closes
+  // the record here, so a decision can never be acted on twice.
+  function complete(id: unknown) {
+    // No expiry sweep here: this closes the very record a signature resolved a moment ago, and a
+    // sweep landing in between must not turn a granted decision into an error after it was acted on.
+    const a = entries.get(String(id));
+    if (!a || a.status !== 'granted') throw new GateError('approval-invalid', `approval ${id} is ${a ? String(a.status) : 'unknown'}`);
+    resolve(a, 'used', { usedAt: new Date().toISOString() });
+    return publicView(a);
+  }
+  function pendingMatching(test: (a: StoredApproval) => boolean) {
+    expire();
+    return [...entries.values()].filter(a => a.status === 'pending' && test(a));
+  }
   function list() {
     expire();
     const all = [...entries.values()];
     return { pending: all.filter(a => (a.status === 'pending' || a.status === 'granted')).map(publicView),
       recent: all.filter(a => !(a.status === 'pending' || a.status === 'granted')).reverse().slice(0, 20).map(publicView) };
   }
-  return { pendingFor, pruneImages, hold, consume, signed, cancel, get, list, restore, persistable, stop: () => clearInterval(timer) };
+  return { pendingFor, pendingMatching, pruneImages, hold, consume, signed, cancel, complete, get, list, restore, persistable, stop: () => clearInterval(timer) };
 }

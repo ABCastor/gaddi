@@ -56,6 +56,15 @@ import CryptoKit
         allVectors["sendApproval"] = sendObject
         allVectors["sendGrant"] = ["ts": ts, "sig": try key.signature(for: Data(sendMessage.utf8)).derRepresentation.base64EncodedString()]
         allVectors["sendRevoke"] = ["ts": ts, "sig": try key.signature(for: Data(permission.revokeMessage(timestamp: ts).utf8)).derRepresentation.base64EncodedString()]
+        // A session grant is signed like any other hold: id, kind, empty tab, and a digest of the multi-line text the owner read.
+        let grantObject: JSONObject = ["id": "grant1", "kind": "grant", "tab": NSNull(), "caller": "codex", "url": "", "reason": "session grant",
+            "detail": "post on www.linkedin.com/company\nupload on github.com/settings\nfor 3 hours\n“Update the profile”"]
+        let sessionGrant = Approval(grantObject)!
+        let sessionMessage = try sessionGrant.signingMessage(verb: "grant", timestamp: ts)
+        check(sessionMessage.hasPrefix("grant|grant1|grant||"), "a session grant signs id, kind, an empty tab and the digest of its text")
+        rejects("a session grant cannot sign a remember choice") { _ = try sessionGrant.signingMessage(verb: "grant", timestamp: ts, remember: true) }
+        allVectors["sessionGrantApproval"] = grantObject
+        allVectors["sessionGrant"] = ["ts": ts, "sig": try key.signature(for: Data(sessionMessage.utf8)).derRepresentation.base64EncodedString()]
         try JSONSerialization.data(withJSONObject: allVectors).write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
         print("== app remember protocol: \(passed) passed, 0 failed")
     }

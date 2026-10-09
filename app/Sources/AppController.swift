@@ -16,6 +16,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         let approvals: [Approval]
         let rememberedSignins: [String]
         let rememberedSends: [SendPermission]
+        let grants: [SessionGrant]
         let requestedID: String?
         let connected: Bool
         let keyReady: Bool
@@ -97,6 +98,11 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
                 self.snapshot.approvals.removeAll(where: \.expired)
                 self.render()
             }
+            // The broker ends a grant at its time and says so, but a lost event must not leave one on screen.
+            if self.snapshot.grants.contains(where: \.expired) {
+                self.snapshot.grants.removeAll(where: \.expired)
+                self.render()
+            }
         }
         render()
     }
@@ -115,6 +121,8 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             : waiting == 0 ? "Nothing is waiting for you"
             : waiting == 1 ? "1 action is waiting for you" : "\(waiting) actions are waiting for you", action: nil))
         if let errorText { menu.addItem(menuItem(errorText, action: nil)) }
+        let running = snapshot.grants.count
+        if running > 0 { menu.addItem(menuItem(running == 1 ? "1 session grant active" : "\(running) session grants active", action: nil)) }
         menu.addItem(.separator())
         menu.addItem(menuItem(snapshot.approvals.isEmpty ? "Open Gaddi…" : "Review and decide…", action: #selector(openApprovals)))
         menu.addItem(menuItem("Remembered sign-ins…", action: #selector(openRememberedSignins)))
@@ -161,6 +169,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         let state = ApprovalPanelState(approvals: snapshot.approvals,
             rememberedSignins: snapshot.rememberedSignins,
             rememberedSends: snapshot.rememberedSends,
+            grants: snapshot.grants,
             requestedID: requestedID,
             connected: connected, keyReady: keyReady, busy: busy, errorText: errorText)
         // Polls must not reset the reader's scroll or selection.
@@ -199,6 +208,12 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
                 self?.decide(approval, verb: verb)
             })
         }
+        add(PanelRule())
+        // Standing authority comes first and is always shown, even empty. Ending a grant needs no
+        // Touch ID (it only removes authority), so this list does not wait for the signing key.
+        add(SessionGrantList(snapshot.grants, enabled: connected && !busy) { [weak self] grant in
+            self?.endGrant(grant)
+        })
         add(PanelRule())
         add(RememberedSigninList(snapshot.rememberedSignins, enabled: connected && keyReady && !busy) { [weak self] site in
             self?.revokeSignin(site)
@@ -263,7 +278,17 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         let remember = choice == "remember"
         let verb = remember ? "grant" : choice
         let action = remember ? "Always allow \(approval.kind == "signin" ? "sign-in" : "this send action") on \(approval.site ?? "")" : verb == "grant" ? "Approve" : "Deny"
-        authenticated(reason: "\(action) \(approval.kind): \(approval.detail)") { [self] context in
+        // The Touch ID sheet is drawn by macOS, so it carries the substance: a session grant is named as one,
+        // with how long it lasts and what it waives (the first three rules, then a count).
+        let prompt: String
+        if approval.kind == "grant" {
+            let parts = ApprovalWords.grantParts(approval.detail)
+            let more = parts.rules.count > 3 ? " and \(parts.rules.count - 3) more" : ""
+            prompt = "\(action) a session grant for \(approval.caller) lasting \(parts.duration ?? "a while"): \(parts.rules.prefix(3).joined(separator: ", "))\(more)"
+        } else {
+            prompt = "\(action) \(approval.kind): \(approval.detail)"
+        }
+        authenticated(reason: prompt) { [self] context in
             let list = try model.client.call("approvals.list")
             let current = (list["pending"] as? [JSONObject] ?? [])
                 .filter { $0["status"] as? String == "pending" }.compactMap(Approval.init).first { $0.id == approval.id }
@@ -275,6 +300,21 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             let signed = try keys.sign(message, context: context)
             _ = try model.client.call("approval.\(verb)", ["id": approval.id, "remember": remember,
                 "proof": ["ts": ts, "sig": signed.signature.base64EncodedString()]])
+        }
+    }
+    private func endGrant(_ grant: SessionGrant) {
+        // Ending a grant only removes authority, so it asks for no Touch ID. A grant that has
+        // already ended is the outcome the owner wanted, not an error.
+        guard connected, !busy else { return }
+        model.queue.async { [self] in
+            do {
+                _ = try model.client.call("grants.revoke", ["id": grant.id])
+            } catch {
+                if !error.localizedDescription.contains("no such active session grant") {
+                    DispatchQueue.main.async { self.showError("The grant was not ended", error: error) }
+                }
+            }
+            model.refresh()
         }
     }
     private func revokeSend(_ rule: SendPermission) {
