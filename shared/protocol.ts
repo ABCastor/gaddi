@@ -3,6 +3,7 @@ export type RequestId = string | number | null;
 interface SignedProof { ts: number; sig: string }
 export interface SelfHeal { at: number; reason: 'native-disconnect' | 'broker-unresponsive' | 'broker-requested'; action: 'reconnect' | 'reload' }
 export interface ChromeParams {
+  browser?: { window: 'own' | 'shared'; show: 'attention' | 'front' };
   operation?: ExtensionOperation | 'get'; extensionId?: string;
   tab?: number; tabs?: number[]; url?: string; query?: string; group?: string;
   foreground?: boolean; selector?: string; text?: string; key?: string; mode?: 'replace' | 'append';

@@ -91,13 +91,16 @@ function completeNavigation(id: number, url: string, { old = false, redirected: 
   return frame;
 }
 const chrome = {
-  storage: { local: { async get(_key: string) { return {}; }, async set(_value: object) {} } },
+  storage: { local: { async get(_key: string) { return {}; }, async set(_value: object) {} },
+    session: { async get(_key: string) { return {}; }, async set(_value: object) {}, async remove(_key: string) {} } },
   tabGroups: {
     async query(query: Query = {}) { calls.push(['query', 'groups']); return [...groups.values()].filter(group => query.windowId === undefined || group.windowId === query.windowId); },
     async get(id: number) { return groups.get(id)!; },
     async update(id: number, options: Partial<FixtureGroup>) { Object.assign(groups.get(id)!, options); },
   },
-  windows: { async update(id: number, options: Partial<FixtureTabRecord> & { focused?: boolean; drawAttention?: boolean }) { calls.push(['window.update', id, options]); return { id, ...options }; } },
+  windows: { onRemoved: event<[number]>(), async get(id: number) { return { id, type: 'normal', focused: true }; },
+    async update(id: number, options: Partial<FixtureTabRecord> & { focused?: boolean; drawAttention?: boolean }) { calls.push(['window.update', id, options]); return { id, ...options }; } },
+  system: { display: { onDisplayChanged: event() } },
   bookmarks: { async getTree() { return [{ title: '', children: [{ title: 'Bar', children: [
     { title: 'Design', children: [{ title: 'Example', url: 'https://example.com/' }] },
     { title: 'Other', url: 'https://other.test/' },
@@ -186,7 +189,9 @@ const chrome = {
 // Exercise current sources (including disposable mutants), never a stale dist build.
 const source = stripTypeScriptTypes(fs.readFileSync(new URL('../../extension/bg.ts', import.meta.url), 'utf8')).replace(/^import .*;$/gm, '');
 function worker() {
-  const context = vm.createContext({ chrome, pageTask, waitParams, wheelParams, versionParam, hasErrorCode, isRecord, createRecovery, RECOVERY_KEY, manageExtensions, URL, setTimeout(fn: () => void, delay: number) { timers.push({ fn, delay }); return timers.length; }, clearTimeout(id: number) { if (timers[id - 1]) timers[id - 1].cleared = true; } });
+  const context = vm.createContext({ chrome, pageTask, waitParams, wheelParams, versionParam, hasErrorCode, isRecord, createRecovery, RECOVERY_KEY, manageExtensions,
+    createAgentWindow: () => ({ get() { throw new Error('Legacy shared-window fixture must never create an agent window'); }, removeBlank() {}, remember() {} }),
+    URL, setTimeout(fn: () => void, delay: number) { timers.push({ fn, delay }); return timers.length; }, clearTimeout(id: number) { if (timers[id - 1]) timers[id - 1].cleared = true; } });
   vm.runInContext(source, context);
   return context;
 }
@@ -196,7 +201,7 @@ async function request<M extends keyof ChromeResults>(method: M, params?: object
 async function request(method: string, params?: object): Promise<Reply<Record<string, unknown>>>;
 async function request(method: string, params: object = {}): Promise<Reply<unknown>> {
   const id = ++serial;
-  ports.at(-1)!.onMessage.listeners[0]({ id, method, params });
+  ports.at(-1)!.onMessage.listeners[0]({ id, method, params: { browser: { window: 'shared', show: 'front' }, ...params } });
   const response = await waitFor(() => replies.get(id), `worker ${method}`);
   replies.delete(id);
   const copy: unknown = JSON.parse(JSON.stringify(response));

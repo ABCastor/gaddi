@@ -152,7 +152,7 @@ function worker({ clock, saved, unavailable = false, healthResponse = () => true
   const context = vm.createContext({ chrome, RECOVERY_KEY, isRecord, hasErrorCode, Date: { now: () => clock.now },
     createRecovery: (options: Parameters<typeof createRecovery>[0]) => createRecovery({ ...options, now: () => clock.now, later: fn => clock.set(fn, 250) }),
     setTimeout: (fn: () => void, delay: number) => clock.set(fn, delay), clearTimeout: (id: number) => clock.clear(id),
-    detachLingering() {}, isSigninMethod: () => false,
+    detachLingering() {}, stopRendering() {}, isSigninMethod: () => false,
     withinDeadline: (fn: (scope: unknown) => Promise<unknown>) => fn({}),
     dispatch: () => { actions++; return new Promise(resolve => { finish = resolve; }); },
   });

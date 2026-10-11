@@ -2,6 +2,7 @@ import net from 'node:net';
 import type { Socket, Server } from 'node:net';
 import { checkedReply, isRecord, parseJSON } from '../fixtures/wire.ts';
 import type { Reply, RequestId } from '../../shared/protocol.ts';
+import type { ChromeParams } from '../../shared/protocol.ts';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { EventEmitter } from 'node:events';
@@ -28,6 +29,7 @@ export class FakeDaemon extends EventEmitter {
   peer: Socket | undefined;
   private started = performance.now();
   private peers = new Map<Socket, number>();
+  private browser: ChromeParams['browser'];
   trace(event: string, peer = this.peer, detail = '') {
     console.log(`TRACE bridge +${Math.round(performance.now() - this.started)}ms ${event} peer=${peer ? this.peers.get(peer) : 'none'} pending=${[...this.pending.keys()]} ${detail}`);
   }
@@ -36,10 +38,12 @@ export class FakeDaemon extends EventEmitter {
     // Match the broker: work belongs to its original connection and is never replayed.
     for (const request of this.pending.values()) if (request.peer === peer) request.reject(reason);
   }
-  constructor(socket: string) {
+  constructor(socket: string, browser: ChromeParams['browser'] = { window: 'shared', show: 'front' }) {
     super();
     this.socket = socket; this.clients = new Set(); this.pending = new Map();
     this.attachments = []; this.responses = []; this.sequence = 0;
+    // Legacy browser journeys exercise the explicit compatibility setting.
+    this.browser = browser;
   }
   async start() {
     this.server = net.createServer(peer => {
@@ -96,7 +100,7 @@ export class FakeDaemon extends EventEmitter {
         reject: reason => { clear(); reject(new Error(`Bridge ${reason}: ${method}`)); },
       });
       this.trace('request', peer, `id=${id} method=${method}`);
-      peer.write(JSON.stringify({ id, method, params, deadline }) + '\n', error => {
+      peer.write(JSON.stringify({ id, method, params: { ...(this.browser ? { browser: this.browser } : {}), ...params }, deadline }) + '\n', error => {
         if (error) this.detach(peer, 'write failed');
       });
     });
