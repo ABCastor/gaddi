@@ -9,20 +9,20 @@ import type { PolicyCheck } from './policy.ts';
 import type { ApprovalAction, StoredApprovalRef, StoredApproval, RemoteFacts } from './approvals.ts';
 // `decision` and `remoteKey` exist only to be written to the audit: who answered from another device and what,
 // never the signature or the nonce.
-interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: unknown; url: string }[]; upload?: { name: string; bytes?: number }; signin?: SigninResult; grantId?: string;
+interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: unknown; url: string }[]; upload?: { name: string; bytes?: number }; signin?: SigninResult; grantId?: string; reason?: string;
   decision?: { approval: string; kind?: string; verb?: string }; remoteKey?: string }
 
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { loadPolicy, setSigninRemember, setSendRemember, sendRule, checkRememberedSend, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from './policy.ts';
+import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from './policy.ts';
 import { signinSite, listLogins, chooseLogin, runSignin } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
 import { readUpload, UPLOAD_CHUNK } from './uploads.ts';
 import type { UploadFile } from './uploads.ts';
 import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail } from './approvals.ts';
-import { createProofVerifier, approvalMessage, signinRevokeMessage, sendRevokeMessage } from './proof.ts';
+import { createProofVerifier, approvalMessage, signinRevokeMessage, sendRevokeMessage, uploadRevokeMessage } from './proof.ts';
 import { createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString } from './grants.ts';
 import type { GrantScope } from './grants.ts';
 import { createRemote } from './remote.ts';
@@ -44,7 +44,7 @@ const policyPath = path.join(home, 'policy.json');
 let policy = loadPolicy({ overlay: policyPath, log });
 const signinSecrets = createSigninSecrets();
 const subscribers = new Set<Socket>(), connections = new Set<Socket>();
-const nonAuditedMethods = new Set(['status', 'approvals.list', 'signin.remembered', 'sends.remembered', 'bridge.status', 'bridge.health', 'events.subscribe', 'session.begin', 'remote.status']);
+const nonAuditedMethods = new Set(['status', 'approvals.list', 'signin.remembered', 'sends.remembered', 'uploads.remembered', 'bridge.status', 'bridge.health', 'events.subscribe', 'session.begin', 'remote.status']);
 interface Session { caller: string; owned: Set<number>; lastActivity: number; endedAt?: number }
 const sessions = new Map<string, Session>();
 // A tab put in front of the user is his from then on, whichever agent brought it forward.
@@ -404,6 +404,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     targetSelector = typeof info.selector === 'string' ? info.selector : args.selector;
     meta.upload = { name: upload.name, bytes: upload.bytes.length };
     check = checkUpload(policy);
+    check = checkRememberedUpload(policy, pageURL, check);
+    if (check.outcome === 'allow' && !params.approval) meta.reason = check.reason;
     // readUpload already refused secret stores above, so a grant never reaches a refused file.
     check = grantCheck(check, { kind: 'upload' });
     const size = upload.bytes.length < 1024 * 1024 ? `${Math.ceil(upload.bytes.length / 1024)} KB` : `${(upload.bytes.length / 1024 / 1024).toFixed(1)} MB`;
@@ -619,6 +621,9 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
         if (send) {
           policy = setSendRemember(policyPath, send, true, policy.off);
           emit('sends.remembered', { rules: policy.sends?.remember ?? [] });
+        } else if (approvals.get(id).kind === 'upload') {
+          policy = setUploadRemember(policyPath, site, true, policy.off);
+          emit('uploads.remembered', { sites: policy.uploads?.remember ?? [] });
         } else {
           policy = setSigninRemember(policyPath, site, true, policy.off);
           emit('signin.remembered', { sites: policy.signin?.remember ?? [] });
@@ -645,6 +650,14 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
     return { sites: policy.signin?.remember ?? [] };
   },
   'sends.remembered': () => ({ rules: policy.sends?.remember ?? [] }),
+  'uploads.remembered': () => ({ sites: policy.uploads?.remember ?? [] }),
+  'uploads.revoke': ({ site, proof }) => {
+    if (typeof site !== 'string' || uploadSite(site) !== site) throw new GateError('approval-invalid', 'exact upload origin required');
+    proofs.verify(proof, uploadRevokeMessage(site, isRecord(proof) ? proof.ts : undefined));
+    policy = setUploadRemember(policyPath, site, false, policy.off);
+    emit('uploads.remembered', { sites: policy.uploads?.remember ?? [] });
+    return { sites: policy.uploads?.remember ?? [] };
+  },
   'sends.revoke': ({ site, kind, reason, proof }) => {
     const rule = sendRule(site, kind, reason);
     if (!rule || rule.site !== site) throw new GateError('approval-invalid', 'exact send scope required');
@@ -763,6 +776,7 @@ async function handle(input: unknown, conn: Socket) {
       ...(typeof params.harness === 'string' ? { harness: params.harness } : {}), method, tab: meta.tab,
       url: cleanURL(meta.url), ...(meta.tabs ? { tabs: meta.tabs } : {}), ...(meta.upload ? { upload: meta.upload } : {}),
       ...(meta.grantId ? { grant: meta.grantId } : {}),
+      ...(meta.reason ? { reason: meta.reason } : {}),
       // A decision from another device names who, which request and what was decided: never its signature or nonce.
       ...(meta.decision ? { approver: 'remote', kind: meta.decision.kind, verb: meta.decision.verb } : {}),
       ...(meta.remoteKey ? { fingerprint: meta.remoteKey } : {}),

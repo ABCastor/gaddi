@@ -322,7 +322,7 @@ final class ApprovalCard: NSStackView {
         if approval.canRemember {
             // The image-bearing NSButton extends one point below its alignment rectangle.
             edgeInsets = NSEdgeInsets(top: 0, left: 0, bottom: 1, right: 0)
-            let remember = PanelButton("Always allow on this site", kind: .primary, symbol: "touchid") { decide("remember") }
+            let remember = PanelButton(approval.kind == "upload" ? "Always allow uploads on this site" : "Always allow on this site", kind: .primary, symbol: "touchid") { decide("remember") }
             remember.isEnabled = enabled && approval.site != nil
             let row = NSStackView(views: [NSView(), remember]); row.spacing = 10
             setCustomSpacing(10, after: actions); addArrangedSubview(row)
@@ -359,8 +359,15 @@ final class RememberedPermissionList<Item>: NSStackView {
 }
 typealias RememberedSigninList = RememberedPermissionList<String>
 typealias RememberedSendList = RememberedPermissionList<SendPermission>
+typealias RememberedUploadList = RememberedPermissionList<String>
 typealias SessionGrantList = RememberedPermissionList<SessionGrant>
 extension RememberedPermissionList where Item == String {
+    convenience init(uploads sites: [String], enabled: Bool, revoke: @escaping (String) -> Void) {
+        self.init(sites, title: "Remembered uploads", explanation: sites.isEmpty
+            ? "No uploads are remembered. Uploads wait for your approval."
+            : "Uploads on these exact sites run without asking. Protected pages and files keep their checks. Revoke to require approval again.",
+            enabled: enabled, label: { $0 }, revoke: revoke)
+    }
     convenience init(_ sites: [String], enabled: Bool, revoke: @escaping (String) -> Void) {
         self.init(sites, title: "Remembered sign-ins", explanation: sites.isEmpty
             ? "No sites are remembered. Sign-ins wait for your approval."

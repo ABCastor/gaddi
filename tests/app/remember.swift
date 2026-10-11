@@ -56,6 +56,26 @@ import CryptoKit
         allVectors["sendApproval"] = sendObject
         allVectors["sendGrant"] = ["ts": ts, "sig": try key.signature(for: Data(sendMessage.utf8)).derRepresentation.base64EncodedString()]
         allVectors["sendRevoke"] = ["ts": ts, "sig": try key.signature(for: Data(permission.revokeMessage(timestamp: ts).utf8)).derRepresentation.base64EncodedString()]
+        let uploadObject: JSONObject = ["id": "upload1", "kind": "upload", "tab": 42, "detail": "preview.png (1 KB)",
+            "reason": "upload of a local file", "url": "https://github.com/ABCastor/gaddi/settings", "site": "https://github.com", "rememberable": true]
+        let upload = Approval(uploadObject)!
+        check(upload.canRemember && upload.uploadSite == "https://github.com", "upload exposes an exact-site owner choice")
+        let uploadOnce = try upload.signingMessage(verb: "grant", timestamp: ts)
+        let uploadAlways = try upload.signingMessage(verb: "grant", timestamp: ts, remember: true)
+        check(uploadAlways == uploadOnce + "|remember|https://github.com", "upload Always binds the choice and exact site")
+        check(try uploadRevokeMessage(site: upload.site!, timestamp: 1_700_000_000_000)
+              == "uploads.revoke|https://github.com|1700000000000", "upload Revoke binds exact site and timestamp")
+        for fields: JSONObject in [["rememberable": false], ["reason": "url-pattern:/security"], ["kind": "click"], ["site": "https://github.com|other"]] {
+            var invalid = uploadObject; invalid.merge(fields) { _, new in new }
+            rejects("ineligible upload cannot remember: \(fields.keys.sorted())") {
+                _ = try Approval(invalid)!.signingMessage(verb: "grant", timestamp: 1, remember: true)
+            }
+        }
+        rejects("upload deny cannot remember") { _ = try upload.signingMessage(verb: "deny", timestamp: 1, remember: true) }
+        rejects("ambiguous upload revoke origin rejected") { _ = try uploadRevokeMessage(site: "https://github.com|other", timestamp: 1) }
+        allVectors["uploadApproval"] = uploadObject
+        allVectors["uploadGrant"] = ["ts": ts, "sig": try key.signature(for: Data(uploadAlways.utf8)).derRepresentation.base64EncodedString()]
+        allVectors["uploadRevoke"] = ["ts": ts, "sig": try key.signature(for: Data(uploadRevokeMessage(site: upload.site!, timestamp: ts).utf8)).derRepresentation.base64EncodedString()]
         // A session grant is signed like any other hold: id, kind, empty tab, and a digest of the multi-line text the owner read.
         let grantObject: JSONObject = ["id": "grant1", "kind": "grant", "tab": NSNull(), "caller": "codex", "url": "", "reason": "session grant",
             "detail": "post on www.linkedin.com/company\nupload on github.com/settings\nfor 3 hours\n“Update the profile”"]

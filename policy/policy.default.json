@@ -154,6 +154,9 @@
   "sends": {
     "remember": []
   },
+  "uploads": {
+    "remember": []
+  },
   "approvals": {
     "ttl_minutes": 10
   }

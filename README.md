@@ -24,7 +24,7 @@ A local broker checks each request before Chrome. The default policy holds recog
 
 The panel names the action and can show its target. Touch ID or your Mac password authorizes a [Secure Enclave](https://support.apple.com/guide/security/secure-enclave-sec59b0b31ff/web) key to sign your decision. Approval binds to the pending action; changed requests and reused proofs fail. The button labelled “Approve with Touch ID” also accepts the Mac password. There is no software-key fallback.
 
-Sign-ins and eligible sends can remember a site after a signed decision. The shipped lists are empty. Payments, deletion, security actions and uploads cannot be remembered. See [authorization details](docs/authorization.md).
+Sign-ins, eligible sends and uploads can remember a site after a signed decision. The shipped lists are empty. Remembered uploads still hold on protected pages and refuse protected files. Payments, deletion and security actions cannot be remembered. See [authorization details](docs/authorization.md).
 
 ### Grant one chat a few holds
 

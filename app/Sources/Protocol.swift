@@ -77,7 +77,12 @@ struct Approval: Equatable {
         guard rememberable, let site else { return nil }
         return SendPermission(["site": site, "kind": kind, "reason": reason])
     }
-    var canRemember: Bool { kind == "signin" && site != nil || sendPermission != nil }
+    var uploadSite: String? {
+        guard rememberable, kind == "upload", reason == "upload of a local file", let site,
+              !site.isEmpty, !site.contains("|") else { return nil }
+        return site
+    }
+    var canRemember: Bool { kind == "signin" && site != nil || sendPermission != nil || uploadSite != nil }
     var expired: Bool { expiresAt.map { $0 <= Date() } ?? true }
     /// What the banner says. Plain words, the same sentence the panel opens with;
     /// the policy's own reason string never reaches a surface the user reads.
@@ -94,15 +99,20 @@ struct Approval: Equatable {
         let message = "\(verb)|\(id)|\(kind)|\(tab)|\(digest)|\(timestamp)"
         guard remember else { return message }
         guard verb == "grant", canRemember, let site, !site.isEmpty, !site.contains("|") else {
-            throw AppError("Only a sign-in or eligible send grant can remember a site")
+            throw AppError("Only a sign-in, eligible send or eligible upload grant can remember a site")
         }
-        return kind == "signin" ? "\(message)|remember|\(site)" : "\(message)|remember|\(site)|\(reason)"
+        return kind == "signin" || kind == "upload" ? "\(message)|remember|\(site)" : "\(message)|remember|\(site)|\(reason)"
     }
 }
 
 func signinRevokeMessage(site: String, timestamp: Int64) throws -> String {
     guard !site.isEmpty, !site.contains("|") else { throw AppError("Invalid sign-in origin") }
     return "signin.revoke|\(site)|\(timestamp)"
+}
+
+func uploadRevokeMessage(site: String, timestamp: Int64) throws -> String {
+    guard !site.isEmpty, !site.contains("|") else { throw AppError("Invalid upload origin") }
+    return "uploads.revoke|\(site)|\(timestamp)"
 }
 
 struct SendPermission: Equatable {
@@ -195,6 +205,7 @@ struct Snapshot: Equatable {
     var approvals: [Approval] = []
     var rememberedSignins: [String] = []
     var rememberedSends: [SendPermission] = []
+    var rememberedUploads: [String] = []
     var grants: [SessionGrant] = []
     var remote = RemoteStatus()
     /// The waiting approvals the owner's other device may also answer.
@@ -266,7 +277,12 @@ final class BrowserModel {
             }
             let sendPermissions = rules.compactMap(SendPermission.init)
             guard sendPermissions.count == rules.count else { throw AppError("Daemon returned an invalid send permission") }
+            let uploads = try client.call("uploads.remembered")
+            guard let uploadSites = uploads["sites"] as? [String] else {
+                throw AppError("Daemon returned an invalid remembered upload list")
+            }
             var next = Snapshot()
+            next.rememberedUploads = uploadSites.sorted()
             next.rememberedSends = sendPermissions.sorted { ($0.site, $0.kind, $0.reason) < ($1.site, $1.kind, $1.reason) }
             next.rememberedSignins = sites.sorted()
             // Session grants arrive with the approvals. A broker without them is simply older; a malformed
@@ -308,7 +324,7 @@ final class BrowserModel {
         let data = event["data"] as? JSONObject ?? event
         onEvent?(name, data)
         switch name {
-        case "approval.pending", "approval.resolved", "signin.remembered", "sends.remembered", "grants.changed", "remote.changed":
+        case "approval.pending", "approval.resolved", "signin.remembered", "sends.remembered", "uploads.remembered", "grants.changed", "remote.changed":
             refresh()
         default: break
         }

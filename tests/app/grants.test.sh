@@ -47,7 +47,7 @@ const table = {
     'a malformed session grant is rejected, never half-shown'],
   TITLE: ['ApprovalCard.swift', 'case "grant": return ("work without asking you", ', 'case "grant": return ("click", ',
     'a session grant is worded as working unattended for a time'],
-  REMEMBER: ['Protocol.swift', 'var canRemember: Bool { kind == "signin" && site != nil || sendPermission != nil }', 'var canRemember: Bool { true }',
+  REMEMBER: ['Protocol.swift', 'var canRemember: Bool { kind == "signin" && site != nil || sendPermission != nil || uploadSite != nil }', 'var canRemember: Bool { true }',
     'a session grant never offers Always allow'],
   RULE_TEXT: ['ApprovalCard.swift', 'return "\\(parts[0]) on \\(scheme)\\(host)\\(port)\\(url.path == "/" ? "" : url.path)"',
     'return "\\(parts[0]) at \\(scheme)\\(host)\\(port)\\(url.path == "/" ? "" : url.path)"', 'canonical rules read as the card lists them'],

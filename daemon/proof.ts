@@ -4,21 +4,30 @@ import type { StoredApproval } from './approvals.ts';
 import crypto from 'node:crypto';
 import { GateError } from './approvals.ts';
 import { signinSite } from './signin.ts';
-import { sendRule } from './policy.ts';
+import { sendRule, uploadSite, UPLOAD_HOLD } from './policy.ts';
 import type { SendRule } from './policy.ts';
 
 export function approvalMessage(verb: string, a: Pick<StoredApproval, "id" | "kind" | "tab" | "detail" | "url" | "reason" | "rememberable">, ts: unknown, remember = false) {
   const digest = crypto.createHash('sha256').update(a.detail as string, 'utf8').digest('hex');
   const message = `${verb}|${a.id}|${a.kind}|${a.tab ?? ''}|${digest}|${ts}`;
   if (!remember) return message;
-  if (verb !== 'grant') throw new GateError('approval-invalid', 'only a sign-in grant or eligible send grant can remember a site');
+  if (verb !== 'grant') throw new GateError('approval-invalid', 'only a sign-in grant, eligible send grant or eligible upload grant can remember a site');
   if (a.kind === 'signin') return `${message}|remember|${signinSite(a.url)}`;
+  if (a.kind === 'upload' && a.reason === UPLOAD_HOLD && a.rememberable === true) {
+    const site = uploadSite(a.url);
+    if (site) return `${message}|remember|${site}`;
+  }
   const send = a.rememberable === true ? sendRule(a.url, a.kind, a.reason) : undefined;
-  if (!send) throw new GateError('approval-invalid', 'only a sign-in grant or eligible send grant can remember a site');
+  if (!send) throw new GateError('approval-invalid', 'only a sign-in grant, eligible send grant or eligible upload grant can remember a site');
   return `${message}|remember|${send.site}|${send.reason}`;
 }
 
 export function signinRevokeMessage(site: string, ts: unknown) { return `signin.revoke|${site}|${ts}`; }
+
+export function uploadRevokeMessage(site: string, ts: unknown) {
+  if (uploadSite(site) !== site) throw new GateError('approval-invalid', 'exact upload origin required');
+  return `uploads.revoke|${site}|${ts}`;
+}
 
 export function sendRevokeMessage(rule: SendRule, ts: unknown) {
   if (!sendRule(rule.site, rule.kind, rule.reason)) throw new GateError('approval-invalid', 'exact send scope required');

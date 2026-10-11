@@ -5,7 +5,7 @@ import type { ImageBox } from '../shared/protocol.ts';
 import { isRecord } from '../shared/protocol.ts';
 import type { createProofVerifier, approvalMessage } from './proof.ts';
 import { signinSite } from './signin.ts';
-import { sendRule } from './policy.ts';
+import { sendRule, uploadSite, UPLOAD_HOLD } from './policy.ts';
 import type { SendRule } from './policy.ts';
 import type { GrantScope, GrantSpec } from './grants.ts';
 
@@ -48,7 +48,8 @@ export function cleanDetail(value: unknown) {
 // The owner sees and signs the request's `detail` text, which carries everything he decides on.
 export function publicView({ actionHash, targetSelector, grant, ...record }: StoredApproval) {
   const site = record.kind === 'signin' ? signinSite(record.url)
-    : record.rememberable === true ? sendRule(record.url, record.kind, record.reason)?.site : undefined;
+    : record.rememberable === true ? record.kind === 'upload' && record.reason === UPLOAD_HOLD
+      ? uploadSite(record.url) : sendRule(record.url, record.kind, record.reason)?.site : undefined;
   return site ? { ...record, site } : record;
 }
 export function approvalRef(a: StoredApproval) { return { id: a.id, reason: a.reason, expires: a.expiresAt }; }
@@ -207,14 +208,15 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
     const a = get(id);
     if (a.status !== 'pending') throw new GateError('approval-invalid', `approval ${id} is not pending`);
     const send = a.rememberable === true ? sendRule(a.url, a.kind, a.reason) : undefined;
-    if (typeof remember !== 'boolean' || remember && (verb !== 'grant' || a.kind !== 'signin' && !send)) {
-      throw new GateError('approval-invalid', 'remember requires a boolean on a sign-in grant or eligible send grant');
+    const upload = a.rememberable === true && a.kind === 'upload' && a.reason === UPLOAD_HOLD ? uploadSite(a.url) : undefined;
+    if (typeof remember !== 'boolean' || remember && (verb !== 'grant' || a.kind !== 'signin' && !send && !upload)) {
+      throw new GateError('approval-invalid', 'remember requires a boolean on a sign-in grant, eligible send grant or eligible upload grant');
     }
     verifier.verify(proof, message(verb, a, isRecord(proof) ? proof.ts : undefined, remember));
     // Durable policy must be saved before a remember decision can resolve the hold.
     if (remember) {
       if (!onRemember) throw new GateError('approval-invalid', 'remember storage unavailable');
-      onRemember(send?.site ?? signinSite(a.url), send);
+      onRemember(send?.site ?? upload ?? signinSite(a.url), send);
     }
     resolve(a, verb === 'grant' ? 'granted' : 'denied', { by: 'signed-proof' });
     return view(a);

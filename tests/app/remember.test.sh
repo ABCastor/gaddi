@@ -13,7 +13,7 @@ node --input-type=module - "$STATE/proofs.json" <<'NODE'
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import { approvalMessage, signinRevokeMessage, sendRevokeMessage, createProofVerifier } from './daemon/proof.ts';
+import { approvalMessage, signinRevokeMessage, sendRevokeMessage, uploadRevokeMessage, createProofVerifier } from './daemon/proof.ts';
 const file = process.argv[2], fixture = JSON.parse(fs.readFileSync(file, 'utf8'));
 const publicKeyPath = path.join(path.dirname(file), 'fake-approver.pub');
 fs.writeFileSync(publicKeyPath, fixture.publicKey);
@@ -39,5 +39,44 @@ assert.throws(() => proofs.verify(fixture.sessionGrant, approvalMessage('grant',
 proofs.verify(fixture.sessionGrant, approvalMessage('grant', grantRecord, fixture.sessionGrant.ts));
 assert.throws(() => proofs.verify(fixture.sessionGrant, approvalMessage('grant', grantRecord, fixture.sessionGrant.ts)), /already used/);
 console.log('PASS Swift session-grant signature verifies in Node; any change to the signed text or kind fails, and replay is refused');
-console.log('== app remember interoperability: 3 passed, 0 failed');
+const upload = fixture.uploadApproval;
+assert.throws(() => proofs.verify(fixture.uploadGrant, approvalMessage('grant', upload, fixture.uploadGrant.ts)), /verification failed/);
+assert.throws(() => proofs.verify(fixture.uploadGrant, approvalMessage('grant', { ...upload, url: 'https://other.example.test/settings' }, fixture.uploadGrant.ts, true)), /verification failed/);
+proofs.verify(fixture.uploadGrant, approvalMessage('grant', upload, fixture.uploadGrant.ts, true));
+assert.throws(() => proofs.verify(fixture.uploadRevoke, uploadRevokeMessage('https://other.example.test', fixture.uploadRevoke.ts)), /verification failed/);
+proofs.verify(fixture.uploadRevoke, uploadRevokeMessage(upload.site, fixture.uploadRevoke.ts));
+assert.throws(() => proofs.verify(fixture.uploadGrant, approvalMessage('grant', upload, fixture.uploadGrant.ts, true)), /already used/);
+console.log('PASS Swift upload grant/revoke signatures verify in Node; exact origin, remember choice and replay remain bound');
+console.log('== app remember interoperability: 4 passed, 0 failed');
 NODE
+# Disposable Swift protocol mutants must fail the upload checks before writing proof vectors.
+python3 - "$REPO/app/Sources/Protocol.swift" "$STATE" <<'PY'
+from pathlib import Path
+import sys
+source, state = Path(sys.argv[1]).read_text(), Path(sys.argv[2])
+mutations = [
+    ('upload-choice', ' || uploadSite != nil', ''),
+    ('upload-binding', 'return kind == "signin" || kind == "upload" ?', 'return kind == "signin" ?'),
+    ('upload-revoke', r'return "uploads.revoke|\(site)|\(timestamp)"', r'return "signin.revoke|\(site)|\(timestamp)"'),
+]
+for name, old, new in mutations:
+    assert source.count(old) == 1, name
+    (state / (name + '.swift')).write_text(source.replace(old, new))
+PY
+for mutant in upload-choice upload-binding upload-revoke; do
+  DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun swiftc -swift-version 5 \
+    -module-cache-path "$REPO/app/build/module-cache" -framework AppKit -framework CryptoKit \
+    "$REPO/app/Sources/SocketClient.swift" "$STATE/$mutant.swift" \
+    "$REPO/app/Sources/ApprovalCard.swift" "$REPO/tests/app/remember.swift" -o "$STATE/$mutant"
+  if "$STATE/$mutant" "$STATE/$mutant.json" > "$STATE/$mutant.log" 2>&1; then
+    echo "FAIL Swift upload mutant survived: $mutant"; exit 1
+  fi
+  case "$mutant" in
+    upload-choice) expected='FAIL upload exposes an exact-site owner choice' ;;
+    upload-binding) expected='FAIL upload Always binds the choice and exact site' ;;
+    upload-revoke) expected='FAIL upload Revoke binds exact site and timestamp' ;;
+  esac
+  grep -Fq "$expected" "$STATE/$mutant.log"
+  echo "FALSIFIED Swift upload remember ($mutant: $expected)"
+done
+echo '== app upload remember falsification: 3 passed, 0 failed'
