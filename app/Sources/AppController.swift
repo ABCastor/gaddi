@@ -16,6 +16,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         let approvals: [Approval]
         let rememberedSignins: [String]
         let rememberedSends: [SendPermission]
+        let rememberedUploads: [String]
         let grants: [SessionGrant]
         let remote: RemoteStatus
         let remoteApprovable: Set<String>
@@ -173,6 +174,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         let state = ApprovalPanelState(approvals: snapshot.approvals,
             rememberedSignins: snapshot.rememberedSignins,
             rememberedSends: snapshot.rememberedSends,
+            rememberedUploads: snapshot.rememberedUploads,
             grants: snapshot.grants,
             remote: snapshot.remote,
             remoteApprovable: snapshot.remoteApprovable,
@@ -233,6 +235,10 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         add(RememberedSendList(snapshot.rememberedSends, enabled: connected && keyReady && !busy) { [weak self] rule in
             self?.revokeSend(rule)
         })
+        add(PanelRule())
+        add(RememberedUploadList(uploads: snapshot.rememberedUploads, enabled: connected && keyReady && !busy) { [weak self] site in
+            self?.revokeUpload(site)
+        })
     }
     private func notify(_ approval: Approval) {
         let content = UNMutableNotificationContent()
@@ -288,7 +294,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         guard !approval.expired else { return }
         let remember = choice == "remember"
         let verb = remember ? "grant" : choice
-        let action = remember ? "Always allow \(approval.kind == "signin" ? "sign-in" : "this send action") on \(approval.site ?? "")" : verb == "grant" ? "Approve" : "Deny"
+        let action = remember ? "Always allow \(approval.kind == "signin" ? "sign-in" : approval.kind == "upload" ? "uploads" : "this send action") on \(approval.site ?? "")" : verb == "grant" ? "Approve" : "Deny"
         // The Touch ID sheet is drawn by macOS, so it carries the substance: a session grant is named as one,
         // with how long it lasts and what it waives (the first three rules, then a count).
         let prompt: String
@@ -375,6 +381,18 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             var parameters = rule.parameters
             parameters["proof"] = ["ts": ts, "sig": signed.signature.base64EncodedString()]
             _ = try model.client.call("sends.revoke", parameters)
+        }
+    }
+    private func revokeUpload(_ site: String) {
+        authenticated(reason: "Require approval for uploads on \(site)") { [self] context in
+            let list = try model.client.call("uploads.remembered")
+            guard let sites = list["sites"] as? [String], sites.contains(site) else {
+                throw AppError("This upload permission has already been revoked")
+            }
+            let ts = Int64(Date().timeIntervalSince1970 * 1000)
+            let signed = try keys.sign(uploadRevokeMessage(site: site, timestamp: ts), context: context)
+            _ = try model.client.call("uploads.revoke", ["site": site,
+                "proof": ["ts": ts, "sig": signed.signature.base64EncodedString()]])
         }
     }
     private func revokeSignin(_ site: String) {

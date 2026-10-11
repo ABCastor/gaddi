@@ -30,7 +30,8 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] <command>
   status | approvals | pending | cancel <id> | audit [n] | events | bridge status
   remote | remote off  (approving some holds from another device: show its state, or turn it off; turning it on needs Touch ID in the Gaddi app)
   extensions [list | reload|enable|disable|uninstall <id|self> | install <folder>]
-  approve <id> (opens the app's Touch ID approval sheet)`;
+  approve <id> (opens the app's Touch ID approval sheet)
+  The panel can remember sign-ins, eligible sends and uploads per site; Revoke removes a permission.`;
 const argv = process.argv.slice(2), args: string[] = [];
 let json = false, fullPage = false, foreground = false, visible = false;
 let approval: string | undefined, tab: number | undefined, group: string | undefined, item: string | undefined;

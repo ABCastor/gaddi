@@ -328,6 +328,37 @@ import AppKit
         check(descendants(emptySignin).compactMap { $0 as? PanelButton }.isEmpty && descendants(emptySend).compactMap { $0 as? PanelButton }.isEmpty, "empty permission lists have no revoke controls")
         check(descendants(disabledSend).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }, "busy/disconnected send revoke is disabled")
 
+        let uploadObject: JSONObject = ["id": "uploadcheck", "kind": "upload", "detail": "preview.png (1 KB)", "caller": "claude-desktop", "tab": 7,
+            "url": "https://github.com/ABCastor/gaddi/settings", "site": "https://github.com", "rememberable": true,
+            "reason": "upload of a local file", "expiresAt": Date().addingTimeInterval(540).timeIntervalSince1970 * 1000]
+        let upload = Approval(uploadObject)!
+        for (theme, appearance) in [("light", NSAppearance(named: .aqua)!), ("dark", NSAppearance(named: .darkAqua)!)] {
+            for width: CGFloat in [528, 408] {
+                var choices: [String] = []
+                let card = ApprovalCard(upload, enabled: true) { choices.append($0) }
+                _ = try render(card, width: width, name: "upload-\(theme)-\(Int(width))", appearance: appearance)
+                let buttons = descendants(card).compactMap { $0 as? PanelButton }
+                check(buttons.map(\.title).sorted() == ["Allow once", "Always allow uploads on this site", "Deny"].sorted(), "upload choices name their exact authority")
+                for title in ["Allow once", "Always allow uploads on this site", "Deny"] { buttons.first { $0.title == title }!.performClick(nil) }
+                check(choices == ["grant", "remember", "deny"], "upload choices route to distinct decisions")
+                check(descendants(card).compactMap { $0 as? NSTextField }.allSatisfy { fits($0, within: card) }
+                      && buttons.allSatisfy { card.bounds.contains($0.convert($0.bounds, to: card)) }, "upload origin and controls fit")
+                let sites = ["https://github.com", "https://a-long-upload-hostname.example.test:8443"]
+                var revoked: [String] = []
+                let remembered = RememberedUploadList(uploads: sites, enabled: true) { revoked.append($0) }
+                _ = try render(remembered, width: width, name: "remembered-uploads-\(theme)-\(Int(width))", appearance: appearance)
+                check(descendants(remembered).compactMap { $0 as? NSTextField }.allSatisfy { fits($0, within: remembered) }, "remembered upload rows wrap exact origins")
+                for button in descendants(remembered).compactMap({ $0 as? PanelButton }) { button.performClick(nil) }
+                check(revoked == sites, "upload Revoke selects the exact origin")
+            }
+        }
+        let emptyUploads = RememberedUploadList(uploads: [], enabled: true) { _ in fatalError("empty upload revoke ran") }
+        check(descendants(emptyUploads).compactMap { $0 as? PanelButton }.isEmpty
+              && descendants(emptyUploads).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "No uploads are remembered. Uploads wait for your approval." }, "empty upload permissions explain the hold")
+        let disabledUploads = RememberedUploadList(uploads: [upload.site!], enabled: false) { _ in fatalError("disabled upload revoke ran") }
+        let disabledUpload = ApprovalCard(upload, enabled: false) { _ in fatalError("disabled upload decision ran") }
+        check((descendants(disabledUploads) + descendants(disabledUpload)).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }, "busy/disconnected upload choices and revoke are disabled")
+
         // Session grants: the request card and the list of what is running unattended.
         let grantApproval = Approval(["id": "grantcheck", "kind": "grant", "caller": "codex", "reason": "session grant",
             "detail": "post on www.linkedin.com/company\nupload on github.com/settings\nfor 3 hours\n“Update the profile”",

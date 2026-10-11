@@ -13,6 +13,7 @@ interface PolicyData {
  approvals: { ttl_minutes: number };
  signin?: { remember: string[] };
  sends?: { remember: SendRule[] };
+ uploads?: { remember: string[] };
 }
 export interface Policy extends PolicyData { off: boolean; sources: string[] }
 export interface SendRule { site: string; kind: 'click' | 'press'; reason: string }
@@ -61,6 +62,7 @@ const schema: Schema = {
   approvals: { ttl_minutes: v => typeof v === 'number' && Number.isFinite(v) && v > 0 },
   signin: { remember: [exactOrigin] },
   sends: { remember: [{ site: exactOrigin, kind: v => v === 'click' || v === 'press', reason: sendReason }] },
+  uploads: { remember: [exactOrigin] },
 };
 function validate(value: unknown, shape: Schema = schema, at = 'policy', required = false): void {
   const invalid = (): never => { throw new Error(`${at}: invalid value`); };
@@ -112,6 +114,9 @@ export function loadPolicy({ overlay = path.join(process.env.GADDI_HOME || path.
   for (const rule of policy.sends?.remember ?? []) {
     if (!sendRule(rule.site, rule.kind, rule.reason)) throw new Error('policy.sends.remember: invalid send scope');
   }
+  for (const site of policy.uploads?.remember ?? []) {
+    if (!uploadSite(site)) throw new Error('policy.uploads.remember: invalid upload site');
+  }
   if (off) {
     log('!!!!!!!!!! GADDI_POLICY_OFF=1: EVERY GATE IS DISABLED. Test-only. Never run like this for real work. !!!!!!!!!!');
   }
@@ -145,7 +150,7 @@ function saveRememberedPolicy(overlay: string, updated: unknown, off: boolean): 
   return loadPolicy({ overlay, off });
 }
 
-// The same private atomic overlay writer serves both owner-signed remember choices.
+// The same private atomic overlay writer serves the owner-signed remember choices.
 export function setSendRemember(overlay: string, rule: SendRule, remember: boolean, off = false): Policy {
   validate({ sends: { remember: [rule] } });
   if (!sendRule(rule.site, rule.kind, rule.reason)) throw new Error('policy.sends.remember: invalid value');
@@ -158,6 +163,18 @@ export function setSendRemember(overlay: string, rule: SendRule, remember: boole
   return saveRememberedPolicy(overlay, { ...local, sends: { remember: rules } }, off);
 }
 const sameSendRule = (a: SendRule, b: SendRule) => a.site === b.site && a.kind === b.kind && a.reason === b.reason;
+
+export function setUploadRemember(overlay: string, site: unknown, remember: boolean, off = false): Policy {
+  validate({ uploads: { remember: [site] } });
+  if (!uploadSite(site)) throw new Error('policy.uploads.remember: invalid upload site');
+  const current = loadPolicy({ overlay, off });
+  const local: unknown = fs.existsSync(overlay) ? parseJSON(fs.readFileSync(overlay, 'utf8')) : {};
+  validate(local);
+  if (!isRecord(local)) throw new Error('Invalid policy overlay');
+  const sites = new Set(current.uploads?.remember ?? []);
+  if (remember) sites.add(site as string); else sites.delete(site as string);
+  return saveRememberedPolicy(overlay, { ...local, uploads: { remember: [...sites] } }, off);
+}
 
 // Reject refused hosts and protected pages even when an overlay loosens ordinary holds.
 const builtInPolicy: PolicyData = JSON.parse(fs.readFileSync(DEFAULT_POLICY, 'utf8'));
@@ -198,6 +215,30 @@ export function checkRememberedSend(policy: Policy, url: string, kind: string, c
   const dangerous = matchVerb(name, [...builtInPolicy.hold.verbs, ...policy.hold.verbs].filter(verb => !SEND_VERBS.includes(fold(verb))));
   if (dangerous) return HOLD(`verb:${dangerous}`);
   if (policy.sends?.remember.some(existing => sameSendRule(existing, rule))) return ALLOW('owner remembered this send kind on this site');
+  return { ...check, rememberable: true };
+}
+
+export function uploadSite(url: unknown): string | undefined {
+  try {
+    const page = new URL(String(url));
+    if (!exactOrigin(page.origin) || page.username || page.password) return;
+    if (builtInPolicy.deny.verbs_on_hosts.some(rule => rx(rule.host)?.test(hostOf(page.href)))) return;
+    if (builtInPolicy.hold.url_patterns.some(pattern => rx(pattern)?.test(page.href))) return;
+    return page.origin;
+  } catch { return; }
+}
+
+// Only ordinary upload holds can be remembered. File refusals happen before this check.
+export function checkRememberedUpload(policy: Policy, url: string, check: PolicyCheck): PolicyCheck {
+  if (check.outcome !== 'hold' || check.reason !== UPLOAD_HOLD) return check;
+  const site = uploadSite(url);
+  if (!site) return check;
+  const protectedScope = protections(policy);
+  if (protectedScope.hosts.some(host => rx(host)?.test(hostOf(url)))) return check;
+  for (const pattern of protectedScope.patterns) {
+    if (rx(pattern)?.test(url)) return HOLD(`url-pattern:${pattern}`);
+  }
+  if (policy.uploads?.remember.includes(site)) return ALLOW('owner remembered uploads on this site');
   return { ...check, rememberable: true };
 }
 

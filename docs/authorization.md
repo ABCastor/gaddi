@@ -12,7 +12,9 @@ The approval panel can show a page capture around a click or Enter target. This 
 
 ## Remembered permissions
 
-Sign-in grants cover one exact origin, including scheme and port. Eligible sends cover that origin plus a specific send kind: Enter and a Send button have separate scopes. Remembering or revoking requires a signed app decision. Payments, deletion, security pages, uploads and denied actions never offer remembered send permission. The default policy remembers nothing.
+Sign-in grants and upload permissions cover one exact origin, including scheme and port. Eligible sends cover that origin plus a specific send kind: Enter and a Send button have separate scopes. Remembering or revoking requires a signed app decision. Payments, deletion, security pages, uploads and denied actions never offer remembered send permission. The default policy remembers nothing.
+
+An eligible upload card offers **Always allow uploads on this site** alongside **Allow once**. Touch ID saves that choice across chats and broker restarts; the panel lists the sites with **Revoke**. Agents cannot add a permission. Remembered uploads stay held on built-in and owner-protected addresses and refused hosts; keys, credential files, browser profiles and other protected files remain refused. Each upload allowed by this permission records its reason in the audit.
 
 ## Session grants
 

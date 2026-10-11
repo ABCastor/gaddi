@@ -92,6 +92,8 @@ const server = net.createServer(socket => {
         } else { reply(socket, id, { pending, recent: [answered], grants }); }
       } else if (method === 'remote.status') {
         reply(socket, id, { enabled: false, candidate: { fingerprint } });
+      } else if (method === 'uploads.remembered') {
+        reply(socket, id, { sites: ['https://uploads.example.test:8443'] });
       } else if (method === 'sends.remembered') {
         reply(socket, id, { rules: [] });
       } else if (method === 'signin.remembered') {
