@@ -1,6 +1,6 @@
 # Chrome bridge
 
-The Gaddi extension connects Chrome to the local broker through a native-messaging host. It requests access to tabs, bookmarks, page scripts and Chrome's debugger to operate your existing session. `management` provides installed-extension controls; `storage` preserves recovery metadata and reload limits.
+The Gaddi extension connects Chrome to the local broker through a native-messaging host. It requests access to tabs, bookmarks, page scripts and Chrome's debugger to operate your existing session. `management` provides installed-extension controls; `storage` preserves recovery metadata, reload limits and the agent window across worker restarts. After an extension reload, stored debugger page identities recover that window only while one of its original pages still exists; recycled tab or window numbers do not establish ownership. `system.display` locates a secondary display.
 
 ## Setup
 
@@ -32,7 +32,11 @@ Before dispatch, clicks recheck the name and link destination inspected by the b
 
 Open, goto and back wait up to 20 seconds for the target document to finish parsing. Later application data and animations may still be loading. A failed open closes its temporary tab unless another navigation took over; cleanup failures report the preserved tab ID.
 
-New tabs open in collapsed background groups named `● <task> · <caller>`, or `● <caller>`. Task names are limited to 40 characters. `foreground: true` brings a new tab forward. Grouping can move existing tabs between windows; closing accepts 1 to 100 explicit IDs and reports individual failures. Confirm before closing unsaved work.
+New tabs open in collapsed background groups named `● <task> · <caller>`, or `● <caller>`. Task names are limited to 40 characters. By default, new tabs and groups use one Gaddi window created without focus, on a secondary display when available. Otherwise it opens on the primary display without focus. A display change that leaves it on the primary display minimizes it. Chrome closes it when its last tab closes, and Gaddi recreates it on demand. Existing tabs remain readable and actionable wherever they are. Grouping explicitly moves the selected tabs into the group's window; closing accepts 1 to 100 explicit IDs and reports individual failures. Confirm before closing unsaved work.
+
+`foreground: true` selects a new tab within its window without focusing the window. `browser_show` selects an existing tab and requests attention, preserving it from session cleanup. It does not focus the window by default. The broker's `browser.window` policy accepts `"own"` (default) or `"shared"` (use existing groups and the last-focused window). `browser.show` accepts `"attention"` (default) or `"front"` (explicitly focus a shown tab's window). These settings live in the owner's policy file and are forwarded by the broker, rather than being tool arguments.
+
+Background reads, eval, navigation and screenshots temporarily emulate renderer visibility and focus with Chrome's debugger. Read and capture actions wait for two animation frames before collecting their result, then allow up to 100 ms for late work. Input and waits retain their existing temporary emulation. The owner's active tab in a focused window keeps native state for reads and captures. Rendering needs no `show` call. Emulation ends before the action replies, including when a viewport override retains the debugger, and transport disconnection disables rendering. There is no idle capture or retained screencast.
 
 A blocked page request expires after 25 seconds. Close and show remain available while it is blocked. Frozen pages are woken for reads and actions. Discarded tabs are reported without silently reloading them.
 

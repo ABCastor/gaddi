@@ -5,6 +5,7 @@ import { waitParams, wheelParams, versionParam, hasErrorCode, isRecord } from '.
 import { pageTask } from './content.js';
 import { manageExtensions } from './extensions.js';
 import { createRecovery, RECOVERY_KEY } from './recovery.js';
+import { createAgentWindow } from './windows.js';
 const NATIVE_HOST = 'com.abcastor.gaddi.bridge';
 let nativePort, reconnectTimer, retryDelay = 250, nextConnect = 0;
 let healthTimer, healthSequence = 0;
@@ -112,6 +113,7 @@ function connectNative() {
         nativePort = undefined;
         health = undefined;
         clearTimeout(healthTimer);
+        stopRendering();
         void recovery.failed(reason);
         nextConnect = Date.now() + retryDelay;
         reconnectTimer = setTimeout(connectNative, retryDelay);
@@ -146,6 +148,25 @@ connectNative();
 const tabQueues = new Map(), attached = new Map(), emulations = new Map();
 const PAGE_TASK_TIMEOUT_MS = 25000;
 const AGENT_GROUP_PREFIX = '● ';
+const agentWindow = createAgentWindow();
+let browser = { window: 'own', show: 'attention' };
+function stopRendering() {
+    for (const [tab, session] of attached)
+        if (session.inputFocus && !session.closing) {
+            const cleanup = session.ready.then(async () => {
+                if (attached.get(tab) !== session)
+                    return;
+                await chrome.debugger.sendCommand({ tabId: tab }, 'Emulation.setFocusEmulationEnabled', { enabled: false });
+                session.inputFocus = false;
+            }).catch(async () => {
+                await chrome.debugger.detach({ tabId: tab }).catch(() => { });
+                if (attached.get(tab) === session)
+                    attached.delete(tab);
+            }).finally(() => { if (session.closing === cleanup)
+                delete session.closing; });
+            session.closing = cleanup;
+        }
+}
 // Chrome refuses every chrome.debugger call (attach, command, detach) while any frame in
 // the tab shows another extension's page, such as a password manager's inline menu, and
 // ends a live session (reason target_closed) the moment such a frame starts loading:
@@ -236,17 +257,21 @@ function tabIds(value) {
         throw new Error('tabs must contain 1 to 100 Chrome tab ids');
     return [...new Set(value)];
 }
-async function findGroup(title) {
+async function findGroup(title, check) {
     if (typeof title !== 'string' || !title.startsWith(AGENT_GROUP_PREFIX) || !title.slice(AGENT_GROUP_PREFIX.length).trim())
         throw new Error('group must have the agent prefix and a label');
-    return (await chrome.tabGroups.query({})).find(group => group.title === title);
+    const groups = await chrome.tabGroups.query({});
+    if (browser.window === 'shared')
+        return groups.find(group => group.title === title);
+    const id = await agentWindow.get(check);
+    return groups.find(group => group.title === title && group.windowId === id);
 }
 // Call under the shared groups queue so open and group cannot create duplicate titles.
 async function joinGroup(ids, title, group, foreground, check) {
     check();
     const tabs = await Promise.all(ids.map(id => getTab(id)));
     check();
-    const windowId = group?.windowId ?? tabs[0].windowId;
+    const windowId = group?.windowId ?? (browser.window === 'own' ? await agentWindow.get(check) : tabs[0].windowId);
     for (const tab of tabs)
         if (tab.windowId !== windowId) {
             check();
@@ -259,6 +284,10 @@ async function joinGroup(ids, title, group, foreground, check) {
         await chrome.tabGroups.update(groupId, { title, color: 'cyan', collapsed: !foreground });
     else if (foreground)
         await chrome.tabGroups.update(groupId, { collapsed: false });
+    if (browser.window === 'own') {
+        await agentWindow.removeBlank(check);
+        await agentWindow.remember(check);
+    }
     return groupId;
 }
 async function getTab(id) {
@@ -817,6 +846,8 @@ async function dispatchAction({ method, params = {} }, scope) {
     check();
     if (!params || typeof params !== 'object' || Array.isArray(params))
         throw new Error('params must be an object');
+    if (params.browser)
+        browser = params.browser;
     if (method === 'chrome.extensions')
         return manageExtensions(params, check, () => recovery.requestSelfReload('broker-requested', check));
     if (method === 'chrome.tabs') {
@@ -881,15 +912,21 @@ async function dispatchAction({ method, params = {} }, scope) {
         const tab = (await chrome.tabs.update(params.tab, { active: true }));
         // macOS may refuse focus (locked screen, another app in front); drawAttention then bounces the Dock icon.
         check();
-        await chrome.windows.update(tab.windowId, { focused: true, drawAttention: true });
+        await chrome.windows.update(tab.windowId, { ...(browser.show === 'front' ? { focused: true } : {}), drawAttention: true });
         return tabInfo(tab);
     }
     if (method === 'chrome.group') {
         const ids = tabIds(params.tabs);
         return queued('groups', async () => {
-            const group = await findGroup(params.group);
-            const groupId = await joinGroup(ids, params.group, group, false, check);
-            return { tabs: await Promise.all(ids.map(async (id) => tabInfo(await getTab(id)))), group: params.group, groupId };
+            try {
+                const group = await findGroup(params.group, check);
+                const groupId = await joinGroup(ids, params.group, group, false, check);
+                return { tabs: await Promise.all(ids.map(async (id) => tabInfo(await getTab(id)))), group: params.group, groupId };
+            }
+            finally {
+                if (browser.window === 'own')
+                    await agentWindow.removeBlank(() => { });
+            }
         });
     }
     // Tab management above injects nothing, including on Chrome's own pages.
@@ -898,10 +935,19 @@ async function dispatchAction({ method, params = {} }, scope) {
         const url = navigationURL(params.url), title = params.group ?? `${AGENT_GROUP_PREFIX}unknown`;
         // Serialize just group creation so concurrent opens cannot create duplicates.
         const opened = await queued('groups', async () => {
-            const group = await findGroup(title);
+            const group = await findGroup(title, check);
             check();
-            const opened = await chrome.tabs.create({ url: 'about:blank', active: params.foreground === true,
-                ...(group ? { windowId: group.windowId } : {}) });
+            const windowId = group?.windowId ?? (browser.window === 'own' ? await agentWindow.get(check) : undefined);
+            check();
+            let opened;
+            try {
+                opened = await chrome.tabs.create({ url: 'about:blank', active: params.foreground === true,
+                    ...(windowId !== undefined ? { windowId } : {}) });
+            }
+            finally {
+                if (browser.window === 'own')
+                    await agentWindow.removeBlank(() => { });
+            }
             scope.error.message = `Chrome did not respond within 25 seconds; tab ${opened.id} was preserved; inspect it before retrying`;
             try {
                 await joinGroup([opened.id], title, group, params.foreground === true, check);
@@ -918,7 +964,7 @@ async function dispatchAction({ method, params = {} }, scope) {
         });
         return queued(opened.id, async (check) => {
             try {
-                return tabInfo(await withDebugger(opened.id, send => navigate(opened.id, send, url), check));
+                return tabInfo(await withDebugger(opened.id, send => navigate(opened.id, send, url), check, true));
             }
             catch (caught) {
                 const error = caught instanceof Error ? caught : new Error(actionErrorMessage(caught));
@@ -979,6 +1025,21 @@ async function dispatchAction({ method, params = {} }, scope) {
         if (current.frozen)
             await withDebugger(tab, send => send('Page.setWebLifecycleState', { state: 'active' }), check)
                 .catch(error => { throw isForeignFrameError(error) ? new Error(FROZEN_FOREIGN_HELP) : error; });
+        const background = !current.active || !(await chrome.windows.get(current.windowId)).focused;
+        check();
+        // Render in the target renderer, never by selecting Chrome's window. Briefly
+        // keep it drawing after reads so their late DOM work can settle, then restore.
+        const rendered = (fn) => withDebugger(tab, async (send) => {
+            if (background)
+                await send('Runtime.evaluate', { expression: 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))',
+                    awaitPromise: true, returnByValue: true, timeout: 1000 });
+            const value = await fn(send);
+            if (background && scope.end - Date.now() > 200) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                check();
+            }
+            return value;
+        }, check, background, route);
         if (action === 'signinProbe')
             return emulatedFocus(() => onPage(tab, 'signinProbe', params, check));
         if (action === 'signinType' || action === 'signinSubmit') {
@@ -1013,18 +1074,19 @@ async function dispatchAction({ method, params = {} }, scope) {
         if (action === 'wait')
             return emulatedFocus(() => waitOnTab(tab, params, scope));
         if (action === 'describe' || action === 'read' || action === 'html')
-            return { ...result, ...await onPage(tab, action, params, check) };
+            return { ...result,
+                ...await (background ? rendered(() => onPage(tab, action, params, check)) : onPage(tab, action, params, check)) };
         if (action === 'goto')
-            return withDebugger(tab, async (send) => tabInfo(await navigate(tab, send, navigationURL(params.url))), check, false, route);
+            return rendered(async (send) => tabInfo(await navigate(tab, send, navigationURL(params.url))));
         if (action === 'back')
-            return withDebugger(tab, async (send) => {
+            return rendered(async (send) => {
                 const history = await send('Page.getNavigationHistory');
                 const previous = history.entries[history.currentIndex - 1];
                 if (!previous)
                     throw new Error('No previous history entry');
                 navigationURL(previous.url);
                 return tabInfo(await navigate(tab, send, previous.url, previous.id));
-            }, check, false, route);
+            });
         if (action === 'emulate') {
             await emulate(tab, params, check, route);
             return { ...result, emulated: !params.reset };
@@ -1035,7 +1097,7 @@ async function dispatchAction({ method, params = {} }, scope) {
             // Invariant: password expressions are refused in addition to the page's password-field check.
             if (/password/i.test(params.expression))
                 throw new Error('Refusing password access');
-            return withDebugger(tab, async (send) => {
+            return rendered(async (send) => {
                 await onPage(tab, 'evalCheck', {}, check);
                 const evaluated = await send('Runtime.evaluate', { expression: params.expression,
                     returnByValue: true, awaitPromise: true, timeout: 10000 });
@@ -1044,7 +1106,7 @@ async function dispatchAction({ method, params = {} }, scope) {
                 if (evaluated.result?.subtype === 'error')
                     throw new Error('Page evaluation failed');
                 return { ...result, value: evaluated.result?.value ?? evaluated.result?.unserializableValue ?? null };
-            }, check, false, route);
+            });
         }
         if (action === 'upload') {
             // The page gets the file through its own file field or drop events; no debugger, so
@@ -1121,7 +1183,7 @@ async function dispatchAction({ method, params = {} }, scope) {
                 return { ...result, data, mimeType: 'image/jpeg', width, height, box /* CAPTURE_BOX_TEST_POINT */ };
             }, check, false, route);
         if (action === 'screenshot')
-            return trusted(async (send) => {
+            return rendered(async (send) => {
                 const { cssContentSize, cssVisualViewport } = await send('Page.getLayoutMetrics');
                 const bounds = params.fullPage === true ? cssContentSize : {
                     x: cssVisualViewport.pageX, y: cssVisualViewport.pageY,
@@ -1132,7 +1194,7 @@ async function dispatchAction({ method, params = {} }, scope) {
                 const { data } = await send('Page.captureScreenshot', { format: 'jpeg', quality: 85,
                     captureBeyondViewport: params.fullPage === true, clip: { ...bounds, scale } });
                 return { ...result, data, mimeType: 'image/jpeg' };
-            }, false);
+            });
         // Set when a click's press and release both reached Chrome before a session ended.
         let handed = false;
         if (action === 'click' || action === 'hover')

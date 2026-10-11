@@ -12,7 +12,7 @@ while IFS= read -r t; do
   N=$((N+1))
   name="${t#"$REPO/tests/"}"; name="${name%.test.sh}"
   # Fake-only runs avoid Chrome for Testing and real Secure Enclave key creation.
-  if [[ "${GADDI_TEST_FAKE_ONLY:-0}" == 1 && ( "$name" == bridge/extension || "$name" == bridge/restart || "$name" == signin/browser || "$name" == app/key-store ) ]]; then
+  if [[ "${GADDI_TEST_FAKE_ONLY:-0}" == 1 && ( "$name" == bridge/extension || "$name" == bridge/restart || "$name" == bridge/render-browser || "$name" == signin/browser || "$name" == app/key-store ) ]]; then
     SKIPPED=$((SKIPPED+1))
     echo "SKIP $name (GADDI_TEST_FAKE_ONLY=1: browser and Secure Enclave execution prohibited)"
     continue

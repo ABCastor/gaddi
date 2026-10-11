@@ -86,6 +86,8 @@ try {
   assert.ok(words <= 120);
   assert.match(instructions, /Never ask for passwords/);
   assert.match(instructions, /Touch ID/);
+  assert.match(instructions, /Rendering never needs show; show only requests owner attention/, 'ASSERT_SHOW_GUIDANCE');
+  assert.match(listed.tools.find(t => t.name === 'browser_show')!.description!, /without focus by default.*Rendering never needs show/, 'ASSERT_SHOW_GUIDANCE');
   assert.match(instructions, /type mode:append after chips\/mentions/, 'ASSERT_APPEND_SCHEMA');
   assert.match(instructions, /owner may pre-allow sends/, 'ASSERT_SEND_GUIDANCE');
   assert.doesNotMatch(instructions, /agents cannot grant permissions/, 'ASSERT_GRANT_GUIDANCE');

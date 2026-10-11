@@ -13,6 +13,7 @@ interface PolicyData {
  approvals: { ttl_minutes: number };
  signin?: { remember: string[] };
  sends?: { remember: SendRule[] };
+ browser: { window: 'own' | 'shared'; show: 'attention' | 'front' };
 }
 export interface Policy extends PolicyData { off: boolean; sources: string[] }
 export interface SendRule { site: string; kind: 'click' | 'press'; reason: string }
@@ -61,6 +62,7 @@ const schema: Schema = {
   approvals: { ttl_minutes: v => typeof v === 'number' && Number.isFinite(v) && v > 0 },
   signin: { remember: [exactOrigin] },
   sends: { remember: [{ site: exactOrigin, kind: v => v === 'click' || v === 'press', reason: sendReason }] },
+  browser: { window: v => v === 'own' || v === 'shared', show: v => v === 'attention' || v === 'front' },
 };
 function validate(value: unknown, shape: Schema = schema, at = 'policy', required = false): void {
   const invalid = (): never => { throw new Error(`${at}: invalid value`); };

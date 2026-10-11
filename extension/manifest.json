@@ -14,7 +14,8 @@
     "bookmarks",
     "alarms",
     "storage",
-    "management"
+    "management",
+    "system.display"
   ],
   "host_permissions": [
     "<all_urls>"

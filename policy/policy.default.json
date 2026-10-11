@@ -1,5 +1,6 @@
 {
   "version": 3,
+  "browser": { "window": "own", "show": "attention" },
   "comment": "Tab-scoped action gates. Hold requires a signed app approval; deny has no approval path. Verbs match accessible names; URL patterns match the full action URL.",
   "hold": {
     "verbs": [

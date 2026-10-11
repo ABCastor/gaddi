@@ -228,7 +228,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   const connection = bridge.connection();
   const deadline = Date.now() + 25000;
   const request = async (name: string, args: ChromeParams) => {
-    try { return await bridge.request('chrome.' + name, args, connection); }
+    try { return await bridge.request('chrome.' + name, { ...args, browser: policy.browser }, connection); }
     catch (error) {
       if (errorMessage(error) === "Chrome's own pages cannot be driven") throw new GateError('denied', errorMessage(error));
       throw error;

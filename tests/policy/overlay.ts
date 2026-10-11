@@ -16,10 +16,20 @@ const expressions = ['API.LMSSetValue("x", "y")', 'API.LMSCommit()'];
 const password = "document.querySelector('[type=password]').value";
 try {
   const base = loadPolicy({ overlay, off: false });
+  assert.deepEqual(base.browser, { window: 'own', show: 'attention' }, 'ASSERT_BROWSER_POLICY_DEFAULT');
   assert.equal(base.sources.length, 1);
   for (const expression of expressions) assert.equal(checkEval(base, expression).outcome, 'allow');
   assert.equal(checkEval(base, password).outcome, 'deny');
   pass('absent-overlay-uses-defaults');
+  write({ browser: { window: 'shared' } });
+  assert.deepEqual(loadPolicy({ overlay, off: false }).browser, { window: 'shared', show: 'attention' }, 'ASSERT_BROWSER_POLICY_MERGE');
+  write({ browser: { show: 'front' } });
+  assert.deepEqual(loadPolicy({ overlay, off: false }).browser, { window: 'own', show: 'front' }, 'ASSERT_BROWSER_POLICY_MERGE');
+  for (const browser of [null, 'own', { window: 'front' }, { show: 'shared' }, { window: true }, { show: 1 }, { mode: 'own' }]) {
+    write({ browser });
+    assert.throws(() => loadPolicy({ overlay, off: false }), /Invalid policy overlay/, 'ASSERT_BROWSER_POLICY_INVALID');
+  }
+  pass('browser-policy-defaults-merge-and-reject-invalid-options');
 
   fs.copyFileSync('tests/fixtures/eval-overlay.json', overlay);
   const policy = loadPolicy({ overlay, off: false });
