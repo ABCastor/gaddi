@@ -29,6 +29,7 @@ import { createRemote } from './remote.ts';
 import { createBridge } from './bridge.ts';
 import { extensionCall } from './extensions.ts';
 import { wakeApprovalApp } from './approval-wake.ts';
+import { preserveOpenFocus } from './open-focus.ts';
 
 const home = process.env.GADDI_HOME || path.join(os.homedir(), 'Library/Application Support/Gaddi');
 const socket = process.env.GADDI_SOCKET || path.join(home, 'gaddi.sock');
@@ -272,7 +273,10 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     meta.url = url;
     await gate({ kind: method, meta, detail: url, action: { method, caller: meta.caller, url, group, foreground: params.foreground ?? false },
       check: checkNavigation(policy, url), approval: params.approval });
-    const result = await request('open', { url, group, foreground: params.foreground ?? false });
+    const open = () => request('open', { url, group, foreground: params.foreground === true });
+    const result = policy.browser.window === 'own' ? await preserveOpenFocus(open) : await open();
+    // Window creation is bridge metadata, not part of the caller's tab contract.
+    if (isRecord(result)) delete result.windowCreated;
     meta.tab = tabId(tabObject(result)); meta.url = tabObject(result)?.url || url;
     if (typeof meta.tab === 'number' && Number.isSafeInteger(meta.tab) && meta.tab >= 0) {
       if (session.owned.size < SESSION_TAB_LIMIT) session.owned.add(meta.tab);

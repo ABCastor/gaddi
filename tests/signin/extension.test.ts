@@ -276,12 +276,12 @@ let submits = 0;
 const fakeEvent = () => new Event<(...args: never[]) => void>();
 const onDetach = new Event<(target: { tabId: number }, reason: string) => void>();
 Object.assign(globalThis, { chrome: {
-  runtime: { connectNative: () => ({ onMessage, onDisconnect: fakeEvent(), postMessage(reply: Reply) { replies.get(reply.id)?.(reply); } }), onStartup: fakeEvent(), onInstalled: fakeEvent() },
+  runtime: { getURL: (path: string) => `chrome-extension://gaddi/${path}`, connectNative: () => ({ onMessage, onDisconnect: fakeEvent(), postMessage(reply: Reply) { replies.get(reply.id)?.(reply); } }), onStartup: fakeEvent(), onInstalled: fakeEvent() },
   alarms: { onAlarm: fakeEvent(), create() {} },
   storage: { local: { get: async () => ({}), set: async () => {} }, session: { get: async () => ({}) } },
-  windows: { onRemoved: fakeEvent(), get: async () => ({ focused: true }) },
+  windows: { onRemoved: fakeEvent(), onFocusChanged: fakeEvent(), get: async () => ({ focused: true }) },
   system: { display: { onDisplayChanged: fakeEvent() } },
-  tabs: { onRemoved: fakeEvent(), onUpdated: fakeEvent(), get: async () => ({ id: 1, url: location.href, active: true }) },
+  tabs: { onRemoved: fakeEvent(), onUpdated: fakeEvent(), onCreated: fakeEvent(), get: async () => ({ id: 1, url: location.href, active: true }) },
   debugger: { onDetach, attach: async () => {}, detach: async () => {},
     async sendCommand(_target: unknown, method: string, params: Record<string, unknown>) {
       calls.push({ method, params });

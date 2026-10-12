@@ -72,6 +72,7 @@ export function createBridge({ emit = () => {} }: { emit?: Emit } = {}) {
     if (msg.error !== undefined) {
       const message = typeof msg.error === 'string' ? msg.error : isRecord(msg.error) ? msg.error.message || 'chrome bridge error' : 'chrome bridge error';
       p.reject(Object.assign(new Error(String(message)),
+        isRecord(msg.error) && msg.error.windowCreated === true ? { windowCreated: true } : {},
         isRecord(msg.error) && msg.error.code === 'stale' ? { code: 'stale' } : {}));
     }
     else if (Object.hasOwn(msg, 'result')) p.resolve(msg.result);

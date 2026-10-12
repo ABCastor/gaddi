@@ -190,7 +190,7 @@ const chrome = {
 const source = stripTypeScriptTypes(fs.readFileSync(new URL('../../extension/bg.ts', import.meta.url), 'utf8')).replace(/^import .*;$/gm, '');
 function worker() {
   const context = vm.createContext({ chrome, pageTask, waitParams, wheelParams, versionParam, hasErrorCode, isRecord, createRecovery, RECOVERY_KEY, manageExtensions,
-    createAgentWindow: () => ({ get() { throw new Error('Legacy shared-window fixture must never create an agent window'); }, removeBlank() {}, remember() {} }),
+    createAgentWindow: () => ({ get() { throw new Error('Legacy shared-window fixture must never create an agent window'); }, isPlaceholder() { return false; }, remember() {}, setMode() {}, createTab: (options: chrome.tabs.CreateProperties) => chrome.tabs.create(options) }),
     URL, setTimeout(fn: () => void, delay: number) { timers.push({ fn, delay }); return timers.length; }, clearTimeout(id: number) { if (timers[id - 1]) timers[id - 1].cleared = true; } });
   vm.runInContext(source, context);
   return context;
