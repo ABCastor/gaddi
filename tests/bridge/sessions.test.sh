@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 mkdir -p tests/.state/logs
 node tests/fixtures/broker-checks.ts sessions normal
+node tests/fixtures/broker-checks.ts sessions own
 
 COPY=$(mktemp -d tests/.state/sessions-XXXXXX)
 trap 'rm -rf "$COPY"' EXIT # Disposable mutation sources only.
@@ -31,8 +32,13 @@ const mutations = {
   REATTACH: ['for (const session of sessions.values()) session.owned.clear();', 'void 0;'],
 };
 const source = fs.readFileSync(file, 'utf8'), [before, after] = mutations[mutation];
-assert.equal(source.split(before).length, 2, `${mutation}: mutation target must occur exactly once`);
-fs.writeFileSync(file, source.replace(before, after));
+const sharedStart = source.indexOf('async function sweepSharedSessions()');
+const sharedEnd = source.indexOf('async function sweepSessions()', sharedStart);
+const scoped = ['END', 'MOVED', 'IDLE', 'AUDIT'].includes(mutation);
+const target = scoped ? source.slice(sharedStart, sharedEnd) : source;
+assert.equal(target.split(before).length, 2, `${mutation}: mutation target must occur exactly once`);
+const changed = target.replace(before, after);
+fs.writeFileSync(file, scoped ? source.slice(0, sharedStart) + changed + source.slice(sharedEnd) : changed);
 NODE
   LOG="tests/.state/logs/sessions-${mutation}-falsified.log"
   code=0

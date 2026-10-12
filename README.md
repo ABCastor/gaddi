@@ -84,7 +84,7 @@ gaddi click <tab-id> '<element-ref>'
 gaddi close <tab-id>
 ```
 
-`open` returns a tab ID; `look` returns text and control references. Keep the ID through the task. New tabs use Gaddi's own unfocused window, placed on a secondary display when available. MCP tools use a `browser_` prefix and also support typing, scrolling (sideways too, with `dx`, and inside a carousel or grid when you name it), selection, waits and screenshots. Rendering actions run in background tabs. `browser_show` selects a tab and requests your attention without taking window focus by default.
+`open` returns a tab ID; `look` returns text and control references. Keep the ID through the task. New tabs use Gaddi's own window, created minimized. You can open it from Chrome's Dock menu; Gaddi leaves its size, position and state as you set them. MCP tools use a `browser_` prefix and also support typing, scrolling (sideways too, with `dx`, and inside a carousel or grid when you name it), selection, waits and screenshots. Rendering actions run in background tabs. `browser_show` selects a tab and requests your attention without taking window focus by default.
 
 <img src="docs/media/browser.png" width="700" alt="A disposable research-notes page in Chrome after Gaddi typed a query and clicked Search; Publish note remains unclicked.">
 

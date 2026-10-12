@@ -280,8 +280,8 @@ Object.assign(globalThis, { chrome: {
   alarms: { onAlarm: fakeEvent(), create() {} },
   storage: { local: { get: async () => ({}), set: async () => {} }, session: { get: async () => ({}) } },
   windows: { onRemoved: fakeEvent(), onFocusChanged: fakeEvent(), get: async () => ({ focused: true }) },
-  system: { display: { onDisplayChanged: fakeEvent() } },
-  tabs: { onRemoved: fakeEvent(), onUpdated: fakeEvent(), onCreated: fakeEvent(), query: async () => [], get: async () => ({ id: 1, url: location.href, active: true }) },
+  tabGroups: { query: async () => [], onUpdated: fakeEvent() },
+  tabs: { onDetached: fakeEvent(), onRemoved: fakeEvent(), onUpdated: fakeEvent(), onCreated: fakeEvent(), query: async () => [], get: async () => ({ id: 1, url: location.href, active: true }) },
   debugger: { onDetach, attach: async () => {}, detach: async () => {},
     async sendCommand(_target: unknown, method: string, params: Record<string, unknown>) {
       calls.push({ method, params });

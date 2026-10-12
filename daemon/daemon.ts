@@ -29,7 +29,6 @@ import { createRemote } from './remote.ts';
 import { createBridge } from './bridge.ts';
 import { extensionCall } from './extensions.ts';
 import { wakeApprovalApp } from './approval-wake.ts';
-import { preserveOpenFocus } from './open-focus.ts';
 
 const home = process.env.GADDI_HOME || path.join(os.homedir(), 'Library/Application Support/Gaddi');
 const socket = process.env.GADDI_SOCKET || path.join(home, 'gaddi.sock');
@@ -50,6 +49,8 @@ interface Session { caller: string; owned: Set<number>; lastActivity: number; en
 const sessions = new Map<string, Session>();
 // A tab put in front of the user is his from then on, whichever agent brought it forward.
 const shown = new Set<number>();
+const tabActivity = new Map<number, number>();
+const TAB_DISCARD_MS = 180000;
 const sessionConnections = new WeakMap<Socket, string>();
 const SESSION_LIMIT = 256, SESSION_TAB_LIMIT = 512;
 function positiveMillis(value: string | undefined, fallback: number) {
@@ -106,6 +107,7 @@ function forgetClosed(tabs: unknown[]) {
   for (const id of tabs) if (typeof id === 'number') {
     signinSecrets.clear(id);
     shown.delete(id);
+    tabActivity.delete(id);
     for (const session of sessions.values()) session.owned.delete(id);
     for (const [key, entry] of noEffects) if (entry.tab === id) noEffects.delete(key);
   }
@@ -117,6 +119,7 @@ function emit(event: string, data: unknown) {
     // rather than risk closing a stranger's tab that inherited the number.
     for (const session of sessions.values()) session.owned.clear();
     shown.clear();
+    tabActivity.clear();
   }
   if (event === 'approval.pending') {
     if (isRecord(data)) wakeApprovalApp([data.approval], { log });
@@ -190,7 +193,7 @@ function navigationURL(value: unknown) {
   }
   return url.href;
 }
-type IncomingTab = { id?: unknown; tabId?: unknown; tab?: unknown; url?: unknown; title?: unknown; group?: unknown };
+type IncomingTab = { discarded?: unknown; id?: unknown; tabId?: unknown; tab?: unknown; url?: unknown; title?: unknown; group?: unknown };
 const tabFields = (value: unknown): IncomingTab | undefined => isRecord(value) ? value : undefined;
 const tabObject = (value: unknown) => { const fields = tabFields(value); return tabFields(fields?.tab && typeof fields.tab === 'object' ? fields.tab : value); };
 const tabId = (value: unknown) => { const tab = tabFields(value); return tab?.id ?? tab?.tabId ?? tab?.tab; };
@@ -229,6 +232,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   const connection = bridge.connection();
   const deadline = Date.now() + 25000;
   const request = async (name: string, args: ChromeParams) => {
+    if (typeof args.tab === 'number') tabActivity.set(args.tab, Date.now());
+    for (const tab of args.tabs ?? []) tabActivity.set(tab, Date.now());
     try { return await bridge.request('chrome.' + name, { ...args, browser: policy.browser }, connection); }
     catch (error) {
       if (errorMessage(error) === "Chrome's own pages cannot be driven") throw new GateError('denied', errorMessage(error));
@@ -273,12 +278,10 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     meta.url = url;
     await gate({ kind: method, meta, detail: url, action: { method, caller: meta.caller, url, group, foreground: params.foreground ?? false },
       check: checkNavigation(policy, url), approval: params.approval });
-    const open = () => request('open', { url, group, foreground: params.foreground === true });
-    const result = policy.browser.window === 'own' ? await preserveOpenFocus(open) : await open();
-    // Window creation is bridge metadata, not part of the caller's tab contract.
-    if (isRecord(result)) delete result.windowCreated;
+    const result = await request('open', { url, group, foreground: params.foreground === true });
     meta.tab = tabId(tabObject(result)); meta.url = tabObject(result)?.url || url;
     if (typeof meta.tab === 'number' && Number.isSafeInteger(meta.tab) && meta.tab >= 0) {
+      tabActivity.set(meta.tab, Date.now());
       if (session.owned.size < SESSION_TAB_LIMIT) session.owned.add(meta.tab);
       if (params.foreground === true) rememberShown(meta.tab);
     }
@@ -697,7 +700,7 @@ function audit(entry: unknown) {
 // and event calls remain independent, so a slow browser operation cannot block the approval app.
 let chain: Promise<unknown> = Promise.resolve();
 function serial<T>(fn: () => Promise<T>): Promise<T> { const next = chain.catch(() => {}).then(fn); chain = next; return next; }
-async function sweepSessions() {
+async function sweepSharedSessions() {
   if (!bridge.status().connected) return;
   const connection = bridge.connection();
   for (const [key, session] of sessions) {
@@ -736,6 +739,56 @@ async function sweepSessions() {
       }
       sessions.delete(key);
     } catch { log('session sweep failed; will retry'); }
+  }
+}
+async function sweepSessions() {
+  if (policy.browser.window === 'shared') return sweepSharedSessions();
+  if (!bridge.status().connected) return;
+  const connection = bridge.connection(), now = Date.now();
+  const tabs = tabList(await bridge.request('chrome.cleanup', { browser: policy.browser }, connection));
+  const present = new Set(tabList(await bridge.request('chrome.tabs', { browser: policy.browser }, connection)).map(tabId));
+  for (const tab of tabActivity.keys()) if (!present.has(tab)) tabActivity.delete(tab);
+  const close = new Map<string, { caller: string; tabs: { tab: number; url: string }[] }>();
+  const discard: number[] = [];
+  for (const tab of tabs) {
+    const id = tabId(tab);
+    if (typeof id !== 'number' || shown.has(id)) continue;
+    // First sight after attach/restart begins a fresh clock, never an instant close.
+    if (!tabActivity.has(id)) tabActivity.set(id, now);
+    const idle = now - tabActivity.get(id)!;
+    const owners = [...sessions].filter(([, session]) => session.owned.has(id));
+    const expired = ([, session]: [string, Session]) => session.endedAt !== undefined
+      ? now - session.endedAt >= SESSION_END_MS : now - session.lastActivity >= SESSION_IDLE_MS;
+    const live = owners.some(owner => !expired(owner));
+    const ended = owners.find(([, session]) => session.endedAt !== undefined && now - session.endedAt >= SESSION_END_MS);
+    if (!live && (ended || idle >= SESSION_IDLE_MS)) {
+      const [key, session] = ended ?? owners[0] ?? ['orphan', { caller: 'gaddi' }];
+      const batch = close.get(key) ?? { caller: session.caller, tabs: [] };
+      batch.tabs.push({ tab: id, url: cleanURL(tabURL(tab)) });
+      close.set(key, batch);
+    } else if (idle >= TAB_DISCARD_MS && tabFields(tab)?.discarded !== true) discard.push(id);
+  }
+  for (let offset = 0; offset < discard.length; offset += 100)
+    await bridge.request('chrome.cleanup', { tabs: discard.slice(offset, offset + 100), cleanup: 'discard', browser: policy.browser }, connection);
+  for (const batch of close.values()) {
+    const closed: typeof batch.tabs = [];
+    try {
+      for (let offset = 0; offset < batch.tabs.length; offset += 100) {
+        const chunk = batch.tabs.slice(offset, offset + 100);
+        const result = await bridge.request('chrome.cleanup', { tabs: chunk.map(tab => tab.tab), cleanup: 'close', browser: policy.browser }, connection);
+        if (!isRecord(result) || !Array.isArray(result.closed)) throw new Error('invalid session close result');
+        const ids = result.closed;
+        closed.push(...chunk.filter(tab => ids.includes(tab.tab)));
+        forgetClosed(ids);
+      }
+    } finally {
+      if (closed.length) audit({ ts: new Date().toISOString(), caller: batch.caller, method: 'session.sweep',
+        tab: null, url: '', tabs: closed, outcome: 'allow', ms: Date.now() - now });
+    }
+  }
+  for (const [key, session] of sessions) {
+    if (session.endedAt !== undefined ? now - session.endedAt >= SESSION_END_MS : now - session.lastActivity >= SESSION_IDLE_MS)
+      sessions.delete(key);
   }
 }
 let sweepPending = false;

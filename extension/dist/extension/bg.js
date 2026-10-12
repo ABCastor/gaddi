@@ -96,7 +96,6 @@ function connectNative() {
             return;
         }
         withinDeadline(scope => dispatch(message, scope), message.deadline, () => nativePort === port).then(result => reply({ id: message.id, result }), error => reply({ id: message.id, error: { message: isSigninMethod(message.method) ? 'Sign-in action failed' : actionErrorMessage(error) || 'Chrome action failed',
-                ...(isRecord(error) && error.windowCreated === true ? { windowCreated: true } : {}),
                 ...(hasErrorCode(error, 'stale') ? { code: 'stale' } : {}) } }));
         function reply(message) {
             if (nativePort !== port)
@@ -258,36 +257,40 @@ function tabIds(value) {
         throw new Error('tabs must contain 1 to 100 Chrome tab ids');
     return [...new Set(value)];
 }
-async function findGroup(title, check, created) {
+async function findGroup(title, check) {
     if (typeof title !== 'string' || !title.startsWith(AGENT_GROUP_PREFIX) || !title.slice(AGENT_GROUP_PREFIX.length).trim())
         throw new Error('group must have the agent prefix and a label');
     const groups = await chrome.tabGroups.query({});
     if (browser.window === 'shared')
         return groups.find(group => group.title === title);
-    const id = await agentWindow.get(check, created);
+    const id = await agentWindow.get(check);
     return groups.find(group => group.title === title && group.windowId === id);
 }
 // Call under the shared groups queue so open and group cannot create duplicate titles.
 async function joinGroup(ids, title, group, foreground, check) {
-    check();
-    const tabs = await Promise.all(ids.map(id => getTab(id)));
-    check();
-    const windowId = group?.windowId ?? (browser.window === 'own' ? await agentWindow.get(check) : tabs[0].windowId);
-    for (const tab of tabs)
-        if (tab.windowId !== windowId) {
-            check();
-            await chrome.tabs.move(tab.id, { windowId, index: -1 });
+    const groupOperation = async () => {
+        check();
+        const tabs = await Promise.all(ids.map(id => getTab(id)));
+        check();
+        const windowId = group?.windowId ?? (browser.window === 'own' ? await agentWindow.get(check) : tabs[0].windowId);
+        for (const tab of tabs)
+            if (tab.windowId !== windowId) {
+                check();
+                await chrome.tabs.move(tab.id, { windowId, index: -1 });
+            }
+        check();
+        const groupId = await chrome.tabs.group({ tabIds: ids, ...(group ? { groupId: group.id } : { createProperties: { windowId } }) });
+        check();
+        if (!group)
+            await chrome.tabGroups.update(groupId, { title, color: 'cyan', collapsed: !foreground });
+        else if (foreground)
+            await chrome.tabGroups.update(groupId, { collapsed: false });
+        if (browser.window === 'own') {
+            await agentWindow.remember(check);
         }
-    check();
-    const groupId = await chrome.tabs.group({ tabIds: ids, ...(group ? { groupId: group.id } : { createProperties: { windowId } }) });
-    check();
-    if (!group)
-        await chrome.tabGroups.update(groupId, { title, color: 'cyan', collapsed: !foreground });
-    else if (foreground)
-        await chrome.tabGroups.update(groupId, { collapsed: false });
-    if (browser.window === 'own')
-        await agentWindow.remember(check);
-    return groupId;
+        return groupId;
+    };
+    return browser.window === 'own' ? agentWindow.groupTabs(ids, groupOperation) : groupOperation();
 }
 async function getTab(id) {
     if (id !== undefined && id !== null) {
@@ -855,6 +858,37 @@ async function dispatchAction({ method, params = {} }, scope) {
         const groups = await chrome.tabGroups.query({});
         return { tabs: await Promise.all((await chrome.tabs.query({})).filter(tab => !agentWindow.isPlaceholder(tab)).map(tab => tabInfo(tab, groups))) };
     }
+    if (method === 'chrome.cleanup') {
+        const eligible = await agentWindow.cleanupTabs();
+        check();
+        if (!params.cleanup)
+            return { tabs: await Promise.all(eligible.map(tab => tabInfo(tab))) };
+        const ids = tabIds(params.tabs), closed = [], failed = [];
+        for (const tab of ids) {
+            try {
+                // Recheck protection/focus/scope immediately before each mutation.
+                const current = (await agentWindow.cleanupTabs()).find(candidate => candidate.id === tab);
+                check();
+                if (!current)
+                    throw new Error('Tab belongs to the owner or is no longer an agent tab');
+                if (params.cleanup === 'close') {
+                    await chrome.tabs.remove(tab);
+                    closed.push(tab);
+                }
+                else if (params.cleanup === 'discard') {
+                    if (!current.discarded)
+                        await chrome.tabs.discard(tab);
+                    closed.push(tab);
+                }
+                else
+                    throw new Error('Invalid cleanup operation');
+            }
+            catch (error) {
+                failed.push({ tab, reason: actionErrorMessage(error) });
+            }
+        }
+        return { closed, failed };
+    }
     if (method === 'chrome.bookmarks') {
         if (params.query !== undefined && typeof params.query !== 'string')
             throw new Error('query must be a string');
@@ -913,6 +947,9 @@ async function dispatchAction({ method, params = {} }, scope) {
     if (method === 'chrome.show') {
         if (typeof params.tab !== 'number' || !Number.isSafeInteger(params.tab) || params.tab < 0)
             throw new Error('tab must be a Chrome tab id');
+        if (browser.window === 'own')
+            await agentWindow.cleanupTabs(params.tab);
+        check();
         const tab = (await chrome.tabs.update(params.tab, { active: true }));
         // macOS may refuse focus (locked screen, another app in front); drawAttention then bounces the Dock icon.
         check();
@@ -923,71 +960,67 @@ async function dispatchAction({ method, params = {} }, scope) {
         const ids = tabIds(params.tabs);
         return queued('groups', async () => {
             const group = await findGroup(params.group, check);
+            if (browser.window === 'own')
+                for (const id of ids)
+                    if (!await agentWindow.isAgent(await getTab(id)))
+                        await agentWindow.cleanupTabs(id);
             const groupId = await joinGroup(ids, params.group, group, false, check);
             return { tabs: await Promise.all(ids.map(async (id) => tabInfo(await getTab(id)))), group: params.group, groupId };
         });
     }
     // Tab management above injects nothing, including on Chrome's own pages.
     if (method === 'chrome.open') {
-        let windowCreated = false;
-        const created = () => { windowCreated = true; Object.assign(scope.error, { windowCreated: true }); };
-        try {
-            // Existing tabs stay in their window/order; only the new tab joins a group.
-            const url = navigationURL(params.url), title = params.group ?? `${AGENT_GROUP_PREFIX}unknown`;
-            // Serialize just group creation so concurrent opens cannot create duplicates.
-            const opened = await queued('groups', async () => {
-                const group = await findGroup(title, check, created);
+        // Existing tabs stay in their window/order; only the new tab joins a group.
+        const url = navigationURL(params.url), title = params.group ?? `${AGENT_GROUP_PREFIX}unknown`;
+        // Serialize just group creation so concurrent opens cannot create duplicates.
+        const opened = await queued('groups', async () => {
+            const group = await findGroup(title, check);
+            check();
+            const windowId = group?.windowId ?? (browser.window === 'own' ? await agentWindow.get(check) : undefined);
+            check();
+            const opened = await agentWindow.createTab({ url: 'about:blank', active: params.foreground === true,
+                ...(windowId !== undefined ? { windowId } : {}) });
+            scope.error.message = `Chrome did not respond within 25 seconds; tab ${opened.id} was preserved; inspect it before retrying`;
+            try {
+                await joinGroup([opened.id], title, group, params.foreground === true, check);
+            }
+            catch (error) {
+                // Before expiry, remove our blank tab if grouping fails. After expiry,
+                // creation may already have happened; preserve it for inspection, never
+                // continue cleanup against a tab the user may since have taken over.
                 check();
-                const windowId = group?.windowId ?? (browser.window === 'own' ? await agentWindow.get(check, created) : undefined);
+                await chrome.tabs.remove(opened.id);
+                throw error;
+            }
+            if (browser.window === 'own')
+                await agentWindow.cleanupTabs(params.foreground === true ? opened.id : undefined);
+            return opened;
+        });
+        return await queued(opened.id, async (check) => {
+            try {
+                return await tabInfo(await withDebugger(opened.id, send => navigate(opened.id, send, url), check, true));
+            }
+            catch (caught) {
+                const error = caught instanceof Error ? caught : new Error(actionErrorMessage(caught));
                 check();
-                const opened = await agentWindow.createTab({ url: 'about:blank', active: params.foreground === true,
-                    ...(windowId !== undefined ? { windowId } : {}) });
-                scope.error.message = `Chrome did not respond within 25 seconds; tab ${opened.id} was preserved; inspect it before retrying`;
-                try {
-                    await joinGroup([opened.id], title, group, params.foreground === true, check);
-                }
-                catch (error) {
-                    // Before expiry, remove our blank tab if grouping fails. After expiry,
-                    // creation may already have happened; preserve it for inspection, never
-                    // continue cleanup against a tab the user may since have taken over.
-                    check();
-                    await chrome.tabs.remove(opened.id);
-                    throw error;
-                }
-                return opened;
-            });
-            return await queued(opened.id, async (check) => {
-                try {
-                    return { ...await tabInfo(await withDebugger(opened.id, send => navigate(opened.id, send, url), check, true)),
-                        ...(windowCreated ? { windowCreated: true } : {}) };
-                }
-                catch (caught) {
-                    const error = caught instanceof Error ? caught : new Error(actionErrorMessage(caught));
-                    check();
-                    const current = await getTab(opened.id).catch(() => null);
-                    check();
-                    // Invariant: failed-open cleanup applies only to our original navigation.
-                    // If the user took over, preserve their tab and surface its ID explicitly.
-                    const ours = current && !error.preserveTab
-                        && (!current.pendingUrl || current.pendingUrl === url || current.pendingUrl === error.navigationURL)
-                        && ['about:blank', url, error.navigationURL].includes(current.url);
-                    let preserved = !!current;
-                    if (ours) {
-                        try {
-                            await chrome.tabs.remove(opened.id);
-                            preserved = false;
-                        }
-                        catch { /* Report the retained tab below. */ }
+                const current = await getTab(opened.id).catch(() => null);
+                check();
+                // Invariant: failed-open cleanup applies only to our original navigation.
+                // If the user took over, preserve their tab and surface its ID explicitly.
+                const ours = current && !error.preserveTab
+                    && (!current.pendingUrl || current.pendingUrl === url || current.pendingUrl === error.navigationURL)
+                    && ['about:blank', url, error.navigationURL].includes(current.url);
+                let preserved = !!current;
+                if (ours) {
+                    try {
+                        await chrome.tabs.remove(opened.id);
+                        preserved = false;
                     }
-                    throw new Error(`${error.message}${preserved ? `; tab ${opened.id} was preserved` : ''}`);
+                    catch { /* Report the retained tab below. */ }
                 }
-            });
-        }
-        catch (error) {
-            if (windowCreated && error instanceof Error)
-                Object.assign(error, { windowCreated: true });
-            throw error;
-        }
+                throw new Error(`${error.message}${preserved ? `; tab ${opened.id} was preserved` : ''}`);
+            }
+        });
     }
     const operations = ['describe', 'read', 'html', 'screenshot', 'approvalCapture', 'click', 'type', 'press', 'goto',
         'hover', 'scroll', 'select', 'upload', 'back', 'eval', 'emulate', 'wait', 'signinProbe', 'signinType', 'signinSubmit'];
@@ -1008,7 +1041,20 @@ async function dispatchAction({ method, params = {} }, scope) {
         .catch(error => { if (!surelyUndelivered(error))
         throw error; return withDebugger(tab, fn, scope.check, retryInput, route); });
     const value = await queued(tab, async (check) => {
-        const current = await getTab(tab), result = { tab, url: current.url || '' };
+        let current = await getTab(tab);
+        check();
+        if (current.discarded && browser.window === 'own' && await agentWindow.isAgent(current)) {
+            await chrome.tabs.reload(tab);
+            // Reload never selects or focuses the tab; wait for the restored renderer.
+            while (true) {
+                check();
+                current = await getTab(tab);
+                if (!current.discarded && current.status === 'complete')
+                    break;
+                await new Promise(resolve => setTimeout(resolve, 50));
+            }
+        }
+        const result = { tab, url: current.url || '' };
         check();
         if (action === 'wait' && params.url !== undefined)
             return waitOnTab(tab, params, scope);

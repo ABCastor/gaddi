@@ -38,7 +38,7 @@ if (scenario === 'remote-approver') {
 }
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 fs.writeFileSync(publicPath, publicKey.export({ type: 'spki', format: 'pem' }));
-fs.writeFileSync(path.join(home, 'policy.json'), JSON.stringify({ approvals: { ttl_minutes: scenario === 'approval' ? 0.03 : scenario === 'approval-picture' ? 0.1 : 10 }, deny: { type_into: ['input[type=password]', 'input[autocomplete=current-password]', '.sensitive'] } }));
+fs.writeFileSync(path.join(home, 'policy.json'), JSON.stringify({ ...(scenario === 'sessions' && mode !== 'own' ? { browser: { window: 'shared', show: 'attention' } } : {}), approvals: { ttl_minutes: scenario === 'approval' ? 0.03 : scenario === 'approval-picture' ? 0.1 : 10 }, deny: { type_into: ['input[type=password]', 'input[autocomplete=current-password]', '.sensitive'] } }));
 if (scenario === 'eval-overlay') fs.copyFileSync(path.join(repo, 'tests/fixtures/eval-overlay.json'), path.join(home, 'policy.json'));
 const env = { ...process.env, GADDI_APP_LAUNCHER: launcher, OMNIREAD_BIN: path.join(home, 'missing-omniread'), GADDI_HOME: home, GADDI_SOCKET: socket, GADDI_APPROVER_PUB: publicPath,
   // Never the owner's own drop-in file, whatever his shell has set.
@@ -111,9 +111,10 @@ const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwM
 const JPEG = fs.readFileSync(path.join(repo, 'tests/mcp/fixtures/pixel.jpg')).toString('base64');
 const pictureBox = { x: 1, y: 2, width: 4, height: 3 };
 // Independent expected broker policy: callers cannot override the owner's choice.
-const defaultBrowser = { window: 'own', show: 'attention' } as const;
+const defaultBrowser = { window: scenario === 'sessions' && mode !== 'own' ? 'shared' : 'own', show: 'attention' } as const;
 async function fakeBridge() {
   const conn = net.connect(socket); bridges.push(conn); conn.setEncoding('utf8'); conn.on('error', () => {});
+  const protectedTabs = new Set<number>();
   const calls: ChromeRequest[] = [], tabs: (TabInfo & { id: number; url: string; active: boolean })[] = [{ id: 7, active: true, url: 'https://unseen.example/shop?token=PRIVATE_QUERY', title: 'Fixture' },
     { id: 8, active: false, url: 'https://mail.google.com/mail', title: 'Mail' }];
   const control = { hang: false, focusSubmit: 'Search', omitHref: false, omitSubmit: false, omitMatched: false, switchActive: false, largeHTML: false, screenshot: PNG,
@@ -185,6 +186,19 @@ async function fakeBridge() {
         }; break;
         case 'chrome.open': { assert.ok(typeof msg.params.url === 'string' && typeof msg.params.foreground === 'boolean'); const t = { id: nextTab++, url: msg.params.url, active: msg.params.foreground, group: msg.params.group }; tabs.push(t); result = { ...t }; break; }
         case 'chrome.goto': assert.ok(typeof msg.params.url === 'string'); tab.url = msg.params.url; result = { ...tab }; break;
+        case 'chrome.cleanup': {
+          const eligible = tabs.filter(tab => tab.group?.startsWith('● ') && !protectedTabs.has(tab.id));
+          if (!msg.params.cleanup) { result = { tabs: eligible }; break; }
+          const closed: CloseResult = { closed: [], failed: [] };
+          for (const id of msg.params.tabs ?? []) {
+            const current = eligible.find(tab => tab.id === id);
+            if (!current) { closed.failed.push({ tab: id, reason: 'Protected owner tab' }); continue; }
+            if (msg.params.cleanup === 'discard') current.discarded = true;
+            else tabs.splice(tabs.findIndex(tab => tab.id === id), 1);
+            closed.closed.push(id);
+          }
+          result = closed; break;
+        }
         case 'chrome.close': {
           const closed: CloseResult = { closed: [], failed: [] };
           assert.ok(msg.params.tabs);
@@ -196,10 +210,11 @@ async function fakeBridge() {
           result = closed;
           break;
         }
-        case 'chrome.show': tabs.forEach(t => { t.active = t.id === msg.params.tab; }); result = { ...tab }; break;
+        case 'chrome.show': tabs.forEach(t => { t.active = t.id === msg.params.tab; }); protectedTabs.add(tab.id); result = { ...tab }; break;
         case 'chrome.group': {
           assert.ok(msg.params.tabs);
           const grouped = msg.params.tabs.map(id => { const tab = tabs.find(tab => tab.id === id); assert.ok(tab); return tab; });
+          if (mode === 'own') for (const tab of grouped) if (!tab.group?.startsWith('● ')) protectedTabs.add(tab.id);
           grouped.forEach(tab => { tab.group = msg.params.group; });
           result = { tabs: grouped, group: msg.params.group, groupId: 1 }; break;
         }

@@ -21,7 +21,11 @@ import { EventEmitter } from 'node:events';
 fs.appendFileSync = () => { throw Object.assign(new Error('disk full'), { code: 'ENOSPC' }); };
 let connections = 0, healthCount = 0;
 const responses = [];
-function record() { fs.writeFileSync(process.env.GADDI_TEST_OBSERVED, JSON.stringify({connections,healthCount,responses})); }
+function record() {
+  const file = process.env.GADDI_TEST_OBSERVED;
+  fs.writeFileSync(file + '.tmp', JSON.stringify({connections,healthCount,responses}));
+  fs.renameSync(file + '.tmp', file);
+}
 class Peer extends EventEmitter {
   destroyed = false; writableLength = 0;
   constructor() { super(); this.instance = ++connections; record(); setTimeout(() => this.emit('connect'), 0); }

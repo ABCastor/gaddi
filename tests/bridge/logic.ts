@@ -100,7 +100,6 @@ const chrome = {
   },
   windows: { onRemoved: event<[number]>(), async get(id: number) { return { id, type: 'normal', focused: true }; },
     async update(id: number, options: Partial<FixtureTabRecord> & { focused?: boolean; drawAttention?: boolean }) { calls.push(['window.update', id, options]); return { id, ...options }; } },
-  system: { display: { onDisplayChanged: event() } },
   bookmarks: { async getTree() { return [{ title: '', children: [{ title: 'Bar', children: [
     { title: 'Design', children: [{ title: 'Example', url: 'https://example.com/' }] },
     { title: 'Other', url: 'https://other.test/' },

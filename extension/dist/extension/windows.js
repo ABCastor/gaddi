@@ -3,8 +3,11 @@ const WINDOW_KEY = 'agentWindow';
 const TARGETS_KEY = 'agentWindowTargets';
 const OWNER_WINDOW_KEY = 'ownerWindow';
 const MODE_KEY = 'agentWindowMode';
+const TABS_KEY = 'agentTabScopes';
 export function createAgentWindow() {
     let enabled = true;
+    let anchor;
+    let scopes = {};
     let id;
     let ownerId;
     let creatingWindow;
@@ -41,6 +44,12 @@ export function createAgentWindow() {
                     return;
                 }
             }
+    }).then(async () => {
+        const stored = (await chrome.storage.local.get(TABS_KEY))[TABS_KEY];
+        if (stored?.scopes && typeof stored.scopes === 'object' && !Array.isArray(stored.scopes)) {
+            scopes = stored.scopes;
+            anchor = stored.anchor;
+        }
     });
     async function placeholderWindow() {
         return (await chrome.tabs.query({})).find(isPlaceholder)?.windowId;
@@ -112,25 +121,6 @@ export function createAgentWindow() {
         routing = routing.then(() => route(tab)).catch(() => { });
     });
     chrome.tabs.onRemoved.addListener(tab => createdTabs.delete(tab));
-    const displays = () => chrome.system.display.getInfo();
-    const secondary = (screens) => screens.find(screen => !screen.isPrimary && screen.isEnabled);
-    async function place(window, screens, check = () => { }) {
-        check();
-        const screen = secondary(screens);
-        const x = (window.left ?? 0) + (window.width ?? 0) / 2;
-        const y = (window.top ?? 0) + (window.height ?? 0) / 2;
-        const inside = (area) => x >= area.left && x < area.left + area.width
-            && y >= area.top && y < area.top + area.height;
-        if (screen) {
-            if (!inside(screen.workArea) || window.state === 'minimized')
-                await chrome.windows.update(window.id, { state: 'normal', left: screen.workArea.left, top: screen.workArea.top,
-                    width: Math.min(1200, screen.workArea.width), height: Math.min(900, screen.workArea.height) });
-        }
-        else if (window.state !== 'minimized') {
-            // Disconnect events can precede Chrome's relocation of off-screen bounds.
-            await chrome.windows.update(window.id, { state: 'minimized' });
-        }
-    }
     async function keepAlive(check) {
         const tabs = await chrome.tabs.query({ windowId: id });
         check();
@@ -138,7 +128,7 @@ export function createAgentWindow() {
             await createTab({ windowId: id, url: placeholderURL, active: false });
         check();
     }
-    async function get(check, created) {
+    async function get(check) {
         await ready;
         await focusQueue;
         check();
@@ -153,19 +143,12 @@ export function createAgentWindow() {
             check();
             if (existing?.type === 'normal') {
                 await keepAlive(check);
-                await place(existing, await displays(), check);
                 check();
                 return id;
             }
             id = undefined;
         }
-        const screens = await displays();
-        check();
-        const screen = secondary(screens);
-        const area = screen?.workArea;
-        creatingWindow = chrome.windows.create({ focused: false, type: 'normal', url: placeholderURL,
-            ...(area ? { left: area.left, top: area.top, width: Math.min(1200, area.width), height: Math.min(900, area.height) }
-                : { state: 'minimized' }) }).then(window => {
+        creatingWindow = chrome.windows.create({ focused: false, type: 'normal', url: placeholderURL, state: 'minimized' }).then(window => {
             id = window?.id;
             for (const tab of window?.tabs ?? [])
                 if (tab.id !== undefined)
@@ -175,7 +158,6 @@ export function createAgentWindow() {
         await creatingWindow.finally(() => { creatingWindow = undefined; });
         if (id === undefined)
             throw new Error('Chrome did not create an agent window');
-        created?.();
         await chrome.storage.session.set({ [WINDOW_KEY]: id });
         await remember(check);
         check();
@@ -196,19 +178,87 @@ export function createAgentWindow() {
             await Promise.all([chrome.storage.session.remove(WINDOW_KEY), chrome.storage.local.remove(TARGETS_KEY)]);
         }).catch(() => { });
     });
-    chrome.system.display.onDisplayChanged.addListener(() => {
-        void ready.then(async () => {
-            if (id === undefined)
-                return;
-            const window = await chrome.windows.get(id).catch(() => undefined);
-            if (window)
-                await place(window, await displays());
-        }).catch(() => { });
+    async function isAgent(tab, groups) {
+        await ready;
+        groups ??= await chrome.tabGroups.query({});
+        return !isPlaceholder(tab) && (tab.windowId === id || groups.some(group => group.id === tab.groupId && group.title?.startsWith('● ')));
+    }
+    // Page target IDs, unlike numeric tab IDs, cannot be recycled across browser
+    // runs. Persist scope and owner handoffs through extension/broker reloads.
+    let scopeQueue = Promise.resolve();
+    const groupingTabs = new Set();
+    async function inspectTabs(protectId, grouped = []) {
+        await ready;
+        const [tabs, groups, targets] = await Promise.all([chrome.tabs.query({}), chrome.tabGroups.query({}), chrome.debugger.getTargets()]);
+        const currentAnchor = targets.find(target => tabs.some(tab => tab.id === target.tabId && isPlaceholder(tab)))?.id;
+        const sameBrowser = currentAnchor !== undefined && currentAnchor === anchor;
+        const next = {};
+        const eligible = [];
+        for (const tab of tabs) {
+            const target = targets.find(target => target.tabId === tab.id)?.id
+                ?? (currentAnchor ? `tab:${currentAnchor}:${tab.id}` : undefined);
+            if (!target)
+                continue;
+            const old = scopes[target] ?? (sameBrowser ? Object.values(scopes).find(scope => scope.tabId === tab.id) : undefined);
+            const agent = await isAgent(tab, groups);
+            if (!old && !agent && tab.id !== protectId)
+                continue;
+            const agentGroup = groups.some(group => group.id === tab.groupId && group.title?.startsWith('● '));
+            const moved = old && !grouped.includes(tab.id) && !groupingTabs.has(tab.id) && (old.windowId !== tab.windowId || old.groupId !== tab.groupId || old.agentGroup && !agentGroup);
+            const record = next[target] = { tabId: tab.id, windowId: tab.windowId, groupId: tab.groupId, agentGroup,
+                ...(old?.protected || moved || tab.id === protectId ? { protected: true } : {}) };
+            if (enabled && agent && !record.protected && !(tab.active && (await chrome.windows.get(tab.windowId)).focused))
+                eligible.push(tab);
+        }
+        if (currentAnchor !== anchor || JSON.stringify(next) !== JSON.stringify(scopes)) {
+            scopes = next;
+            anchor = currentAnchor;
+            await chrome.storage.local.set({ [TABS_KEY]: { anchor, scopes } });
+        }
+        return eligible;
+    }
+    function cleanupTabs(protectId, grouped) {
+        const pending = scopeQueue.catch(() => { }).then(() => inspectTabs(protectId, grouped));
+        scopeQueue = pending.then(() => { });
+        return pending;
+    }
+    async function groupTabs(ids, task) {
+        await cleanupTabs();
+        for (const tab of ids)
+            groupingTabs.add(tab);
+        try {
+            return await task();
+        }
+        finally {
+            try {
+                await cleanupTabs(undefined, ids);
+            }
+            finally {
+                for (const tab of ids)
+                    groupingTabs.delete(tab);
+            }
+        }
+    }
+    chrome.tabs.onDetached.addListener(tab => { if (!groupingTabs.has(tab))
+        void cleanupTabs(tab).catch(() => { }); });
+    chrome.tabs.onUpdated.addListener((tab, change) => {
+        if (change.groupId === undefined || groupingTabs.has(tab))
+            return;
+        const previous = Object.values(scopes).find(scope => scope.tabId === tab);
+        if (previous && previous.groupId !== change.groupId)
+            void cleanupTabs(tab).catch(() => { });
+    });
+    chrome.tabGroups.onUpdated.addListener(group => {
+        if (group.title?.startsWith('● '))
+            return;
+        for (const scope of Object.values(scopes))
+            if (scope.agentGroup && scope.groupId === group.id && scope.tabId !== undefined)
+                void cleanupTabs(scope.tabId).catch(() => { });
     });
     async function setMode(mode) {
         await ready;
         enabled = mode === 'own';
         await chrome.storage.session.set({ [MODE_KEY]: mode });
     }
-    return { get, isPlaceholder, remember, createTab, setMode };
+    return { get, isPlaceholder, remember, createTab, setMode, isAgent, cleanupTabs, groupTabs };
 }

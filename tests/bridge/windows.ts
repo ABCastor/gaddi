@@ -8,7 +8,6 @@ import { waitFor } from './fake-daemon.ts';
 
 const mutations: Record<string, [string, string, string]> = {
   OWN: ['bg', "{ window: 'own', show: 'attention' }", "{ window: 'shared', show: 'attention' }"],
-  SECONDARY: ['windows', 'screens.find(screen => !screen.isPrimary && screen.isEnabled)', 'undefined'],
   ATTENTION: ['bg', "browser.show === 'front' ? { focused: true } : {}", "{ focused: true }"],
   SHARED: ['bg', 'if (params.browser) browser = params.browser;', 'void params.browser;'],
   RESTORE: ['windows', "if (typeof saved === 'number' && Number.isSafeInteger(saved)) { id = saved; return; }", 'if (typeof saved === "number") { id = 999999; return; }'],
@@ -16,19 +15,13 @@ const mutations: Record<string, [string, string, string]> = {
   ADOPT: ['windows', 'return (await chrome.tabs.query({})).find(isPlaceholder)?.windowId;', 'return undefined;'],
   RECYCLED: ['windows', 'record.targets.includes(target.id)', 'true'],
   RECREATE: ['windows', "if (existing?.type === 'normal') {", 'if (true) {'],
-  DISPLAY_CHANGE: ['windows', "await chrome.windows.update(window.id!, { state: 'minimized' });", 'void window;'],
   BLANK: ['windows', "type: 'normal', url: placeholderURL", "type: 'normal', url: 'about:blank'"],
   LIST: ['bg', '.filter(tab => !agentWindow.isPlaceholder(tab))', ''],
   PERSIST: ['bg', 'await chrome.tabs.remove(tab); closed.push(tab);', "await chrome.tabs.remove(tab); closed.push(tab); for (const candidate of await chrome.tabs.query({})) if (agentWindow.isPlaceholder(candidate)) await chrome.tabs.remove(candidate.id);"],
   CLOSE_PLACEHOLDER: ['bg', "if (agentWindow.isPlaceholder(await chrome.tabs.get(tab))) throw new Error('Gaddi placeholder is reserved');", 'void tab;'],
-  CREATED: ['windows', 'created?.();', 'void created;'],
-  DISPLAY_CONNECT: ['windows', "if (!inside(screen.workArea) || window.state === 'minimized')", 'if (false)'],
-  DISCONNECT_STALE: ['windows', "} else if (window.state !== 'minimized') {", "} else if (window.left === 0 && window.state !== 'minimized') {"],
-  DISPLAY_FETCH: ['windows', 'await place(existing, await displays(), check);', 'void existing;'],
-  MINIMIZED: ['windows', "state: 'minimized' }) }).then", "state: 'normal' }) }).then"],
+  MINIMIZED: ['windows', "state: 'minimized' }).then", "state: 'normal' }).then"],
   REPAIR: ['windows', 'if (!tabs.some(isPlaceholder))', 'if (false)'],
   EMPTY_RELOAD: ['windows', 'tabs.some(tab => tab.id === target.tabId)', 'tabs.some(tab => tab.id === target.tabId && !isPlaceholder(tab))'],
-  CREATE_ERROR: ['bg', 'if (windowCreated && error instanceof Error)', 'if (false && error instanceof Error)'],
   RENDER: ['bg', '}, check, background, route);', '}, check, false, route);'],
   CLEANUP: ['bg', '!emulations.has(tab) && attached.get(tab) === session && session.owner === owner', 'false && attached.get(tab) === session && session.owner === owner'],
   OWNER: ['bg', '!current.active || !(await chrome.windows.get(current.windowId)).focused', 'true'],
@@ -36,6 +29,21 @@ const mutations: Record<string, [string, string, string]> = {
   BROKER_STOP: ['bg', '    stopRendering();', '    void 0;'],
 };
 const linkMutations: Record<string, [string, string, string]> = {
+  OWNER_BOUNDS: ['windows', 'await keepAlive(check);', "await keepAlive(check); await chrome.windows.update(id!, { state: 'minimized' });"],
+  CLEANUP_SCOPE: ['windows', 'old && !grouped.includes(tab.id!) && !groupingTabs.has(tab.id!) && (old.windowId !== tab.windowId || old.groupId !== tab.groupId || old.agentGroup && !agentGroup)', 'false'],
+  CLEANUP_SHOWN: ['bg', 'await agentWindow.cleanupTabs(params.tab);', 'await agentWindow.cleanupTabs();'],
+  SHOW_INTERRUPTED: ['bg', 'await agentWindow.cleanupTabs(params.tab);', 'await agentWindow.cleanupTabs();'],
+  CLEANUP_FOCUS: ['windows', '!(tab.active && (await chrome.windows.get(tab.windowId)).focused)', 'true'],
+  CLEANUP_AGENT: ['windows', 'tab.windowId === id || groups.some', 'true || groups.some'],
+  CLEANUP_PLACEHOLDER: ['windows', '!isPlaceholder(tab) && (tab.windowId', '(tab.windowId'],
+  OWNER_UNGROUP: ['windows', 'if (previous && previous.groupId !== change.groupId) void cleanupTabs(tab).catch(() => {});', 'void previous;'],
+  AGENT_REGROUP: ['windows', 'change.groupId === undefined || groupingTabs.has(tab)', 'change.groupId === undefined'],
+  CLEANUP_GROUPED: ['bg', 'if (!await agentWindow.isAgent(await getTab(id))) await agentWindow.cleanupTabs(id);', 'void id;'],
+  DISCARD_TARGET: ['windows', 'currentAnchor ? `tab:${currentAnchor}:${tab.id}` : undefined', 'undefined'],
+  CLEANUP_RESTART: ['windows', 'scopes = stored.scopes as Record<string, TabScope>;', 'scopes = {};'],
+  CLEANUP_RECHECK: ['bg', '(await agentWindow.cleanupTabs()).find(candidate => candidate.id === tab)', 'eligible.find(candidate => candidate.id === tab)'],
+  RELOAD_DISCARDED: ['bg', "current.discarded && browser.window === 'own' && await agentWindow.isAgent(current)", 'false'],
+  RELOAD_READY: ['bg', "if (!current.discarded && current.status === 'complete') break;", 'break;'],
   EXTERNAL_LINK: ['windows', 'await chrome.tabs.move(tab.id, { windowId: owner.id, index: -1 });', 'void tab;'],
   EXTERNAL_FOCUS: ['windows', 'await chrome.windows.update(owner.id, { focused: true });', 'void owner;'],
   AGENT_CREATED: ['windows', 'createdTabs.has(tab.id)', 'false'],
@@ -71,10 +79,6 @@ let failNavigation = false;
 let holdCreation = false, releaseCreation: (() => void) | undefined;
 let holdWindowCreation = false, releaseWindowCreation: (() => void) | undefined;
 let releaseEval: ((value: unknown) => void) | undefined;
-let screens = [
-  { isPrimary:true,isEnabled:true,bounds:{left:0,top:0,width:1400,height:1000},workArea:{left:0,top:20,width:1400,height:980} },
-  { isPrimary:false,isEnabled:true,bounds:{left:1400,top:0,width:1200,height:800},workArea:{left:1400,top:0,width:1200,height:800} },
-];
 const ports: any[] = [];
 const chrome = {
   runtime: { getURL:(path:string)=>`chrome-extension://gaddi/${path}`,onInstalled:event(),onStartup:event(),reload() {},connectNative: () => {
@@ -89,7 +93,6 @@ const chrome = {
     local: { get: async()=>({...local}), set:async(value:any)=>Object.assign(local,value), remove:async(key:string)=>{delete local[key];} },
     session: { get:async()=>({...session}),set:async(value:any)=>Object.assign(session,value),remove:async(key:string)=>{delete session[key];} },
   },
-  system: { display: { getInfo:async()=>screens,onDisplayChanged:event() } },
   windows: {
     WINDOW_ID_NONE:-1,onFocusChanged:event(),onRemoved:event(),get:async(id:number)=>{if(!windows.has(id))throw new Error('Window closed');return {...windows.get(id)};},
     getAll:async(q:any)=>[...windows.values()].filter(w=>!q.windowTypes||q.windowTypes.includes(w.type)).map(w=>({...w})),
@@ -110,13 +113,18 @@ const chrome = {
     update:async(id:number,options:any)=>{windowUpdates.push({id,...options});if(options.focused)for(const w of windows.values())w.focused=w.id===id;Object.assign(windows.get(id),options);return {...windows.get(id)};},
   },
   tabs: {
-    onCreated:event(),onRemoved:event(),onUpdated:event(),get:async(id:number)=>{if(!tabs.has(id))throw new Error('Tab closed');return {...tabs.get(id)};},
+    onCreated:event(),onRemoved:event(),onUpdated:event(),onDetached:event(),get:async(id:number)=>{if(!tabs.has(id))throw new Error('Tab closed');return {...tabs.get(id)};},
     query:async(q:any)=>[...tabs.values()].filter(t=>(!q.active||t.active)&&(!q.lastFocusedWindow||windows.get(t.windowId).focused)&&(q.windowId===undefined||t.windowId===q.windowId)),
     create:async(options:any)=>{
       const id=++nextTab,windowId=options.windowId??1;
       const tab={id,windowId,index:0,active:false,title:'Agent',...options};tabs.set(id,tab);chrome.tabs.onCreated.emit({...tab});
       if(holdCreation&&options.url==='about:blank')await new Promise<void>(resolve=>{releaseCreation=resolve;});
       return {...tab};
+    },
+    discard:async(id:number)=>{tabs.get(id).discarded=true;return {...tabs.get(id)};},
+    reload:async(id:number)=>{
+      Object.assign(tabs.get(id),{discarded:false,status:'loading'});
+      setTimeout(()=>{tabs.get(id).status='complete';chrome.tabs.onUpdated.emit(id,{status:'complete'});},20);
     },
     remove:async(id:number)=>{
       const tab=tabs.get(id);if(!tab)throw new Error('Tab closed');tabs.delete(id);rendering.delete(id);chrome.tabs.onRemoved.emit(id);
@@ -129,14 +137,15 @@ const chrome = {
       Object.assign(tabs.get(id),options);return {...tabs.get(id)};
     },
     move:async(id:number,options:any)=>{Object.assign(tabs.get(id),options);return {...tabs.get(id)};},
-    group:async(options:any)=>{const id=options.groupId??++nextGroup;groups.set(id,groups.get(id)??{id,windowId:options.createProperties.windowId});for(const tab of options.tabIds)tabs.get(tab).groupId=id;return id;},
+    group:async(options:any)=>{const id=options.groupId??++nextGroup;groups.set(id,groups.get(id)??{id,windowId:options.createProperties.windowId});for(const tab of options.tabIds){tabs.get(tab).groupId=id;chrome.tabs.onUpdated.emit(tab,{groupId:id});}return id;},
   },
-  tabGroups: { query:async()=>[...groups.values()], update:async(id:number,options:any)=>Object.assign(groups.get(id),options) },
+  tabGroups: { onUpdated:event(),query:async()=>[...groups.values()], update:async(id:number,options:any)=>{Object.assign(groups.get(id),options);chrome.tabGroups.onUpdated.emit({...groups.get(id)});return groups.get(id);} },
   scripting: { executeScript:async(options:any)=>[{result:options.args[0]==='read'?{text:'Page',outline:'',scroll:{y:0,height:1}}:{}}] },
   debugger: {
     getTargets:async()=>[...tabs.values()].map(tab=>({id:`target:${tab.id}`,tabId:tab.id})),
     onEvent:event(),onDetach:event(),attach:async()=>{},detach:async(target:any)=>{rendering.delete(target.tabId);},
     sendCommand:async(target:any,method:string,params:any)=>{
+      if(method==='Runtime.evaluate'&&params.expression==='1')assert.notEqual(tabs.get(target.tabId)?.status,'loading','discarded renderer must finish reload before action');
       commands.push({tab:target.tabId,method,params});
       if(method==='Emulation.setFocusEmulationEnabled')rendering.set(target.tabId,params.enabled);
       if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'frame',loaderId:'old',url:tabs.get(target.tabId).url}}};
@@ -166,7 +175,7 @@ assert.ok(!mutation || mutations[mutation] || linkMutations[mutation], `Unknown 
 windowSource = stripTypeScriptTypes(windowSource);
 const worlds: vm.Context[] = [];
 const timers=new Set<ReturnType<typeof setTimeout>>();
-const lifecycleEvents = [chrome.windows.onRemoved,chrome.windows.onFocusChanged,chrome.tabs.onCreated,chrome.tabs.onRemoved,chrome.system.display.onDisplayChanged];
+const lifecycleEvents = [chrome.windows.onRemoved,chrome.windows.onFocusChanged,chrome.tabs.onCreated,chrome.tabs.onRemoved,chrome.tabs.onDetached,chrome.tabs.onUpdated,chrome.tabGroups.onUpdated];
 function worker() {
   for(const timer of timers)clearTimeout(timer);
   timers.clear();
@@ -193,12 +202,23 @@ try {
     assert.notEqual(opened.windowId,1);assert.equal(tabs.get(1).active,true);assert.equal(windows.get(1).focused,true);
     assert.equal(windowCreates[0].focused,false);assert.equal(windows.get(opened.windowId).focused,false);
   });
-  await test('SECONDARY',()=>{assert.equal(windowCreates[0].left,1400);assert.equal(windowCreates[0].width,1200);});
+  await test('MINIMIZED',async()=>{
+    const options=windowCreates[0];
+    assert.equal(options.state,'minimized');assert.equal(options.focused,false);
+    for(const key of ['left','top','width','height'])assert.ok(!(key in options));
+    const count=windowUpdates.length;
+    for(let n=0;n<2;n++) {
+      const next=await call('chrome.open',{url:`http://localhost/minimized-${n}`,group:'● Minimized'});
+      assert.equal(next.windowId,opened.windowId);
+    }
+    assert.equal(windows.get(opened.windowId).state,'minimized');
+    assert.equal(windowCreates.length,1);assert.equal(windowUpdates.length,count);
+    for(const tab of [...tabs.values()].filter(t=>t.url.startsWith('http://localhost/minimized-')))await chrome.tabs.remove(tab.id);
+  });
   await test('BLANK',()=>{
     const own=[...tabs.values()].filter(t=>t.windowId===opened.windowId);
     assert.equal(own.length,2);assert.equal(own.filter(t=>t.url==='chrome-extension://gaddi/placeholder.html').length,1);
   });
-  await test('CREATED',()=>{assert.equal(opened.windowCreated,true);});
   await test('LIST',async()=>{
     const listed=await call('chrome.tabs');assert.equal(listed.tabs.length,2);
     assert.ok(listed.tabs.some((t:any)=>t.id===1));assert.ok(listed.tabs.some((t:any)=>t.id===opened.id));
@@ -223,7 +243,7 @@ try {
     assert.equal(windows.has(opened.windowId),true);
     assert.equal([...tabs.values()].filter(t=>t.windowId===opened.windowId).length,1);
     const next=await call('chrome.open',{url:'http://localhost/next',group:'● Next'});
-    assert.equal(next.windowId,opened.windowId);assert.equal(windowCreates.length,creates);assert.equal(next.windowCreated,undefined);
+    assert.equal(next.windowId,opened.windowId);assert.equal(windowCreates.length,creates);
     opened=next;
   });
   await test('CLOSE_PLACEHOLDER',async()=>{
@@ -264,38 +284,13 @@ try {
     session.agentWindow=opened.windowId;local.agentWindowTargets=remembered;if(placeholder)tabs.set(placeholder.id,placeholder);
     lifecycleEvents.forEach((event,i)=>{event.listeners.clear();for(const listener of listeners[i])event.listeners.add(listener);});
   });
-  await test('DISPLAY_CHANGE',async()=>{
-    Object.assign(windows.get(opened.windowId),{left:0,top:0});screens=screens.slice(0,1);chrome.system.display.onDisplayChanged.emit();
-    await new Promise(r=>setTimeout(r,10));assert.equal(windows.get(opened.windowId).state,'minimized');
-  });
-  await test('DISCONNECT_STALE',async()=>{
-    Object.assign(windows.get(opened.windowId),{left:1400,top:0,state:'normal'});
-    chrome.system.display.onDisplayChanged.emit();await new Promise(r=>setTimeout(r,10));
-    assert.equal(windows.get(opened.windowId).state,'minimized');
-  });
-  await test('DISPLAY_CONNECT',async()=>{
-    screens.push({isPrimary:false,isEnabled:true,bounds:{left:-1000,top:-700,width:1000,height:700},workArea:{left:-1000,top:-680,width:1000,height:680}});
-    chrome.system.display.onDisplayChanged.emit();await new Promise(r=>setTimeout(r,10));
-    const window=windows.get(opened.windowId);assert.equal(window.state,'normal');assert.equal(window.left,-1000);assert.equal(window.top,-680);
-    assert.equal(window.width,1000);assert.equal(window.height,680);assert.equal(window.focused,false);
-    assert.ok(windowUpdates.every(update=>update.focused===undefined));
-  });
-  await test('DISPLAY_FETCH',async()=>{
-    Object.assign(windows.get(opened.windowId),{left:0,top:0,state:'minimized'});
-    const next=await call('chrome.open',{url:'http://localhost/display',group:'● Display'});
-    assert.equal(next.windowId,opened.windowId);assert.equal(windows.get(opened.windowId).left,-1000);assert.equal(windows.get(opened.windowId).state,'normal');
-    // Disconnect leaves a minimized window even if Chrome moved it onto the primary display.
-    screens=screens.slice(0,1);Object.assign(windows.get(opened.windowId),{left:0,top:0});
-    chrome.system.display.onDisplayChanged.emit();await new Promise(r=>setTimeout(r,10));assert.equal(windows.get(opened.windowId).state,'minimized');
-  });
   await test('SHARED',async()=>{
     const shared=await call('chrome.open',{url:'http://localhost/shared',group:'● Shared',browser:{window:'shared',show:'attention'}});
-    assert.equal(shared.windowId,1);assert.equal(shared.windowCreated,undefined);
+    assert.equal(shared.windowId,1);
     await call('chrome.show',{tab:shared.id,browser:{window:'shared',show:'front'}});
     assert.deepEqual(windowUpdates.at(-1),{id:1,focused:true,drawAttention:true});
   });
   await test('RECREATE',async()=>{
-    screens.push({isPrimary:false,isEnabled:false,bounds:{left:1400,top:0,width:1200,height:800},workArea:{left:1400,top:0,width:1200,height:800}});
     // Chrome closes a window automatically when its final tab goes away.
     for(const tab of [...tabs.values()].filter(t=>t.windowId===opened.windowId))await chrome.tabs.remove(tab.id);
     await new Promise(r=>setTimeout(r,10));assert.equal(windows.has(opened.windowId),false);assert.equal(session.agentWindow,undefined);
@@ -306,22 +301,18 @@ try {
     const grouped=await call('chrome.group',{tabs:[1],group:'● New group'});
     assert.equal(grouped.tabs[0].windowId,recreated.windowId);
   });
-  await test('MINIMIZED',()=>{
-    assert.equal(windowCreates.at(-1).state,'minimized');assert.equal(windowCreates.at(-1).focused,false);
-    for(const key of ['left','top','width','height'])assert.equal(windowCreates.at(-1)[key],undefined);
-  });
   await test('REPAIR',async()=>{
     const id=session.agentWindow;const placeholder=[...tabs.values()].find(t=>t.windowId===id&&t.url==='chrome-extension://gaddi/placeholder.html');
     await chrome.tabs.remove(placeholder.id);
     await call('chrome.open',{url:'http://localhost/repair',group:'● Repair'});
     assert.equal([...tabs.values()].filter(t=>t.windowId===id&&t.url==='chrome-extension://gaddi/placeholder.html').length,1);
   });
-  await test('CREATE_ERROR',async()=>{
+  await test('FAILED_OPEN',async()=>{
     const id=session.agentWindow;
     for(const tab of [...tabs.values()].filter(t=>t.windowId===id))await chrome.tabs.remove(tab.id);
     await new Promise(r=>setTimeout(r,10));failNavigation=true;
     const reply=await rawCall('chrome.open',{url:'http://localhost/fail',group:'● Fail'});failNavigation=false;
-    assert.ok(reply.error);assert.equal(reply.error.windowCreated,true);
+    assert.ok(reply.error);assert.match(reply.error.message,/ERR_CONNECTION_REFUSED/);
     assert.equal([...tabs.values()].filter(t=>t.windowId===session.agentWindow).length,1);
     await call('chrome.open',{url:'http://localhost/ready',group:'● Ready'});
   });
@@ -332,7 +323,7 @@ try {
     assert.equal([...tabs.values()].filter(t=>t.windowId===id).length,1);
     delete session.agentWindow;worker();
     const next=await call('chrome.open',{url:'http://localhost/empty-reload',group:'● Empty reload'});
-    assert.equal(next.windowId,id);assert.equal(next.windowCreated,undefined);assert.equal(windowCreates.length,creates);
+    assert.equal(next.windowId,id);assert.equal(windowCreates.length,creates);
   });
   await test('BROKER_STOP',async()=>{
     const target=[...tabs.values()].find(t=>t.windowId!==1&&!t.url.startsWith('chrome-extension:'));
@@ -385,6 +376,128 @@ try {
     if(mutation && linkMutations[mutation] && mutation!==name)return;
     await test(name,fn);
   };
+  await linkTest('OWNER_BOUNDS',async()=>{
+    const opened=await fixture();
+    for (const state of ['normal','maximized','minimized']) {
+      Object.assign(windows.get(opened.windowId),{left:0,top:55,width:800,height:600,state});
+      const before=structuredClone(windows.get(opened.windowId)), count=windowUpdates.length;
+      await call('chrome.open',{url:'http://localhost/owner-bounds',group:'● Owner bounds'});
+      assert.deepEqual(windows.get(opened.windowId),before);assert.equal(windowUpdates.length,count);
+    }
+    // A worker reload retains the owner's expanded placement.
+    windows.get(opened.windowId).state='maximized';worker();
+    await call('chrome.open',{url:'http://localhost/owner-reload',group:'● Owner reload'});
+    assert.equal(windows.get(opened.windowId).state,'maximized');
+  });
+  await linkTest('CLEANUP_SCOPE',async()=>{
+    const agent=await fixture();
+    const eligible=await call('chrome.cleanup');assert.ok(eligible.tabs.some((tab:any)=>tab.id===agent.id));
+    // Moving out of a group inside Gaddi's window is still an owner takeover.
+    delete tabs.get(agent.id).groupId;
+    assert.ok(!(await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===agent.id));
+    // Returning to an agent group cannot undo the handoff.
+    tabs.get(agent.id).groupId=[...groups.keys()][0];
+    assert.ok(!(await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===agent.id));
+    const other=await call('chrome.open',{url:'http://localhost/moved-out',group:'● Out'});
+    tabs.get(other.id).windowId=1;
+    assert.ok(!(await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===other.id));
+  });
+  await linkTest('CLEANUP_SHOWN',async()=>{
+    const agent=await fixture();await call('chrome.show',{tab:agent.id});
+    for(const cleanup of ['discard','close']) {
+      const result=await call('chrome.cleanup',{tabs:[agent.id],cleanup});
+      assert.equal(result.closed.length,0);assert.ok(tabs.has(agent.id));assert.notEqual(tabs.get(agent.id).discarded,true);
+    }
+  });
+  await linkTest('SHOW_INTERRUPTED',async()=>{
+    const agent=await fixture();const update=chrome.windows.update;
+    chrome.windows.update=async(id:number,options:any)=>{
+      if(options.drawAttention)throw new Error('Attention failed after tab activation');
+      return update(id,options);
+    };
+    try {
+      const reply=await rawCall('chrome.show',{tab:agent.id});assert.ok(reply.error);
+      assert.equal(tabs.get(agent.id).active,true);
+    } finally {chrome.windows.update=update;}
+    worker();assert.ok(!(await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===agent.id));
+  });
+  await linkTest('CLEANUP_FOCUS',async()=>{
+    const agent=await fixture();tabs.get(agent.id).active=true;windows.get(agent.windowId).focused=true;
+    for(const cleanup of ['discard','close'])assert.equal((await call('chrome.cleanup',{tabs:[agent.id],cleanup})).closed.length,0);
+    assert.ok(tabs.has(agent.id));assert.notEqual(tabs.get(agent.id).discarded,true);
+  });
+  await linkTest('CLEANUP_AGENT',async()=>{
+    await fixture();tabs.get(1).active=false;
+    assert.ok(!(await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===1));
+    const result=await call('chrome.cleanup',{tabs:[1],cleanup:'discard'});
+    assert.equal(result.closed.length,0);assert.notEqual(tabs.get(1).discarded,true);
+    // Agent markers in the owner's other windows are recognisable orphans too.
+    const marked=++nextTab;tabs.set(marked,{id:marked,windowId:1,active:false,groupId:++nextGroup,url:'http://localhost/orphan'});
+    groups.set(nextGroup,{id:nextGroup,windowId:1,title:'● Orphan'});
+    assert.ok((await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===marked));
+  });
+  await linkTest('CLEANUP_PLACEHOLDER',async()=>{
+    const agent=await fixture();const placeholder=[...tabs.values()].find(tab=>tab.windowId===agent.windowId&&tab.url.endsWith('placeholder.html'));
+    for(const cleanup of ['discard','close'])assert.equal((await call('chrome.cleanup',{tabs:[placeholder.id],cleanup})).closed.length,0);
+    assert.ok(tabs.has(placeholder.id));
+  });
+  await linkTest('OWNER_UNGROUP',async()=>{
+    const agent=await fixture();const groupId=tabs.get(agent.id).groupId;
+    tabs.get(agent.id).groupId=-1;chrome.tabs.onUpdated.emit(agent.id,{groupId:-1});
+    // The user returns it before the next sweep; the handoff remains sticky.
+    tabs.get(agent.id).groupId=groupId;
+    await settle();assert.ok(!(await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===agent.id));
+  });
+  await linkTest('AGENT_REGROUP',async()=>{
+    const agent=await fixture();await call('chrome.group',{tabs:[agent.id],group:'● Agent regroup'});
+    await settle();assert.ok((await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===agent.id));
+  });
+  await linkTest('CLEANUP_GROUPED',async()=>{
+    await fixture();await call('chrome.group',{tabs:[1],group:'● Owner grouped'});
+    assert.ok(!(await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===1));
+  });
+  await linkTest('DISCARD_TARGET',async()=>{
+    const agent=await fixture();await call('chrome.cleanup',{tabs:[agent.id],cleanup:'discard'});
+    const legacy=++nextTab;tabs.set(legacy,{id:legacy,windowId:agent.windowId,active:false,discarded:true,url:'http://localhost/legacy'});
+    const getTargets=chrome.debugger.getTargets;
+    chrome.debugger.getTargets=async()=> (await getTargets()).filter(target=>target.tabId!==agent.id&&target.tabId!==legacy);
+    try {
+      worker();const candidates=(await call('chrome.cleanup')).tabs;assert.ok(candidates.some((tab:any)=>tab.id===agent.id));assert.ok(candidates.some((tab:any)=>tab.id===legacy));
+      assert.equal((await call('chrome.cleanup',{tabs:[agent.id],cleanup:'close'})).closed.join(','),String(agent.id));
+    } finally {chrome.debugger.getTargets=getTargets;}
+  });
+  await linkTest('CLEANUP_RESTART',async()=>{
+    const agent=await fixture();await call('chrome.show',{tab:agent.id});
+    const moved=await call('chrome.open',{url:'http://localhost/owner',group:'● Owner'});
+    tabs.get(moved.id).windowId=1;await call('chrome.cleanup');
+    // Extension reload loses session storage, while page-target identities survive.
+    for(const key of Object.keys(session))delete session[key];worker();
+    assert.ok(!(await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===agent.id||tab.id===moved.id));
+  });
+  await linkTest('CLEANUP_RECHECK',async()=>{
+    const agent=await fixture();tabs.get(agent.id).active=true;
+    const get=chrome.windows.get;let checks=0;
+    chrome.windows.get=async(id:number)=>{
+      const result=await get(id);
+      if(id===agent.windowId&&++checks===1)windows.get(id).focused=true;
+      return result;
+    };
+    try { assert.equal((await call('chrome.cleanup',{tabs:[agent.id],cleanup:'close'})).closed.length,0);assert.ok(tabs.has(agent.id)); }
+    finally {chrome.windows.get=get;}
+  });
+  await linkTest('RELOAD_DISCARDED',async()=>{
+    const agent=await fixture();
+    assert.equal((await call('chrome.cleanup',{tabs:[agent.id],cleanup:'discard'})).closed.join(','),String(agent.id));
+    assert.equal(tabs.get(agent.id).discarded,true);
+    const before=windowUpdates.length;await call('chrome.eval',{tab:agent.id,expression:'1'});
+    assert.equal(tabs.get(agent.id).discarded,false);assert.equal(windowUpdates.length,before);
+    await call('chrome.cleanup',{tabs:[agent.id],cleanup:'discard'});
+    assert.equal((await call('chrome.cleanup',{tabs:[agent.id],cleanup:'close'})).closed.join(','),String(agent.id));
+  });
+  await linkTest('RELOAD_READY',async()=>{
+    const agent=await fixture();await call('chrome.cleanup',{tabs:[agent.id],cleanup:'discard'});
+    await call('chrome.eval',{tab:agent.id,expression:'1'});assert.equal(tabs.get(agent.id).status,'complete');
+  });
   await linkTest('EXTERNAL_LINK',async()=>{
     const agent=await fixture();
     const link=external(agent.windowId);await settle();

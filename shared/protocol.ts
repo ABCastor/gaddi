@@ -4,6 +4,7 @@ interface SignedProof { ts: number; sig: string }
 export interface SelfHeal { at: number; reason: 'native-disconnect' | 'broker-unresponsive' | 'broker-requested'; action: 'reconnect' | 'reload' }
 export interface ChromeParams {
   browser?: { window: 'own' | 'shared'; show: 'attention' | 'front' };
+  cleanup?: 'discard' | 'close'; // Internal idle maintenance, never forwarded from caller params.
   operation?: ExtensionOperation | 'get'; extensionId?: string;
   tab?: number; tabs?: number[]; url?: string; query?: string; group?: string;
   foreground?: boolean; selector?: string; text?: string; key?: string; mode?: 'replace' | 'append';
@@ -57,7 +58,7 @@ export type IncomingParams = { [K in keyof BrokerParams]?: unknown };
 export interface BrokerRequest { id: RequestId; method: string; params?: BrokerParams }
 export interface ChromeRequest { id: string | number; method: string; params: ChromeParams; deadline?: number }
 interface ApprovalRef { id: string; reason: string; expires: string }
-export interface WireError { code?: string; message: string; approval?: ApprovalRef; windowCreated?: boolean }
+export interface WireError { code?: string; message: string; approval?: ApprovalRef }
 export interface Reply<T = unknown> { id: RequestId; result?: T; error?: WireError }
 export interface TabInfo { id?: number; tabId?: number; tab?: number; url?: string; title?: string; active?: boolean; group?: string; groupId?: number; windowId?: number; index?: number; frozen?: boolean; discarded?: boolean }
 export interface ElementDescription {
