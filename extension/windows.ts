@@ -18,6 +18,8 @@ export function createAgentWindow() {
     if (typeof owner === 'number' && Number.isSafeInteger(owner)) ownerId = owner;
     const saved = value[WINDOW_KEY];
     if (typeof saved === 'number' && Number.isSafeInteger(saved)) { id = saved; return; }
+    // The placeholder tab marks the Gaddi window and survives extension reloads.
+    if ((id = await placeholderWindow()) !== undefined) { await chrome.storage.session.set({ [WINDOW_KEY]: id }); return; }
     const record = (await chrome.storage.local.get(TARGETS_KEY))[TARGETS_KEY] as { id?: unknown; targets?: unknown } | undefined;
     if (typeof record?.id !== 'number' || !Array.isArray(record.targets)) return;
     // Page target identities survive an extension reload and change on browser
@@ -27,6 +29,9 @@ export function createAgentWindow() {
       if (tab?.windowId === record.id) { id = record.id; await chrome.storage.session.set({ [WINDOW_KEY]: id }); return; }
     }
   });
+  async function placeholderWindow() {
+    return (await chrome.tabs.query({})).find(isPlaceholder)?.windowId;
+  }
   async function rememberOwner(window: chrome.windows.Window) {
     if (!enabled || window.id === id || window.type !== 'normal' || window.id === undefined) return;
     ownerId = window.id;

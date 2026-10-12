@@ -13,6 +13,7 @@ const mutations: Record<string, [string, string, string]> = {
   SHARED: ['bg', 'if (params.browser) browser = params.browser;', 'void params.browser;'],
   RESTORE: ['windows', "if (typeof saved === 'number' && Number.isSafeInteger(saved)) { id = saved; return; }", 'if (typeof saved === "number") { id = 999999; return; }'],
   RELOAD: ['windows', 'record.targets.includes(target.id)', 'false'],
+  ADOPT: ['windows', 'return (await chrome.tabs.query({})).find(isPlaceholder)?.windowId;', 'return undefined;'],
   RECYCLED: ['windows', 'record.targets.includes(target.id)', 'true'],
   RECREATE: ['windows', "if (existing?.type === 'normal') {", 'if (true) {'],
   DISPLAY_CHANGE: ['windows', "await chrome.windows.update(window.id!, { state: 'minimized' });", 'void window;'],
@@ -234,7 +235,17 @@ try {
     const creates=windowCreates.length;worker();const again=await call('chrome.open',{url:'http://localhost/again',group:'● Again'});
     assert.equal(again.windowId,opened.windowId);assert.equal(windowCreates.length,creates);
   });
+  await test('ADOPT',async()=>{
+    const remembered=structuredClone(local.agentWindowTargets);delete local.agentWindowTargets;
+    delete session.agentWindow;const creates=windowCreates.length;worker();
+    const adopted=await call('chrome.open',{url:'http://localhost/adopted',group:'● Adopted'});
+    assert.equal(adopted.windowId,opened.windowId);assert.equal(windowCreates.length,creates);
+    local.agentWindowTargets=remembered;
+  });
   await test('RELOAD',async()=>{
+    // Without the placeholder, recovery falls back to the remembered page targets.
+    const placeholder=[...tabs.values()].find(t=>t.windowId===opened.windowId&&t.url==='chrome-extension://gaddi/placeholder.html');
+    if(placeholder)tabs.delete(placeholder.id);
     delete session.agentWindow;const creates=windowCreates.length;worker();
     const restored=await call('chrome.open',{url:'http://localhost/reloaded',group:'● Reloaded'});
     assert.equal(restored.windowId,opened.windowId);assert.equal(windowCreates.length,creates);
@@ -243,11 +254,14 @@ try {
     const listeners=lifecycleEvents.map(event=>[...event.listeners]);
     const remembered=structuredClone(local.agentWindowTargets);
     local.agentWindowTargets={id:1,targets:['a-target-from-an-old-browser']};delete session.agentWindow;
+    // Hide the placeholder so this checks the remembered-target path alone.
+    const placeholder=[...tabs.values()].find(t=>t.url==='chrome-extension://gaddi/placeholder.html');if(placeholder)tabs.delete(placeholder.id);
     const probe=vm.createContext({chrome});vm.runInContext(windowSource,probe);
     const windowId=await vm.runInContext('createAgentWindow().get(() => {})',probe);
     assert.notEqual(windowId,1);
+    for(const [key,tab] of tabs)if(tab.windowId===windowId)tabs.delete(key);windows.delete(windowId);
     // Return the fixture to the original live window for the remaining journeys.
-    session.agentWindow=opened.windowId;local.agentWindowTargets=remembered;
+    session.agentWindow=opened.windowId;local.agentWindowTargets=remembered;if(placeholder)tabs.set(placeholder.id,placeholder);
     lifecycleEvents.forEach((event,i)=>{event.listeners.clear();for(const listener of listeners[i])event.listeners.add(listener);});
   });
   await test('DISPLAY_CHANGE',async()=>{
@@ -379,6 +393,12 @@ try {
     // A new tab already in an owner window is left alone.
     const outside=external(1);await settle();assert.equal(tabs.get(outside).active,false);
     const ownerPopup=external(agent.windowId,1);await settle();assert.equal(tabs.get(ownerPopup).windowId,1);
+  });
+  await linkTest('LINK_AFTER_RELOAD',async()=>{
+    // An extension reload forgets the window id; the placeholder still marks the Gaddi window.
+    const agent=await fixture();delete session.agentWindow;delete local.agentWindowTargets;worker();
+    const link=external(agent.windowId);await settle();
+    assert.equal(tabs.get(link).windowId,1);assert.equal(tabs.get(link).active,true);
   });
   await linkTest('EXTERNAL_FOCUS',async()=>{
     const agent=await fixture();windows.get(1).focused=false;windows.get(agent.windowId).focused=true;

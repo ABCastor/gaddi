@@ -22,6 +22,11 @@ export function createAgentWindow() {
             id = saved;
             return;
         }
+        // The placeholder tab marks the Gaddi window and survives extension reloads.
+        if ((id = await placeholderWindow()) !== undefined) {
+            await chrome.storage.session.set({ [WINDOW_KEY]: id });
+            return;
+        }
         const record = (await chrome.storage.local.get(TARGETS_KEY))[TARGETS_KEY];
         if (typeof record?.id !== 'number' || !Array.isArray(record.targets))
             return;
@@ -37,6 +42,9 @@ export function createAgentWindow() {
                 }
             }
     });
+    async function placeholderWindow() {
+        return (await chrome.tabs.query({})).find(isPlaceholder)?.windowId;
+    }
     async function rememberOwner(window) {
         if (!enabled || window.id === id || window.type !== 'normal' || window.id === undefined)
             return;
