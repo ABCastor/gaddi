@@ -8,7 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { isRecord, parseJSON } from '../../shared/protocol.ts';
 
-const socket = `/tmp/gaddi-reconnect-${process.pid}.sock`;
+const socket = `${process.env.GADDI_TEST_SOCKET_DIR || '/tmp'}/gaddi-reconnect-${process.pid}.sock`;
 const begins: { at: number; session: unknown; caller: unknown }[] = [];
 const connections = new Set<net.Socket>();
 const server = net.createServer(connection => {

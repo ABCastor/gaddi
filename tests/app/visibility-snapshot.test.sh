@@ -3,7 +3,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 STATE="$REPO/tests/.state/app-visibility-snapshot-$$"
 mkdir -p "$STATE" "$REPO/app/build/module-cache"
-export GADDI_SOCKET="/tmp/gaddi-test-visibility-$$"
+export GADDI_SOCKET="${GADDI_TEST_SOCKET_DIR:-/tmp}/gaddi-test-visibility-$$"
 export GADDI_FAKE_RECORD="$STATE/calls.jsonl"
 GADDI_FAKE_MODE=quiet-snapshot node "$REPO/tests/app/fake-daemon.ts" > "$STATE/server.log" 2>&1 &
 PID=$!

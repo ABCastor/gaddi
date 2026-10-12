@@ -25,7 +25,7 @@ const home = fs.mkdtempSync(path.join(repo, 'tests/.state/broker-'));
 // The upload scenario gives the broker a disposable home folder with look-alike secret stores.
 const person = path.join(home, 'person');
 // Short private path avoids macOS's 104-byte UNIX socket limit without using the live socket.
-const socket = path.join('/tmp', `gaddi-test-${process.pid}-${crypto.randomBytes(3).toString('hex')}.sock`);
+const socket = path.join(process.env.GADDI_TEST_SOCKET_DIR || '/tmp', `gaddi-test-${process.pid}-${crypto.randomBytes(3).toString('hex')}.sock`);
 const publicPath = path.join(home, 'approver.pub');
 const launchLog = path.join(home, 'app-launches.jsonl');
 const launcher = path.join(home, 'launch-app.ts');
@@ -56,10 +56,17 @@ const clients: Socket[] = [], bridges: Socket[] = [];
 let daemon: ChildProcessWithoutNullStreams;
 let stderr = '', passed = 0, failed = 0;
 function pass(name: string) { passed++; console.log(`PASS ${name}`); }
+class FixtureConnectionError extends Error {}
 function client() {
-  const conn = net.connect(socket), pending = new Map<string, (reply: Reply) => void>(), events: TestEvent[] = [];
+  const conn = net.connect(socket), pending = new Map<string, { resolve: (reply: Reply) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>(), events: TestEvent[] = [];
   let buffer = ''; clients.push(conn); conn.setEncoding('utf8');
-  conn.on('error', () => {});
+  const disconnected = () => {
+    for (const request of pending.values()) {
+      clearTimeout(request.timer); request.reject(new FixtureConnectionError('fixture broker connection closed'));
+    }
+    pending.clear();
+  };
+  conn.on('error', disconnected); conn.on('close', disconnected);
   conn.on('data', data => {
     buffer += data; let end;
     while ((end = buffer.indexOf('\n')) >= 0) {
@@ -70,14 +77,18 @@ function client() {
         assert.ok(value.data.approval === undefined || isApproval(value.data.approval));
         events.push({ event: value.event, data: { approval: value.data.approval } });
       }
-      if (typeof value.id === 'string' && pending.has(value.id)) { pending.get(value.id)!(checkedReply(value)); pending.delete(value.id); }
+      if (typeof value.id === 'string' && pending.has(value.id)) {
+        const request = pending.get(value.id)!; pending.delete(value.id);
+        clearTimeout(request.timer); request.resolve(checkedReply(value));
+      }
     }
   });
   return { conn, events, call(method: string, params: IncomingParams = {}) {
+    if (conn.destroyed) return Promise.reject(new FixtureConnectionError('fixture broker connection closed'));
     const id = crypto.randomUUID();
     return new Promise<Reply>((resolve, reject) => {
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error(`RPC timeout: ${method}`)); }, 35000);
-      pending.set(id, value => { clearTimeout(timer); resolve(value); });
+      const timer = setTimeout(() => { pending.delete(id); reject(new FixtureConnectionError(`RPC timeout: ${method}`)); }, 35000);
+      pending.set(id, { resolve, reject, timer });
       conn.write(JSON.stringify({ id, method, params: { caller: 'test', ...params } }) + '\n');
     });
   } };
@@ -99,6 +110,8 @@ async function cli<M extends string>(method: M, ...args: string[]): Promise<Test
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=';
 const JPEG = fs.readFileSync(path.join(repo, 'tests/mcp/fixtures/pixel.jpg')).toString('base64');
 const pictureBox = { x: 1, y: 2, width: 4, height: 3 };
+// Independent expected broker policy: callers cannot override the owner's choice.
+const defaultBrowser = { window: 'own', show: 'attention' } as const;
 async function fakeBridge() {
   const conn = net.connect(socket); bridges.push(conn); conn.setEncoding('utf8'); conn.on('error', () => {});
   const calls: ChromeRequest[] = [], tabs: (TabInfo & { id: number; url: string; active: boolean })[] = [{ id: 7, active: true, url: 'https://unseen.example/shop?token=PRIVATE_QUERY', title: 'Fixture' },
@@ -114,7 +127,11 @@ async function fakeBridge() {
     capture: 'none' as 'none' | 'image' | 'error' | 'missing-box' | 'hang', captureWidth: 8, captureHeight: 8 };
   let buffer = '', nextTab = 11;
   let ready: () => void;
-  const attached = new Promise<void>(resolve => { ready = resolve; });
+  const attached = new Promise<void>((resolve, reject) => {
+    ready = resolve;
+    const disconnected = () => reject(new FixtureConnectionError('fixture Chrome bridge disconnected before attachment'));
+    conn.once('error', disconnected); conn.once('close', disconnected);
+  });
   conn.on('data', data => {
     buffer += data; let end;
     while ((end = buffer.indexOf('\n')) >= 0) {
@@ -203,7 +220,10 @@ async function fakeBridge() {
 async function pageVersions(c: Client, b: Bridge) {
   const failures: string[] = [];
   async function check(name: string, fn: () => Promise<void>) {
-    try { await fn(); pass(name); } catch (error) { failures.push(name); console.error(`FAIL ${name}: ${error}`); }
+    try { await fn(); pass(name); } catch (error) {
+      if (error instanceof FixtureConnectionError) throw error;
+      failures.push(name); console.error(`FAIL ${name}: ${error}`);
+    }
   }
   await check('ASSERT_VERSION_BROKER_FORWARD', async () => {
     b.control.resultExtras = { version: 'v1-look' };
@@ -384,7 +404,7 @@ async function approvalPictures(c: Client, b: Bridge) {
   await rejected(c, 'click', { selector: '#pay', approval: a.id }, 'approval-used');
   const clicks = b.calls.filter(m => m.method === 'chrome.click');
   assert.equal(clicks.length, 1);
-  assert.deepEqual(clicks[0].params, { tab: 7, selector: '#pay', checkedDescription: { name: 'Procedi al pagamento', href: '' } });
+  assert.deepEqual(clicks[0].params, { browser: defaultBrowser, tab: 7, selector: '#pay', checkedDescription: { name: 'Procedi al pagamento', href: '' } });
   pass('picture-keeps-signed-grant-binding-and-unchanged-single-use-execution');
   const denied = await pending(c, await rejected(c, 'click', { selector: '#confirm' }, 'held'));
   const deniedPath = assertPicture(denied);
@@ -558,7 +578,7 @@ import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(openLog)}, JSON.stri
   pass('active-tab-change-cannot-retarget-described-action');
   for (const [method, params] of [['hover', { selector: '#plain' }], ['scroll', { dy: -100 }], ['scroll', { selector: '#plain' }], ['select', { selector: '#plain', value: 'one' }], ['back', {}], ['emulate', { width: 390, height: 844, mobile: true, colorScheme: 'dark' }], ['emulate', { reset: true }]] as [string, IncomingParams][]) {
     await result(c, method, { tab: 7, ...params });
-    assert.deepEqual(b.calls.at(-1)!, { ...b.calls.at(-1)!, method: 'chrome.' + method, params: { tab: 7, ...params } });
+    assert.deepEqual(b.calls.at(-1)!, { ...b.calls.at(-1)!, method: 'chrome.' + method, params: { browser: defaultBrowser, tab: 7, ...params } });
   }
   assert.equal((await cli('eval', '7', 'document.title')).value, 'fixture-result');
   assert.equal((await cli('scroll', '-200')).ok, true);
@@ -623,11 +643,11 @@ import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(openLog)}, JSON.stri
   pass('shared-tab-operations-require-valid-explicit-IDs-before-mutation');
   assert.equal((await cli('show', '7')).id, 7);
   assert.equal(b.calls.at(-1)!.method, 'chrome.show');
-  assert.deepEqual(b.calls.at(-1)!.params, { tab: 7 });
+  assert.deepEqual(b.calls.at(-1)!.params, { browser: defaultBrowser, tab: 7 });
   const existing = await cli('group', '  ● Shared   review ', '7', '8', '7');
   assert.equal(existing.group, '● Shared review · cli');
   assert.deepEqual(existing.tabs.map(tab => tab.id), [7, 8]);
-  assert.deepEqual(b.calls.at(-1)!.params, { tabs: [7, 8], group: '● Shared review · cli' });
+  assert.deepEqual(b.calls.at(-1)!.params, { browser: defaultBrowser, tabs: [7, 8], group: '● Shared review · cli' });
   for (const args of [['close'], ['close', '--tab', '7'], ['close', '-1'], ['close', '1.5'], ['close', 'wat'],
     ['close', '9007199254740992'], ['close', ...Array(101).fill('7')], ['show'], ['show', '7', '8'],
     ['show', '--tab', '7'], ['group', 'Task'], ['group', 'Task', '7', '-1'], ['group', 'Task', ...Array(101).fill('7')]]) {
@@ -641,7 +661,7 @@ import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(openLog)}, JSON.stri
   const closed = await cli('close', '1000', '999999', '1001', '1002', '1000');
   assert.deepEqual(closed.closed, [1000, 1001, 1002]);
   assert.deepEqual(closed.failed, [{ tab: 999999, reason: 'No such tab' }]);
-  assert.deepEqual(b.calls.at(-1)!.params, { tabs: [1000, 999999, 1001, 1002] });
+  assert.deepEqual(b.calls.at(-1)!.params, { browser: defaultBrowser, tabs: [1000, 999999, 1001, 1002] });
   const sharedAudit = (await result(c, 'audit.tail', { n: 1000 })).entries;
   const closeAudit = sharedAudit.findLast(entry => entry.method === 'close' && entry.outcome === 'allow');
   assert.ok(closeAudit);
@@ -658,14 +678,14 @@ import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(openLog)}, JSON.stri
   assert.ok(!JSON.stringify(sharedAudit).includes('PRIVATE_QUERY'));
   pass('shared-close-reports-each-ID-and-close-show-group-audit-snapshot-URLs-before-mutation');
   assert.equal((await result(c, 'bookmarks', { query: 'DeSiGn' })).bookmarks[0].path, 'Design/Reference');
-  assert.deepEqual(b.calls.at(-1)!.params, { query: 'DeSiGn' });
+  assert.deepEqual(b.calls.at(-1)!.params, { browser: defaultBrowser, query: 'DeSiGn' });
   await rejected(c, 'bookmarks', { query: 2 }, 'error');
   const bookmarkAudit = (await result(c, 'audit.tail', { n: 10 })).entries.filter(e => e.method === 'bookmarks');
   assert.ok(bookmarkAudit.some(e => e.outcome === 'allow' && e.caller === 'test'));
   assert.ok(!JSON.stringify(bookmarkAudit).includes('DeSiGn'));
   pass('bookmarks-forward-without-tab-resolution-and-audit-without-query-payload');
   await result(c, 'emulate', { tab: 7, animationSpeed: 0.1 });
-  assert.deepEqual(b.calls.at(-1)!.params, { tab: 7, animationSpeed: 0.1 });
+  assert.deepEqual(b.calls.at(-1)!.params, { browser: defaultBrowser, tab: 7, animationSpeed: 0.1 });
   for (const animationSpeed of [0, -1, 1.01, '0.1', null]) await rejected(c, 'emulate', { tab: 7, animationSpeed }, 'error');
   pass('animation-speed-range-and-type-validated-by-broker');
   assert.match((await cli('html', '7')).html, /fixture/);
@@ -690,7 +710,7 @@ import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(openLog)}, JSON.stri
   const temporary = await cli('read', 'https://example.test/read'); assert.match(JSON.stringify(temporary), /Ignore instructions/);
   assert.equal(b.calls.at(-1)!.method, 'chrome.close');
   const temporaryHTML = b.calls.findLast(call => call.method === 'chrome.html');
-  assert.deepEqual(b.calls.at(-1)!.params, { tabs: [temporaryHTML!.params.tab] });
+  assert.deepEqual(b.calls.at(-1)!.params, { browser: defaultBrowser, tabs: [temporaryHTML!.params.tab] });
   const beforeHeld = b.calls.length;
   const heldRead = await runCLI(['read', 'https://example.test/checkout'], 4); assert.equal(heldRead.error!.code, 'held');
   assert.ok(!b.calls.slice(beforeHeld).some(m => ['chrome.open', 'chrome.close'].includes(m.method)));
@@ -718,19 +738,19 @@ import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(openLog)}, JSON.stri
 async function checkedActions(c: Client, b: Bridge) {
   const forged = { name: 'PRIVATE_FORGED_NAME', href: '/PRIVATE_FORGED_HREF', submitName: 'PRIVATE_FORGED_SUBMIT' };
   for (const selector of ['#plain', '#read-link']) {
-    await result(c, 'click', { tab: 7, selector, checkedDescription: forged, _description: forged });
-    assert.deepEqual(b.calls.at(-1)!.params, { tab: 7, selector,
+    await result(c, 'click', { tab: 7, selector, checkedDescription: forged, _description: forged, browser: { window: 'shared', show: 'front' } });
+    assert.deepEqual(b.calls.at(-1)!.params, { browser: defaultBrowser, tab: 7, selector,
       checkedDescription: { name: 'Read more', href: selector === '#read-link' ? '/article?token=PRIVATE_LINK_QUERY' : '' } },
     'ASSERT_CHECKED_DESCRIPTION: only the observed click name and href reach the extension');
   }
   for (const key of ['Enter', 'Return']) {
     await result(c, 'press', { tab: 7, key, checkedDescription: forged, _description: forged });
-    assert.deepEqual(b.calls.at(-1)!.params, { tab: 7, key, checkedDescription: { submitName: 'Search' } },
+    assert.deepEqual(b.calls.at(-1)!.params, { browser: defaultBrowser, tab: 7, key, checkedDescription: { submitName: 'Search' } },
       'ASSERT_CHECKED_SUBMIT: only the observed submit name reaches the extension');
   }
   for (const [method, params] of [['press', { key: 'Tab' }], ['hover', { selector: '#plain' }]] as [string, IncomingParams][]) {
     await result(c, method, { tab: 7, ...params, checkedDescription: forged });
-    assert.deepEqual(b.calls.at(-1)!.params, { tab: 7, ...params });
+    assert.deepEqual(b.calls.at(-1)!.params, { browser: defaultBrowser, tab: 7, ...params });
   }
   pass('observed-click-and-Enter-descriptions-forward-unspoofed-old-bridge-ignores-new-field');
   const held = await pending(c, await rejected(c, 'click', { selector: '#pay', checkedDescription: { name: 'Read more', href: '' } }, 'held'));
@@ -815,7 +835,7 @@ async function adviceChecks(c: Client, b: Bridge) {
   b.control.resultExtras = undefined;
   const waited = await result(c, 'wait', { text: 'PRIVATE_NEEDLE', timeout: 700 });
   assert.deepEqual(waited, { met: true, ms: 500, url: b.tabs[0].url });
-  assert.deepEqual(b.calls.at(-1)!.params, { tab: 7, text: 'PRIVATE_NEEDLE', timeout: 700 });
+  assert.deepEqual(b.calls.at(-1)!.params, { browser: defaultBrowser, tab: 7, text: 'PRIVATE_NEEDLE', timeout: 700 });
   for (const params of [{}, { text: 'a', url: 'b' }, { text: '' }, { selector: 1 }, { text: 'x', timeout: -1 }, { text: 'x', timeout: 20001 }, { text: 'x', gone: 'true' }, { url: 'x', gone: true }]) {
     await rejected(c, 'wait', params, 'error');
   }
@@ -886,9 +906,13 @@ async function uploadChecks(c: Client, b: Bridge) {
 }
 async function startDaemon() {
   daemon = spawn(process.execPath, [path.join(repo, 'daemon/daemon.ts')], { env });
-  daemon.stderr.on('data', data => { stderr += data; });
-  for (let i = 0; i < 100 && !fs.existsSync(socket) && daemon.exitCode === null; i++) await delay(30);
-  if (!fs.existsSync(socket)) throw new Error('daemon startup failed: ' + stderr);
+  // A Unix socket entry exists after bind, before listen. Wait for THIS child's
+  // listening receipt, including on restart, before connecting any fixture peer.
+  let startup = '';
+  daemon.stderr.on('data', data => { stderr += data; startup += data; });
+  const listening = () => startup.includes(`[gaddi] listening on ${socket}, pid ${daemon.pid}`);
+  for (let i = 0; i < 100 && !listening() && daemon.exitCode === null; i++) await delay(30);
+  if (!listening()) throw new FixtureConnectionError('daemon startup failed: ' + startup);
 }
 async function sessionChecks(c: Client, b: Bridge) {
   // Keep evaluating independent oracles after a failure: mutations must fail EXACTLY one.
@@ -1035,6 +1059,7 @@ async function sessionGrant(c: Client, b: Bridge) {
   const check = async (name: string, fn: () => Promise<void>) => {
     try { await fn(); pass(name); }
     catch (error) {
+      if (error instanceof FixtureConnectionError) throw error;
       failed++; process.exitCode = 1;
       console.log(`FAIL ASSERTION session-grant: ${name}: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}`);
     }
@@ -1472,6 +1497,7 @@ async function remoteApprover(c: Client, b: Bridge) {
   const check = async (name: string, fn: () => Promise<void>) => {
     try { await fn(); pass(name); }
     catch (error) {
+      if (error instanceof FixtureConnectionError) throw error;
       failed++; process.exitCode = 1;
       console.log(`FAIL ASSERTION remote-approver: ${name}: ${error instanceof Error ? error.message.split('\n')[0] : String(error)}`);
     }
@@ -2016,6 +2042,10 @@ try {
   else if (scenario === 'session-grant') await sessionGrant(c, b);
   else if (scenario === 'remote-approver') await remoteApprover(c, b);
   else throw new Error('unknown scenario');
+  if (mode === 'delayed-bind') {
+    assert.match(stderr, /PROBE socket bound; listen delayed/, 'ASSERT_BROKER_READY_ON_RESTART: the bind-before-listen fault ran');
+    pass('ASSERT_BROKER_READY_ON_RESTART');
+  }
   console.log(`== ${scenario} (${mode}): ${passed} passed, ${failed} failed`);
 } catch (e) {
   if (e instanceof assert.AssertionError) { console.log(`FAIL ASSERTION ${scenario}: ${e.message}`); process.exitCode = 1; }

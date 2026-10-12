@@ -15,7 +15,7 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 const execute = promisify(execFile);
 const root = path.resolve('tests/.state/extensions'); fs.mkdirSync(root, { recursive: true });
 const home = fs.mkdtempSync(path.join(root, 'broker-'));
-const socket = `/tmp/gaddi-extensions-${process.pid}.sock`;
+const socket = `${process.env.GADDI_TEST_SOCKET_DIR || '/tmp'}/gaddi-extensions-${process.pid}.sock`;
 const keys = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 fs.writeFileSync(path.join(home, 'approver.pub'), keys.publicKey.export({ type: 'spki', format: 'pem' }));
 const env = { ...process.env, GADDI_HOME: home, GADDI_SOCKET: socket, GADDI_POLICY_OFF: '0',

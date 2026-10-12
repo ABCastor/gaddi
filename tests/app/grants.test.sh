@@ -6,7 +6,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 STATE="$REPO/tests/.state/app-grants-$$"
 mkdir -p "$STATE/src" "$REPO/app/build/module-cache"
-export GADDI_SOCKET="/tmp/gaddi-test-app-grants-$$"
+export GADDI_SOCKET="${GADDI_TEST_SOCKET_DIR:-/tmp}/gaddi-test-app-grants-$$"
 PID=''
 cleanup() { if [[ -n "$PID" ]]; then kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; fi; rm -f "$GADDI_SOCKET"; }
 trap cleanup EXIT

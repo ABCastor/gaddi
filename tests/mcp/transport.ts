@@ -11,7 +11,7 @@ type Scenario = 'fragmented' | 'wrong-id' | 'missing-result' | 'malformed' | 'ov
 let passed = 0, failed = 0, sequence = 0;
 for (const adapter of ['cli', 'reader', 'mcp']) {
   for (const scenario of ['fragmented', 'wrong-id', 'missing-result', 'malformed', 'oversized', 'eof', 'held', 'denied'] as Scenario[]) {
-    const socket = `/tmp/gaddi-transport-${process.pid}-${sequence++}`;
+    const socket = `${process.env.GADDI_TEST_SOCKET_DIR || '/tmp'}/gaddi-transport-${process.pid}-${sequence++}`;
     const connections = new Set<net.Socket>();
     const server = net.createServer(connection => {
       connections.add(connection); connection.once('close', () => connections.delete(connection));
@@ -68,7 +68,7 @@ for (const adapter of ['cli', 'reader', 'mcp']) {
 }
 // Falsy results are valid replies; an unresponsive peer must be closed without replay.
 for (const result of [null, false, 0, 'silent']) {
-  const socket = `/tmp/gaddi-transport-${process.pid}-${sequence++}`;
+  const socket = `${process.env.GADDI_TEST_SOCKET_DIR || '/tmp'}/gaddi-transport-${process.pid}-${sequence++}`;
   let requests = 0;
   let closed!: () => void;
   const disconnected = new Promise<void>(resolve => { closed = resolve; });

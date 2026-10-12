@@ -4,7 +4,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 export GADDI_HOME="$REPO/tests/.state-mcp/server-$$"
 # Keep the private test socket within macOS path limits regardless of checkout length.
-export GADDI_SOCKET="/tmp/gaddi-mcp-$$.sock"
+export GADDI_SOCKET="${GADDI_TEST_SOCKET_DIR:-/tmp}/gaddi-mcp-$$.sock"
 export GADDI_STATE="$GADDI_HOME/state.json"
 export GADDI_AUDIT="$GADDI_HOME/audit.jsonl"
 export GADDI_APPROVER_PUB="$GADDI_HOME/approver.pub"

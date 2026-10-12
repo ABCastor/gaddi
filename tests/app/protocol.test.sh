@@ -3,18 +3,18 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 STATE="$REPO/tests/.state/app-$$"
 mkdir -p "$STATE"
-export GADDI_SOCKET="/tmp/gaddi-test-app-$$-0"
+export GADDI_SOCKET="${GADDI_TEST_SOCKET_DIR:-/tmp}/gaddi-test-app-$$-0"
 export GADDI_FAKE_RECORD="$STATE/calls.jsonl"
 export GADDI_HEADLESS_CHECK_SECONDS=3
 BUNDLE="$(bash "$REPO/app/build.sh")"
 APP="$BUNDLE/Contents/MacOS/Gaddi"
 PID=''
 SOCKET_N=0
-cleanup() { if [[ -n "$PID" ]]; then kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; PID=''; fi; rm -f /tmp/gaddi-test-app-$$-*; }
+cleanup() { if [[ -n "$PID" ]]; then kill "$PID" 2>/dev/null || true; wait "$PID" 2>/dev/null || true; PID=''; fi; rm -f "${GADDI_TEST_SOCKET_DIR:-/tmp}"/gaddi-test-app-$$-*; }
 trap cleanup EXIT
 start_fake() {
   SOCKET_N=$((SOCKET_N+1))
-  export GADDI_SOCKET="/tmp/gaddi-test-app-$$-$SOCKET_N"
+  export GADDI_SOCKET="${GADDI_TEST_SOCKET_DIR:-/tmp}/gaddi-test-app-$$-$SOCKET_N"
   GADDI_FAKE_MODE="$1" node "$REPO/tests/app/fake-daemon.ts" > "$STATE/$1.server.log" 2>&1 &
   PID=$!
   for _ in {1..50}; do

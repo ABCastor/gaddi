@@ -8,7 +8,7 @@ const root = path.resolve('tests/.state');
 fs.mkdirSync(root, { recursive: true });
 const home = fs.mkdtempSync(path.join(root, 'policy-'));
 const overlay = path.join(home, 'policy.json');
-const socket = path.join('/tmp', `gaddi-policy-${process.pid}.sock`);
+const socket = path.join(process.env.GADDI_TEST_SOCKET_DIR || '/tmp', `gaddi-policy-${process.pid}.sock`);
 let count = 0;
 const pass = (name: string) => { count++; console.log(`PASS ${name}`); };
 const write = (value: unknown) => fs.writeFileSync(overlay, JSON.stringify(value));
