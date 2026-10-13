@@ -875,11 +875,6 @@ async function dispatchAction({ method, params = {} }, scope) {
                     await chrome.tabs.remove(tab);
                     closed.push(tab);
                 }
-                else if (params.cleanup === 'discard') {
-                    if (!current.discarded)
-                        await chrome.tabs.discard(tab);
-                    closed.push(tab);
-                }
                 else
                     throw new Error('Invalid cleanup operation');
             }

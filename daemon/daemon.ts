@@ -50,7 +50,6 @@ const sessions = new Map<string, Session>();
 // A tab put in front of the user is his from then on, whichever agent brought it forward.
 const shown = new Set<number>();
 const tabActivity = new Map<number, number>();
-const TAB_DISCARD_MS = 180000;
 const sessionConnections = new WeakMap<Socket, string>();
 const SESSION_LIMIT = 256, SESSION_TAB_LIMIT = 512;
 function positiveMillis(value: string | undefined, fallback: number) {
@@ -749,7 +748,6 @@ async function sweepSessions() {
   const present = new Set(tabList(await bridge.request('chrome.tabs', { browser: policy.browser }, connection)).map(tabId));
   for (const tab of tabActivity.keys()) if (!present.has(tab)) tabActivity.delete(tab);
   const close = new Map<string, { caller: string; tabs: { tab: number; url: string }[] }>();
-  const discard: number[] = [];
   for (const tab of tabs) {
     const id = tabId(tab);
     if (typeof id !== 'number' || shown.has(id)) continue;
@@ -766,10 +764,8 @@ async function sweepSessions() {
       const batch = close.get(key) ?? { caller: session.caller, tabs: [] };
       batch.tabs.push({ tab: id, url: cleanURL(tabURL(tab)) });
       close.set(key, batch);
-    } else if (idle >= TAB_DISCARD_MS && tabFields(tab)?.discarded !== true) discard.push(id);
+    }
   }
-  for (let offset = 0; offset < discard.length; offset += 100)
-    await bridge.request('chrome.cleanup', { tabs: discard.slice(offset, offset + 100), cleanup: 'discard', browser: policy.browser }, connection);
   for (const batch of close.values()) {
     const closed: typeof batch.tabs = [];
     try {

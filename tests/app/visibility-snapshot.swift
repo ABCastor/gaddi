@@ -7,7 +7,7 @@ import Foundation
         var presentations = [[String]]()
         var events = 0
         // Notification delivery is intentionally absent. This is the same state
-        // transition AppController uses to decide whether to foreground its panel.
+        // transition AppController uses to decide whether to present its panel.
         model.onSnapshot = { snapshot in
             if visibility.shouldPresent(snapshot.approvals, busy: false) {
                 let ids = snapshot.approvals.map(\.id)

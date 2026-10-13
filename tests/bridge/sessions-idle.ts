@@ -13,7 +13,6 @@ const attach = source.slice(source.indexOf('  if (event === \'bridge.attach\') {
 const mutations: Record<string, [string, string]> = {
   FIRST_SIGHT: ['tabActivity.set(id, now)', 'tabActivity.set(id, 0)'],
   ORPHAN_CLOSE: ['idle >= SESSION_IDLE_MS', 'false'],
-  DISCARD_TIME: ['idle >= TAB_DISCARD_MS', 'idle >= 0'],
   LIVE_SESSION: ['const live = owners.some(owner => !expired(owner));', 'const live = false;'],
   TAB_CLOCK: ["if (typeof args.tab === 'number') tabActivity.set(args.tab, Date.now());", 'void args.tab;'],
   OPEN_CLOCK: ['tabActivity.set(meta.tab, Date.now());', 'void meta.tab;'],
@@ -41,7 +40,7 @@ const test = async (name: string, fn: () => Promise<void>) => {
 };
 function fixture() {
   let now = 10000000;
-  const tabs = new Map<number, { id: number; url: string; discarded?: boolean }>();
+  const tabs = new Map<number, { id: number; url: string }>();
   const sessions = new Map<string, { caller: string; owned: Set<number>; lastActivity: number; endedAt?: number }>();
   const tabActivity = new Map<number, number>(), shown = new Set<number>();
   const calls: { method: string; params: any }[] = [], audits: any[] = [];
@@ -55,10 +54,8 @@ function fixture() {
       if (method === 'chrome.cleanup') {
         assert.ok(params.tabs.length <= 100, 'bridge batch cap');
         if (failClose && params.cleanup === 'close') return { closed: [], failed: params.tabs };
-        for (const id of params.tabs) {
-          if (params.cleanup === 'close') tabs.delete(id);
-          else tabs.get(id)!.discarded = true;
-        }
+        assert.equal(params.cleanup, 'close', 'idle maintenance only closes eligible tabs');
+        for (const id of params.tabs) tabs.delete(id);
         return { closed: params.tabs, failed: [] };
       }
       if (method === 'chrome.open') { const tab = { id: 100, url: params.url }; tabs.set(100, tab); return tab; }
@@ -68,7 +65,7 @@ function fixture() {
   };
   const world = vm.createContext({
     Date: class extends Date { static now() { return now; } }, bridge, policy, sessions, tabActivity, shown, isRecord,
-    SESSION_IDLE_MS: 900000, SESSION_END_MS: 120000, TAB_DISCARD_MS: 180000, SESSION_TAB_LIMIT: 512,
+    SESSION_IDLE_MS: 900000, SESSION_END_MS: 120000, SESSION_TAB_LIMIT: 512,
     tabList: (result: any) => result.tabs, tabFields: (tab: any) => tab, tabId: (tab: any) => tab.id,
     tabURL: (tab: any) => tab.url, tabObject: (tab: any) => tab, cleanURL: (url: string) => url.split('?')[0],
     audit: (entry: any) => audits.push(entry), sweepSharedSessions: async () => { sharedCalls++; },
@@ -92,25 +89,22 @@ function fixture() {
   };
 }
 await test('FIRST_SIGHT', async () => {
-  const f = fixture();f.add(1);await f.sweep();assert.equal(f.tabs.size, 1);assert.ok(!f.tabs.get(1)!.discarded);
+  const f = fixture();f.add(1);await f.sweep();assert.equal(f.tabs.size, 1);
   f.advance(899999);await f.sweep();assert.equal(f.tabs.size, 1);
+  assert.ok(f.calls.every(call => !call.params.cleanup), 'no mutation before the idle close threshold');
 });
 await test('ORPHAN_CLOSE', async () => {
   const f = fixture();f.add(1);await f.sweep();f.advance(900000);await f.sweep();assert.equal(f.tabs.size, 0);
   assert.deepEqual(JSON.parse(JSON.stringify(f.audits[0].tabs)),[{tab:1,url:'https://fixture.test/1'}]);
 });
-await test('DISCARD_TIME', async () => {
-  const f = fixture();f.add(1);await f.sweep();f.advance(179999);await f.sweep();assert.ok(!f.tabs.get(1)!.discarded);
-  f.advance(1);await f.sweep();assert.equal(f.tabs.get(1)!.discarded,true);assert.equal(f.tabs.size,1);
-});
 await test('LIVE_SESSION', async () => {
   const f = fixture();f.add(1);await f.sweep();f.advance(900001);
   f.sessions.set('live',{caller:'agent',owned:new Set([1]),lastActivity:f.now()});
-  await f.sweep();assert.equal(f.tabs.size,1);assert.equal(f.tabs.get(1)!.discarded,true);
+  await f.sweep();assert.equal(f.tabs.size,1);
 });
 await test('TAB_CLOCK', async () => {
-  const f = fixture();f.add(1);f.add(2);await f.sweep();f.advance(179999);await f.action('eval',1);
-  f.advance(1);await f.sweep();assert.ok(!f.tabs.get(1)!.discarded);assert.equal(f.tabs.get(2)!.discarded,true);
+  const f = fixture();f.add(1);f.add(2);await f.sweep();f.advance(899999);await f.action('eval',1);
+  f.advance(1);await f.sweep();assert.ok(f.tabs.has(1));assert.ok(!f.tabs.has(2));
 });
 await test('OPEN_CLOCK', async () => {
   const f = fixture();await f.action('open');assert.equal(f.tabActivity.get(100),f.now());
@@ -120,7 +114,7 @@ await test('REATTACH_CLOCK', async () => {
   f.advance(900000);await f.sweep();assert.equal(f.tabs.size,0);
 });
 await test('SHOWN', async () => {
-  const f = fixture();f.add(1);f.shown.add(1);await f.sweep();f.advance(900001);await f.sweep();assert.equal(f.tabs.size,1);assert.ok(!f.tabs.get(1)!.discarded);
+  const f = fixture();f.add(1);f.shown.add(1);await f.sweep();f.advance(900001);await f.sweep();assert.equal(f.tabs.size,1);
 });
 await test('END_GRACE', async () => {
   const f = fixture();f.add(1);f.sessions.set('ended',{caller:'agent',owned:new Set([1]),lastActivity:f.now(),endedAt:f.now()});

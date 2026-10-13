@@ -39,7 +39,7 @@ const linkMutations: Record<string, [string, string, string]> = {
   OWNER_UNGROUP: ['windows', 'if (previous && previous.groupId !== change.groupId) void cleanupTabs(tab).catch(() => {});', 'void previous;'],
   AGENT_REGROUP: ['windows', 'change.groupId === undefined || groupingTabs.has(tab)', 'change.groupId === undefined'],
   CLEANUP_GROUPED: ['bg', 'if (!await agentWindow.isAgent(await getTab(id))) await agentWindow.cleanupTabs(id);', 'void id;'],
-  DISCARD_TARGET: ['windows', 'currentAnchor ? `tab:${currentAnchor}:${tab.id}` : undefined', 'undefined'],
+  CLEANUP_NO_TARGET: ['windows', 'currentAnchor ? `tab:${currentAnchor}:${tab.id}` : undefined', 'undefined'],
   CLEANUP_RESTART: ['windows', 'scopes = stored.scopes as Record<string, TabScope>;', 'scopes = {};'],
   CLEANUP_RECHECK: ['bg', '(await agentWindow.cleanupTabs()).find(candidate => candidate.id === tab)', 'eligible.find(candidate => candidate.id === tab)'],
   RELOAD_DISCARDED: ['bg', "current.discarded && browser.window === 'own' && await agentWindow.isAgent(current)", 'false'],
@@ -121,7 +121,6 @@ const chrome = {
       if(holdCreation&&options.url==='about:blank')await new Promise<void>(resolve=>{releaseCreation=resolve;});
       return {...tab};
     },
-    discard:async(id:number)=>{tabs.get(id).discarded=true;return {...tabs.get(id)};},
     reload:async(id:number)=>{
       Object.assign(tabs.get(id),{discarded:false,status:'loading'});
       setTimeout(()=>{tabs.get(id).status='complete';chrome.tabs.onUpdated.emit(id,{status:'complete'});},20);
@@ -404,10 +403,8 @@ try {
   });
   await linkTest('CLEANUP_SHOWN',async()=>{
     const agent=await fixture();await call('chrome.show',{tab:agent.id});
-    for(const cleanup of ['discard','close']) {
-      const result=await call('chrome.cleanup',{tabs:[agent.id],cleanup});
-      assert.equal(result.closed.length,0);assert.ok(tabs.has(agent.id));assert.notEqual(tabs.get(agent.id).discarded,true);
-    }
+    const result=await call('chrome.cleanup',{tabs:[agent.id],cleanup:'close'});
+    assert.equal(result.closed.length,0);assert.ok(tabs.has(agent.id));
   });
   await linkTest('SHOW_INTERRUPTED',async()=>{
     const agent=await fixture();const update=chrome.windows.update;
@@ -423,14 +420,14 @@ try {
   });
   await linkTest('CLEANUP_FOCUS',async()=>{
     const agent=await fixture();tabs.get(agent.id).active=true;windows.get(agent.windowId).focused=true;
-    for(const cleanup of ['discard','close'])assert.equal((await call('chrome.cleanup',{tabs:[agent.id],cleanup})).closed.length,0);
-    assert.ok(tabs.has(agent.id));assert.notEqual(tabs.get(agent.id).discarded,true);
+    assert.equal((await call('chrome.cleanup',{tabs:[agent.id],cleanup:'close'})).closed.length,0);
+    assert.ok(tabs.has(agent.id));
   });
   await linkTest('CLEANUP_AGENT',async()=>{
     await fixture();tabs.get(1).active=false;
     assert.ok(!(await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===1));
-    const result=await call('chrome.cleanup',{tabs:[1],cleanup:'discard'});
-    assert.equal(result.closed.length,0);assert.notEqual(tabs.get(1).discarded,true);
+    const result=await call('chrome.cleanup',{tabs:[1],cleanup:'close'});
+    assert.equal(result.closed.length,0);assert.ok(tabs.has(1));
     // Agent markers in the owner's other windows are recognisable orphans too.
     const marked=++nextTab;tabs.set(marked,{id:marked,windowId:1,active:false,groupId:++nextGroup,url:'http://localhost/orphan'});
     groups.set(nextGroup,{id:nextGroup,windowId:1,title:'● Orphan'});
@@ -438,7 +435,7 @@ try {
   });
   await linkTest('CLEANUP_PLACEHOLDER',async()=>{
     const agent=await fixture();const placeholder=[...tabs.values()].find(tab=>tab.windowId===agent.windowId&&tab.url.endsWith('placeholder.html'));
-    for(const cleanup of ['discard','close'])assert.equal((await call('chrome.cleanup',{tabs:[placeholder.id],cleanup})).closed.length,0);
+    assert.equal((await call('chrome.cleanup',{tabs:[placeholder.id],cleanup:'close'})).closed.length,0);
     assert.ok(tabs.has(placeholder.id));
   });
   await linkTest('OWNER_UNGROUP',async()=>{
@@ -456,8 +453,8 @@ try {
     await fixture();await call('chrome.group',{tabs:[1],group:'● Owner grouped'});
     assert.ok(!(await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===1));
   });
-  await linkTest('DISCARD_TARGET',async()=>{
-    const agent=await fixture();await call('chrome.cleanup',{tabs:[agent.id],cleanup:'discard'});
+  await linkTest('CLEANUP_NO_TARGET',async()=>{
+    const agent=await fixture();tabs.get(agent.id).discarded=true;
     const legacy=++nextTab;tabs.set(legacy,{id:legacy,windowId:agent.windowId,active:false,discarded:true,url:'http://localhost/legacy'});
     const getTargets=chrome.debugger.getTargets;
     chrome.debugger.getTargets=async()=> (await getTargets()).filter(target=>target.tabId!==agent.id&&target.tabId!==legacy);
@@ -487,15 +484,16 @@ try {
   });
   await linkTest('RELOAD_DISCARDED',async()=>{
     const agent=await fixture();
-    assert.equal((await call('chrome.cleanup',{tabs:[agent.id],cleanup:'discard'})).closed.join(','),String(agent.id));
+    // Chrome may discard a tab independently of Gaddi.
+    tabs.get(agent.id).discarded=true;
     assert.equal(tabs.get(agent.id).discarded,true);
     const before=windowUpdates.length;await call('chrome.eval',{tab:agent.id,expression:'1'});
     assert.equal(tabs.get(agent.id).discarded,false);assert.equal(windowUpdates.length,before);
-    await call('chrome.cleanup',{tabs:[agent.id],cleanup:'discard'});
+    tabs.get(agent.id).discarded=true;
     assert.equal((await call('chrome.cleanup',{tabs:[agent.id],cleanup:'close'})).closed.join(','),String(agent.id));
   });
   await linkTest('RELOAD_READY',async()=>{
-    const agent=await fixture();await call('chrome.cleanup',{tabs:[agent.id],cleanup:'discard'});
+    const agent=await fixture();tabs.get(agent.id).discarded=true;
     await call('chrome.eval',{tab:agent.id,expression:'1'});assert.equal(tabs.get(agent.id).status,'complete');
   });
   await linkTest('EXTERNAL_LINK',async()=>{

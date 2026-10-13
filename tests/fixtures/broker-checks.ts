@@ -193,8 +193,7 @@ async function fakeBridge() {
           for (const id of msg.params.tabs ?? []) {
             const current = eligible.find(tab => tab.id === id);
             if (!current) { closed.failed.push({ tab: id, reason: 'Protected owner tab' }); continue; }
-            if (msg.params.cleanup === 'discard') current.discarded = true;
-            else tabs.splice(tabs.findIndex(tab => tab.id === id), 1);
+            tabs.splice(tabs.findIndex(tab => tab.id === id), 1);
             closed.closed.push(id);
           }
           result = closed; break;

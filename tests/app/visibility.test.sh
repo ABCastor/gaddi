@@ -3,6 +3,12 @@ set -euo pipefail
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 STATE="$REPO/tests/.state/app-visibility-$$"
 mkdir -p "$STATE" "$REPO/app/build/module-cache"
+node "$REPO/tests/app/background.ts"
+if node "$REPO/tests/app/background.ts" AUTO_FOCUS > "$STATE/focus-mutation.log" 2>&1; then
+  echo 'FAIL automatic focus mutation passed'; exit 1
+fi
+grep -Fq 'automatic approval presentation must not take focus' "$STATE/focus-mutation.log"
+echo 'FALSIFIED automatic focus: routing automatic presentation through the explicit activating open fails the focus check'
 compile() {
   DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun swiftc -swift-version 5 \
     -module-cache-path "$REPO/app/build/module-cache" -framework AppKit -framework CryptoKit \
@@ -23,5 +29,5 @@ compile "$STATE/Protocol.swift" "$STATE/no-presentation"
 if "$STATE/no-presentation" > "$STATE/mutation.log" 2>&1; then
   echo 'FAIL invisible approval mutation passed'; exit 1
 fi
-grep -Fq 'FAIL pending snapshot foregrounds even without notifications or events' "$STATE/mutation.log"
+grep -Fq 'FAIL pending snapshot presents even without notifications or events' "$STATE/mutation.log"
 echo 'FALSIFIED invisible approvals: suppressing automatic presentation fails the original notification-independent visibility path'

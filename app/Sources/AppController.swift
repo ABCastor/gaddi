@@ -143,7 +143,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     private func presentPendingApprovals() {
         guard connected else { return }
         // A launch or notification ID is just a selection hint. Only the broker's
-        // current, unexpired pending list may cause an automatic foreground window.
+        // current, unexpired pending list may open the selected request.
         if let id = launchRequestID, !busy {
             launchRequestID = nil
             if snapshot.approvals.contains(where: { $0.id == id && !$0.expired }) {
@@ -155,19 +155,24 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         }
         if visibility.shouldPresent(snapshot.approvals, busy: busy) {
             requestedID = nil
-            openApprovals()
+            showApprovals()
         }
     }
     @objc private func openApprovals() {
+        showApprovals()
+        approvalsPanel?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+    }
+    private func showApprovals() {
         if approvalsPanel == nil {
             let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 600, height: 620),
-                                styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
+                                styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)
             panel.title = "Gaddi"; panel.titlebarAppearsTransparent = true
+            panel.hidesOnDeactivate = false
             panel.backgroundColor = Palette.paper; panel.isReleasedWhenClosed = false
             panel.minSize = NSSize(width: 480, height: 320); panel.center(); approvalsPanel = panel
         }
         renderApprovals()
-        approvalsPanel?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        approvalsPanel?.orderFrontRegardless()
     }
     private func renderApprovals() {
         guard let panel = approvalsPanel else { return }

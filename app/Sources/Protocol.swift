@@ -215,7 +215,7 @@ struct Snapshot: Equatable {
 }
 
 /// Visibility follows authoritative pending snapshots, never notification delivery.
-/// An unchanged poll cannot take focus again after the owner closes the panel.
+/// An unchanged poll cannot reopen the panel after the owner closes it.
 struct PendingApprovalVisibility {
     private var presented = Set<String>()
     mutating func shouldPresent(_ approvals: [Approval], busy: Bool, now: Date = Date()) -> Bool {
