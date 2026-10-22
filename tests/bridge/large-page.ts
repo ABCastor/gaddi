@@ -1,6 +1,7 @@
 import type { BrowserContext, Worker } from 'playwright-core';
 import type { FakeDaemon } from './fake-daemon.ts';
 import assert from 'node:assert/strict';
+import os from 'node:os';
 import { callsFor } from './extension-types.ts';
 import { waitFor } from './fake-daemon.ts';
 import { pageTask } from '../../extension/content.ts';
@@ -92,10 +93,12 @@ export async function largePage({ context, worker, daemon, url, pass }: {
       ['hover', '#heading', false], ['click', '#noop', false], ['click', '#toggle', true],
     ] as const) {
       // Wall time on a shared Mac includes renderer starvation: the same page work has run
-      // 6x slower in one sample (1299 ms vs a ~200 ms median, 21 Oct 2026). A slower Gaddi
-      // slows every attempt, so the bound holds when one of three fresh tabs meets it.
+      // 6x slower in one sample (1299 ms vs a ~200 ms median, 21 Oct 2026), and macOS's own
+      // night jobs (media analysis) starve it for minutes. A slower Gaddi slows every attempt,
+      // so the bound holds when one fresh tab meets it; attempts back off 2-10 s between them.
       const attempts: number[] = [];
-      for (let attempt = 0; attempt < 3 && !attempts.some(ms => ms < 600); attempt++) {
+      for (let attempt = 0; attempt < 6 && !attempts.some(ms => ms < 600); attempt++) {
+        if (attempt) await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
       const fragment = `${selector.slice(1)}${attempt ? `~${attempt}` : ''}`;
       const tab = (await call('chrome.open', { url: `${url}large.html#${fragment}` })).id;
       const page = await waitFor(() => context.pages().find(p => p.url().endsWith(`large.html#${fragment}`)), 'large fixture');
@@ -121,7 +124,7 @@ export async function largePage({ context, worker, daemon, url, pass }: {
           func: () => (globalThis as unknown as { largeTiming: { signatures: unknown[]; stages: unknown[]; frameAt: number } }).largeTiming });
         return { costs, signatures: page.result!.signatures, stages: page.result!.stages, firstFrameMs: page.result!.frameAt - probe.enabledAt };
       }, tab);
-      console.log(`LARGE_PAGE ${JSON.stringify({ action, selector, ms, reply, initial, timing })}`);
+      console.log(`LARGE_PAGE ${JSON.stringify({ action, selector, attempt, load: os.loadavg()[0], ms, reply, initial, timing })}`);
       // Without a page version the 300 ms after-input check went unanswered and Gaddi
       // reports changed: true by design; only a confirmed answer is evidence either way.
       const confirmed = typeof reply.version === 'string';
@@ -182,12 +185,13 @@ export async function largePage({ context, worker, daemon, url, pass }: {
   await page.evaluate(() => { document.querySelector<HTMLElement>('#heading')!.style.visibility = 'hidden'; });
   assert.equal(await snapshot(), beforeStyle, 'CSS-only visibility is outside the textContent signature');
   // A busy page can leave the after-input check unanswered (no version, changed: true by
-  // design); ask again, up to three times, until Gaddi confirms the outcome.
+  // design); ask again with the same back-off until Gaddi confirms the outcome.
   const confirmedOutcome = async (act: () => Promise<{ changed?: boolean; version?: string }>) => {
     for (let attempt = 0; ; attempt++) {
+      if (attempt) await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
       await page.evaluate(() => scrollTo(0, 0));
       const reply = await act();
-      if (typeof reply.version === 'string' || attempt === 2) return reply;
+      if (typeof reply.version === 'string' || attempt === 5) return reply;
     }
   };
   const typed = await confirmedOutcome(() => call('chrome.type', { tab, selector: '#same-value', text: 'unchanged' }));
