@@ -72,7 +72,7 @@ function fixture() {
     forgetClosed: (ids: number[]) => { for (const id of ids) { tabActivity.delete(id); shown.delete(id); for (const session of sessions.values()) session.owned.delete(id); } },
     touchSession: () => { const session = { caller: 'agent', owned: new Set<number>(), lastActivity: now }; sessions.set('action', session); return session; },
     noEffects: new Map(), navigationURL: (url: string) => url, groupTitle: () => '● Fixture',
-    requiredString: (value: string) => value, gate: async () => {}, checkNavigation: () => ({}), checkEval: () => ({}),
+    requiredString: (value: string) => value, gate: async () => {}, checkNavigation: () => ({}), zoneNavigation: (check: unknown) => check, checkEval: () => ({}),
     signinSecrets: { redact: (value: unknown) => value },
   });
   vm.runInContext(code, world);
