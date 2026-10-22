@@ -543,7 +543,8 @@ function requestGrant(params: IncomingParams) {
     if (!isGrantSpec(spec)) continue;
     for (const rule of spec.rules) if (!zoneCoversRule(policy, rule)) union.set(ruleString(rule), rule);
     longest = Math.max(longest, spec.minutes);
-    label ??= spec.label;
+    // A label describes the request it came with; when folded requests say different things, the card shows none.
+    if (spec.label !== label) label = undefined;
   }
   const folded = union.size <= max;
   const rules = folded ? [...union].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, rule]) => rule) : needed;

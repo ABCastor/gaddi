@@ -196,18 +196,19 @@ export function checkGrant(grants: readonly Grant[], policy: Policy, pageURL: st
 // "Post and pay" and a link leaving the zone all stay held. Only the owner's signed choice puts a site in the list.
 const ZONE = { id: 'zone' };
 export function zoneCovers(policy: Policy, target: URL) {
-  return (policy.zones?.sites ?? []).includes(target.origin) && grantableAddress(target);
+  return (policy.zones?.sites ?? []).includes(target.origin) && grantableAddress(target) && !protectedAddress(policy, target);
 }
 export function checkZone(policy: Policy, pageURL: string, check: PolicyCheck, scope: GrantScope): PolicyCheck & { zone?: string } {
   if (check.outcome !== 'hold' || !(policy.zones?.sites ?? []).length) return check;
-  const decision = waive((_needed, target) => zoneCovers(policy, target) ? ZONE : undefined, policy, pageURL, check, scope);
+  // Defence in depth: the zone answers only for the three grantable permissions, whatever waive asks.
+  const decision = waive((needed, target) => isPermission(needed) && zoneCovers(policy, target) ? ZONE : undefined, policy, pageURL, check, scope);
   if (decision.outcome !== 'allow') return check;
   return { outcome: 'allow', reason: 'test zone', zone: new URL(pageURL).origin };
 }
 // Whether a grant rule asks for nothing a test zone does not already give.
 export function zoneCoversRule(policy: Policy, rule: GrantRule) {
   const url = parseURL(rule.origin + rule.path);
-  return !!url && zoneCovers(policy, url) && !protectedAddress(policy, url);
+  return !!url && zoneCovers(policy, url);
 }
 
 // The addresses a grant rule can name: https, or http on this Mac, with no credentials in the address (parseRule

@@ -88,9 +88,7 @@ struct Approval: Equatable {
     /// checks every site again (protected sites and addresses are refused there).
     var zoneSites: [String] {
         func origin(_ text: String) -> String? {
-            guard let url = URL(string: text), let scheme = url.scheme, let host = url.host,
-                  scheme == "https" || scheme == "http" && ["localhost", "127.0.0.1"].contains(host) else { return nil }
-            return "\(scheme)://\(host)\(url.port.map { ":\($0)" } ?? "")"
+            zoneOrigin(text)
         }
         if kind == "grant" {
             // Rule lines read "post on app.todoist.com/x" (https implied) or "post on http://localhost:3000".
@@ -134,6 +132,15 @@ struct Approval: Equatable {
 func signinRevokeMessage(site: String, timestamp: Int64) throws -> String {
     guard !site.isEmpty, !site.contains("|") else { throw AppError("Invalid sign-in origin") }
     return "signin.revoke|\(site)|\(timestamp)"
+}
+
+/// The exact origin the broker would name for an address (lowercase host, default port dropped), or nil when a
+/// test zone could never cover it.
+func zoneOrigin(_ text: String) -> String? {
+    guard let url = URL(string: text), let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased(),
+          scheme == "https" || scheme == "http" && ["localhost", "127.0.0.1"].contains(host) else { return nil }
+    let port = url.port.flatMap { (scheme == "https" && $0 == 443) || (scheme == "http" && $0 == 80) ? nil : $0 }
+    return "\(scheme)://\(host)\(port.map { ":\($0)" } ?? "")"
 }
 
 /// TEST-ZONE: what Touch ID signs to make a whole site a test zone.

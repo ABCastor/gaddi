@@ -524,8 +524,8 @@ final class ZoneList: NSStackView {
         let button = PanelButton("Add test zone", kind: .secondary, symbol: "touchid") { [weak self] in
             guard let self else { return }
             let text = self.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard let url = URL(string: text.contains("://") ? text : "https://" + text), let scheme = url.scheme, let host = url.host else { return }
-            add("\(scheme)://\(host)\(url.port.map { ":\($0)" } ?? "")")
+            guard let site = zoneOrigin(text.contains("://") ? text : "https://" + text) else { return }
+            add(site)
         }
         field.isEnabled = canAdd; button.isEnabled = canAdd
         let row = NSStackView(views: [field, button]); row.spacing = 12; row.alignment = .centerY

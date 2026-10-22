@@ -310,8 +310,9 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     private func notify(_ approval: Approval) {
         // One banner per agent, replaced as its requests arrive, so a burst is one notification, not a flood.
         let waiting = snapshot.approvals.filter { $0.caller == approval.caller && !$0.expired }.count
+        let caller = approval.caller.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) && !(0x202A...0x202E).contains($0.value) && !(0x2066...0x2069).contains($0.value) }.map(String.init).joined()
         let content = UNMutableNotificationContent()
-        content.title = waiting > 1 ? "\(approval.caller) has \(waiting) requests waiting" : approval.notification()
+        content.title = waiting > 1 ? "\(caller) has \(waiting) requests waiting" : approval.notification()
         content.body = (waiting > 1 ? "Latest: " + approval.notification() + "." : ApprovalWords.reason(approval.reason)) + " Open Gaddi to decide."
         content.sound = waiting > 1 ? nil : .default
         content.userInfo = ["id": approval.id]
@@ -427,7 +428,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     }
     private func addZones(_ sites: [String], answering approval: Approval?) {
         guard !sites.isEmpty else { return }
-        let named = sites.map(ApprovalWords.host).joined(separator: ", ")
+        let named = sites.joined(separator: ", ")
         authenticated(reason: "Make \(named) a test zone: agents upload, post and delete there without asking until you remove it") { [self] context in
             var refused: [String] = []
             for site in sites {
@@ -437,6 +438,9 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
                     _ = try model.client.call("zones.add", ["site": site, "proof": ["ts": ts, "sig": signed.signature.base64EncodedString()]])
                 } catch { refused.append(ApprovalWords.host(site)) }
             }
+            // Fail first: the owner chose standing test authority, so a one-time action is approved only when every
+            // site really became a zone.
+            if !refused.isEmpty { throw AppError("\(refused.joined(separator: ", ")) cannot be a test zone (a protected site, or not a whole https site); nothing was approved") }
             // A grant request the zones now cover is closed by the broker. A one-time action is approved too, so the
             // agent's retry with its id goes through; the zone answers every later one.
             if let approval, approval.kind != "grant" {
@@ -450,7 +454,6 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
                         "proof": ["ts": ts, "sig": signed.signature.base64EncodedString()]])
                 }
             }
-            if !refused.isEmpty { throw AppError("\(refused.joined(separator: ", ")) cannot be a test zone (a protected site, or not a whole https site)") }
         }
     }
     private func removeZone(_ site: String) {

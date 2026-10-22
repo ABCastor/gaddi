@@ -67,7 +67,7 @@ const table = {
     'function persistable() { return [...entries.values()]; }']],
   CLEAN_GRANT: ['ASSERT_GRANT_DETAIL', ['daemon/approvals.ts', "detail: kind === 'grant' ? detail : cleanDetail(detail),", 'detail: cleanDetail(detail),']],
   FOLD: ['ASSERT_GRANT_FOLD', ['daemon/daemon.ts', 'const folded = union.size <= max;', 'const folded = false;']],
-  ZONE: ['ASSERT_ZONE', ['daemon/grants.ts', 'return (policy.zones?.sites ?? []).includes(target.origin) && grantableAddress(target);', 'return grantableAddress(target);']],
+  ZONE: ['ASSERT_ZONE', ['daemon/grants.ts', 'return (policy.zones?.sites ?? []).includes(target.origin) && grantableAddress(target) && !protectedAddress(policy, target);', 'return grantableAddress(target) && !protectedAddress(policy, target);']],
   ZONE_WAIVE: ['ASSERT_ZONE', ['daemon/grants.ts', 'if (decision.outcome !== \'allow\') return check;\n  return { outcome: \'allow\', reason: \'test zone\'', 'if (false) return check;\n  return { outcome: \'allow\', reason: \'test zone\'']],
   EXPIRY: ['ASSERT_GRANT_EXPIRY', ['daemon/grants.ts', 'expiresAt: created + spec.minutes * minuteMs };', 'expiresAt: created + spec.minutes * minuteMs * 1000 };']],
   LIST: ['ASSERT_GRANT_LIST', ['daemon/grants.ts', 'mine: mine !== undefined && grant.session === mine });', 'mine: true });']],
