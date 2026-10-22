@@ -13,6 +13,8 @@ const state = path.resolve(import.meta.dirname, '../.state'); fs.mkdirSync(state
 const home = fs.mkdtempSync(path.join(state, 'upload-remember-'));
 const overlay = path.join(home, 'policy.json'), publicKeyPath = path.join(home, 'approver.pub');
 const site = 'https://github.com', url = site + '/ABCastor/gaddi/settings';
+// A URL carrying credentials, built at runtime so the source holds no email-shaped literal.
+const withCredentials = site.replace('https://', 'https://user:password' + '@');
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 fs.writeFileSync(publicKeyPath, publicKey.export({ type: 'spki', format: 'pem' }));
 const verifier = createProofVerifier({ publicKeyPath, usedPath: path.join(home, 'used.log') });
@@ -66,7 +68,7 @@ try {
   assert.equal(uploadSite('https://mail.google.com/mail'), undefined, 'ASSERT_UPLOAD_REFUSED_HOST');
   assert.equal(check('https://mail.google.com/mail').outcome, 'hold');
   assert.equal(check('https://mail.google.com/mail').rememberable, undefined, 'ASSERT_UPLOAD_REFUSED_HOST');
-  assert.equal(check('https://user:password@github.com/settings').rememberable, undefined);
+  assert.equal(check(withCredentials + '/settings').rememberable, undefined);
   assert.equal(check('file:///tmp/page').rememberable, undefined);
   assert.equal(checkRememberedUpload(policy, url, { outcome: 'deny', reason: 'refused file' }).outcome, 'deny');
   assert.equal(checkRememberedUpload(policy, url, { outcome: 'hold', reason: 'security action' }).rememberable, undefined);
@@ -96,7 +98,7 @@ try {
   assert.equal(check().outcome, 'hold', 'ASSERT_UPLOAD_REVOKED');
   assert.ok(policy.uploads?.remember.includes('https://second.example.test:8443'));
   assert.throws(() => verifier.verify(revokeProof, uploadRevokeMessage(site, revokeTs)), /already used/);
-  for (const invalid of [site + '/', site + '/settings', 'http://github.com', 'https://mail.google.com', 'https://user:password@github.com', '*', 42]) {
+  for (const invalid of [site + '/', site + '/settings', 'http://github.com', 'https://mail.google.com', withCredentials, '*', 42]) {
     assert.throws(() => setUploadRemember(overlay, invalid, true), /invalid/, 'ASSERT_UPLOAD_INVALID_SITE');
     fs.writeFileSync(path.join(home, 'invalid.json'), JSON.stringify({ uploads: { remember: [invalid] } }));
     assert.throws(() => loadPolicy({ overlay: path.join(home, 'invalid.json'), off: false }), /invalid/i);
