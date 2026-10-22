@@ -19,12 +19,12 @@ for _ in {1..50}; do
 done
 [[ -S "$GADDI_SOCKET" ]] || { echo 'FAIL fake daemon did not start'; exit 1; }
 primitives() {
-  DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun swiftc -swift-version 5 \
+  DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun swiftc -whole-module-optimization -swift-version 5 \
     -module-cache-path "$REPO/app/build/module-cache" -framework CryptoKit \
     "$1/SocketClient.swift" "$1/Protocol.swift" "$1/ApprovalCard.swift" "$REPO/app/Tests/main.swift" -o "$2"
 }
 card() {
-  DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun swiftc -swift-version 5 \
+  DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun swiftc -whole-module-optimization -swift-version 5 \
     -module-cache-path "$REPO/app/build/module-cache" \
     -framework AppKit -framework CryptoKit -framework LocalAuthentication -framework Security -framework UserNotifications \
     "$1/SocketClient.swift" "$1/Protocol.swift" "$1/SigningKey.swift" "$1/ApprovalCard.swift" "$1/AppController.swift" \

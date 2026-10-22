@@ -5,12 +5,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import net from 'node:net';
 import { EventEmitter } from 'node:events';
+import { useFixtureOwnerHome } from '../fixtures/owner-home.ts';
 import { approvalMessage, uploadRevokeMessage } from '../../daemon/proof.ts';
 import type { StoredApproval } from '../../daemon/approvals.ts';
 import type { BrokerParams, ChromeRequest, Reply } from '../../shared/protocol.ts';
 
 const state = path.resolve(import.meta.dirname, '../.state'); fs.mkdirSync(state, { recursive: true });
 const home = fs.mkdtempSync(path.join(state, 'upload-wire-'));
+const restoreOwnerHome = useFixtureOwnerHome(home);
+const outside = fs.mkdtempSync(path.join(state, 'upload-outside-'));
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 fs.writeFileSync(path.join(home, 'approver.pub'), publicKey.export({ type: 'spki', format: 'pem' }));
 Object.assign(process.env, { GADDI_HOME: home, GADDI_SOCKET: path.join(home, 'socket.fixture'), GADDI_POLICY_OFF: '0',
@@ -80,6 +83,12 @@ try {
     const list = await result('approvals.list') as { pending: StoredApproval[] };
     const approval = list.pending.find(a => a.id === reply.error?.approval?.id); assert.ok(approval); return approval;
   }
+  const outsideImage = path.join(outside, 'preview.png'); fs.writeFileSync(outsideImage, 'outside fixture image');
+  const outsideReply = await call('upload', { ...uploadParams, path: outsideImage });
+  assert.equal(outsideReply.error?.code, 'denied', 'ASSERT_UPLOAD_WIRE_OUTSIDE_HOME');
+  assert.equal(outsideReply.error?.approval, undefined); assert.equal(dispatched.length, 0);
+  assert.deepEqual((await result('approvals.list') as { pending: StoredApproval[] }).pending, []);
+  pass('a file outside the fixture home is refused before approval or dispatch');
   assert.deepEqual(await result('uploads.remembered'), { sites: [] });
   const approval = await held();
   assert.equal(approval.rememberable, true, 'ASSERT_UPLOAD_WIRE_REMEMBERABLE'); assert.equal(approval.site, site);
@@ -129,5 +138,7 @@ try {
 } finally {
   Object.defineProperty(net, 'createServer', { configurable: true, value: createServer });
   for (const conn of sockets) conn.destroy();
+  restoreOwnerHome();
+  fs.rmSync(outside, { recursive: true, force: true }); // Only this disposable fixture.
   fs.rmSync(home, { recursive: true, force: true }); // Only this disposable fixture.
 }

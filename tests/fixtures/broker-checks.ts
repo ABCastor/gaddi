@@ -1386,17 +1386,28 @@ async function sessionGrant(c: Client, b: Bridge) {
     assert.equal(await outcome(upload(session)), 'held');
   });
 
-  await check('ASSERT_GRANT_ONE_OPEN', async () => {
+  // BR-GADDI-QUEUE: owner observation in the R20-GADDI canonical note, 18 October.
+  await check('ASSERT_GRANT_QUEUE', async () => {
     const session = await liveSession();
-    const rules = [`upload ${SHOP}`];
-    const first = (await ask(session, rules, 30)).error, again = (await ask(session, rules, 30)).error, changed = (await ask(session, rules, 45)).error;
-    assert.equal(first?.code, 'held');
-    assert.equal(again?.approval?.id, first?.approval?.id, 'the same request returns the same pending record');
-    assert.notEqual(changed?.approval?.id, first?.approval?.id, 'a changed request is a new record');
+    const queued: PublicApproval[] = [];
+    for (let i = 0; i < 7; i++) queued.push(await asked(await ask(session, [`post ${SHOP}/queue-${i}`], 30 + i)));
+    assert.equal(new Set(queued.map(a => a.id)).size, 7, 'seven distinct requests retain seven identities');
+    const again = await asked(await ask(session, [`post ${SHOP}/queue-0`], 30));
+    assert.equal(again.id, queued[0].id, 'an identical retry reuses its pending record');
     const listed = await result(c, 'approvals.list');
-    assert.ok(!listed.pending.some(a => a.id === first?.approval?.id), 'and it replaces the old one');
-    assert.ok(listed.pending.some(a => a.id === changed?.approval?.id));
-    assert.equal(listed.recent.find(a => a.id === first?.approval?.id)?.status, 'cancelled');
+    for (const a of queued) {
+      assert.equal(listed.pending.find(p => p.id === a.id)?.status, 'pending', 'each distinct request remains queued');
+      assert.equal(listed.recent.some(p => p.id === a.id), false, 'a newer request does not cancel an older one');
+    }
+    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 0, 'queuing grants no authority');
+    await result(c, 'approval.deny', { id: queued[0].id, proof: proof(queued[0], 'deny') });
+    await result(c, 'approval.grant', { id: queued[2].id, proof: proof(queued[2]) });
+    const after = await result(c, 'approvals.list');
+    assert.equal(after.recent.find(a => a.id === queued[0].id)?.status, 'denied');
+    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 1, 'only the explicitly approved scope becomes active');
+    for (const a of queued.filter((_, i) => i !== 0 && i !== 2)) {
+      assert.equal(after.pending.find(p => p.id === a.id)?.status, 'pending', 'deciding one request preserves the other five');
+    }
   });
 
   await check('ASSERT_GRANT_DETAIL', async () => {

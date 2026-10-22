@@ -7,6 +7,7 @@ import { createApprovals, GateError } from '../../daemon/approvals.ts';
 import { loadPolicy } from '../../daemon/policy.ts';
 import { createProofVerifier, approvalMessage } from '../../daemon/proof.ts';
 import type { ChromeParams, ExtensionInfo } from '../../shared/protocol.ts';
+import { useFixtureOwnerHome } from '../fixtures/owner-home.ts';
 
 const root = path.resolve('tests/.state/extensions'); fs.mkdirSync(root, { recursive: true });
 const state = fs.mkdtempSync(path.join(root, 'gates-'));
@@ -14,7 +15,7 @@ const keys = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 const pub = path.join(state, 'approver.pub'); fs.writeFileSync(pub, keys.publicKey.export({ type: 'spki', format: 'pem' }));
 const proofs = createProofVerifier({ publicKeyPath: pub, usedPath: path.join(state, 'used-proofs.log') });
 const approvals = createApprovals({});
-const policy = loadPolicy();
+const policy = loadPolicy({ overlay: path.join(state, 'policy.json') });
 const self = 'a'.repeat(32), other = 'b'.repeat(32);
 const target: ExtensionInfo = { id: other, name: 'Fixture', version: '1', enabled: true, installType: 'development', mayDisable: true, type: 'extension', self: false };
 let writes = 0, held = '', changeOnSecondRead = false, reads = 0, passed = 0;
@@ -41,6 +42,7 @@ function grant() {
   approvals.signed(held, 'grant', { ts, sig }, proofs, approvalMessage);
 }
 const call = (params: Parameters<typeof extensionCall>[0]) => extensionCall(params, 'test', policy, request, gate);
+const restoreOwnerHome = useFixtureOwnerHome(state);
 try {
   await call({}); assert.equal(writes, 0); pass('list performs no mutation or gate');
   await call({ operation: 'reload', extensionId: other }); assert.equal(writes, 1);
@@ -59,6 +61,12 @@ try {
   await assert.rejects(call({ operation: 'reload', extensionId: other }), /extension changed/); assert.equal(writes, 3);
   pass('post-gate recheck rejects target changed before mutation');
   changeOnSecondRead = false;
+  const outside = fs.mkdtempSync(path.join(root, 'outside-'));
+  fs.writeFileSync(path.join(outside, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'Outside fixture', version: '1' }));
+  const previousHeld = held;
+  await assert.rejects(call({ operation: 'install', path: outside }), error => error instanceof GateError && error.code === 'denied');
+  assert.equal(held, previousHeld); assert.equal(writes, 3);
+  pass('a source outside the fixture home never reaches the approval gate');
   const source = path.join(state, 'source'); fs.mkdirSync(source);
   fs.writeFileSync(path.join(source, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'Local', version: '1' }));
   await assert.rejects(call({ operation: 'install', path: source }), error => error instanceof GateError && error.code === 'held');
@@ -68,5 +76,5 @@ try {
   const forged = await extensionCall({ operation: 'list' }, 'test', policy,
     async () => ({ extensions: [{ ...target, self: 'forged' }] }), gate).then(() => false, () => true);
   assert.equal(forged, true); pass('malformed Chrome metadata is refused before becoming authority');
-} finally { approvals.stop(); }
+} finally { approvals.stop(); restoreOwnerHome(); }
 console.log(`== extension gates: ${passed} passed, 0 failed`);

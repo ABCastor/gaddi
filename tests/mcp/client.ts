@@ -346,13 +346,21 @@ try {
   const grantRules = ['upload https://fixture.example/shop', 'post https://fixture.example/shop'];
   const grantRequests = () => readAudit().filter(entry => entry.method === 'grant.request').length;
   for (const args of [{ rules: grantRules }, { minutes: 60 }, { rules: [], minutes: 60 }, { rules: 'upload https://fixture.example/shop', minutes: 60 },
-    { rules: [42], minutes: 60 }, { rules: ['x'.repeat(301)], minutes: 60 }, { rules: Array(21).fill('upload https://fixture.example/a'), minutes: 60 },
+    { rules: [42], minutes: 60 }, { rules: ['x'.repeat(301)], minutes: 60 }, { rules: Array(101).fill('upload https://fixture.example/a'), minutes: 60 },
     { rules: grantRules, minutes: 4 }, { rules: grantRules, minutes: 721 }, { rules: grantRules, minutes: 5.5 }, { rules: grantRules, minutes: '60' },
     { rules: grantRules, minutes: 60, label: 'x'.repeat(61) }, { rules: grantRules, minutes: 60, label: 7 }, { rules: grantRules, minutes: 60, extra: 1 },
   ] as Record<string, unknown>[]) {
     check((await call('grant', args)).isError === true, `MCP rejects invalid browser_grant arguments ${JSON.stringify(args).slice(0, 48)}`);
   }
   check(grantRequests() === 0, 'MCP validation stops an invalid grant request before it reaches the broker');
+  // The adapter's hard ceiling is 100; the broker keeps the owner's default at 20.
+  for (const count of [21, 100]) {
+    const overDefault = await call('grant', { rules: Array(count).fill('upload https://fixture.example/a'), minutes: 60 });
+    check(overDefault.isError === true && /rules must list 1 to 20 rules/.test(txt(overDefault)), `MCP forwards ${count} rules for the broker to enforce its default limit`);
+  }
+  check(grantRequests() === 2, 'only the two shape-valid requests reached the broker policy');
+  check(body('approvals', await call('approvals')).pending.filter(a => a.kind === 'grant').length === 0,
+    'the default twenty-rule limit creates no pending grant or authority for 21 or 100 rules');
   const refusedGrant = await call('grant', { rules: ['send https://fixture.example/shop'], minutes: 60 });
   check(refusedGrant.isError === true && /can never be granted/.test(txt(refusedGrant)), 'MCP: sends, payments and sign-in can never be granted, and the reason is plain');
   const grantReply = await call('grant', { rules: grantRules, minutes: 60, label: 'Update the shop page' });

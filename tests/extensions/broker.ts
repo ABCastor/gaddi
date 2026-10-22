@@ -18,11 +18,12 @@ const home = fs.mkdtempSync(path.join(root, 'broker-'));
 const socket = `${process.env.GADDI_TEST_SOCKET_DIR || '/tmp'}/gaddi-extensions-${process.pid}.sock`;
 const keys = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 fs.writeFileSync(path.join(home, 'approver.pub'), keys.publicKey.export({ type: 'spki', format: 'pem' }));
-const env = { ...process.env, GADDI_HOME: home, GADDI_SOCKET: socket, GADDI_POLICY_OFF: '0',
+// Resolve owner-home checks inside this disposable child process.
+const env = { ...process.env, GADDI_TEST_OWNER_HOME: home, GADDI_HOME: home, GADDI_SOCKET: socket, GADDI_POLICY_OFF: '0',
   GADDI_APP_LAUNCHER: '/usr/bin/true', GADDI_APPROVER_PUB: path.join(home, 'approver.pub'), GADDI_EXTENSION_INSTALL: '0',
   GADDI_STATE: path.join(home, 'state.json'), GADDI_AUDIT: path.join(home, 'audit.jsonl') };
 const log = fs.openSync(path.join(home, 'daemon.log'), 'w');
-const daemon = spawn(process.execPath, ['daemon/daemon.ts'], { env, stdio: ['ignore', log, log] }); fs.closeSync(log);
+const daemon = spawn(process.execPath, ['--import', path.resolve('tests/fixtures/owner-home.ts'), 'daemon/daemon.ts'], { env, stdio: ['ignore', log, log] }); fs.closeSync(log);
 let bridge: net.Socket | undefined, mcp: Client | undefined, passed = 0;
 const selfId = 'a'.repeat(32), otherId = 'b'.repeat(32);
 const info = (id: string): ExtensionInfo => ({ id, name: id === selfId ? 'Gaddi' : 'Fixture', version: '1', enabled: true,
@@ -101,6 +102,11 @@ try {
   items.get(otherId)!.version = '2';
   const changed = await rpc('extensions', { operation: 'uninstall', extensionId: otherId, approval: removal.error.approval.id });
   assert.ok(changed.error); assert.equal(mutations.length, 0); pass('changed extension cannot inherit prior uninstall approval');
+  const outside = fs.mkdtempSync(path.join(root, 'outside-'));
+  fs.writeFileSync(path.join(outside, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'Outside fixture', version: '1' }));
+  const outsideInstall = await rpc('extensions', { operation: 'install', path: outside });
+  assert.equal(outsideInstall.error?.code, 'denied'); assert.equal(outsideInstall.error?.approval, undefined);
+  assert.equal(mutations.length, 0); pass('an installation outside the fixture home is denied before approval');
   const folder = path.join(home, 'local-extension'); fs.mkdirSync(folder);
   fs.writeFileSync(path.join(folder, 'manifest.json'), JSON.stringify({ manifest_version: 3, name: 'Local fixture', version: '1' }));
   const install = await rpc('extensions', { operation: 'install', path: folder }); assert.equal(install.error?.code, 'held');

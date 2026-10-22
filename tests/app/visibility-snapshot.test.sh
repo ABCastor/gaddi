@@ -15,7 +15,7 @@ for _ in {1..50}; do
   sleep 0.1
 done
 [[ -S "$GADDI_SOCKET" ]]
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun swiftc -swift-version 5 \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun swiftc -whole-module-optimization -swift-version 5 \
   -module-cache-path "$REPO/app/build/module-cache" -framework AppKit -framework CryptoKit \
   "$REPO/app/Sources/SocketClient.swift" "$REPO/app/Sources/Protocol.swift" "$REPO/app/Sources/ApprovalCard.swift" \
   "$REPO/tests/app/visibility-snapshot.swift" -o "$STATE/visibility"

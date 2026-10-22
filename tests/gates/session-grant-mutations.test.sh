@@ -26,7 +26,7 @@ echo "PASS session-grant pristine copy: $(grep -Ec '^PASS ASSERT_GRANT_' "$BASE"
 FALSIFIED=0
 for mutation in \
   OTHER_SESSION CLI LIVE_REQUIRED ENDED_ASK PROOF REMEMBER REVOKE SESSION_END AUDIT APPROVAL_CREDIT UPLOAD CLICK ENTER \
-  LEAK_VIEW LEAK_DISK CLEAN_GRANT ONE_OPEN EXPIRY LIST BOUNDARY ORIGIN PERMISSION MIXED PROTECTED DESTINATION NEVER GMAIL TABLE DETAIL \
+  LEAK_VIEW LEAK_DISK CLEAN_GRANT QUEUE EXPIRY LIST BOUNDARY ORIGIN PERMISSION MIXED PROTECTED DESTINATION NEVER GMAIL TABLE DETAIL \
   NEEDED DENY SECRET RESTART; do
   # Reset every source from the real tree, then apply ONE distinct mutation to this copy.
   for source in daemon/*.ts; do cp "$source" "$COPY/$source"; done
@@ -66,7 +66,7 @@ const table = {
     "function persistable() { return [...entries.values()].filter(a => a.kind !== 'grant'); }",
     'function persistable() { return [...entries.values()]; }']],
   CLEAN_GRANT: ['ASSERT_GRANT_DETAIL', ['daemon/approvals.ts', "detail: kind === 'grant' ? detail : cleanDetail(detail),", 'detail: cleanDetail(detail),']],
-  ONE_OPEN: ['ASSERT_GRANT_ONE_OPEN', ['daemon/daemon.ts', 'for (const older of pendingGrantsOf(session)) approvals.cancel(older.id);', '']],
+  QUEUE: ['ASSERT_GRANT_QUEUE', ['daemon/daemon.ts', '// BR-GADDI-QUEUE', 'for (const older of pendingGrantsOf(session)) approvals.cancel(older.id);']],
   EXPIRY: ['ASSERT_GRANT_EXPIRY', ['daemon/grants.ts', 'expiresAt: created + spec.minutes * minuteMs };', 'expiresAt: created + spec.minutes * minuteMs * 1000 };']],
   LIST: ['ASSERT_GRANT_LIST', ['daemon/grants.ts', 'mine: mine !== undefined && grant.session === mine });', 'mine: true });']],
   BOUNDARY: ['ASSERT_GRANT_BOUNDARY', ['daemon/grants.ts', "url.pathname.startsWith(rule.path + '/')", 'url.pathname.startsWith(rule.path)']],
@@ -88,7 +88,9 @@ const table = {
     ['daemon/grants.ts', "if (check.outcome !== 'hold' || grants.length === 0) return check;", "if (check.outcome !== 'hold') return check;"],
     ['daemon/grants.ts', 'if (!grant) return check;', "if (!grant) return { outcome: 'allow', reason: 'session grant', grant: 'none' };"]],
   // A request the owner denied can still be approved afterwards.
-  DENY: ['ASSERT_GRANT_DENY', ['daemon/approvals.ts', "if (a.status !== 'pending') throw new GateError('approval-invalid', ", "if (false) throw new GateError('approval-invalid', "]],
+  DENY: ['ASSERT_GRANT_DENY',
+    ['daemon/approvals.ts', "if (a.status !== 'pending') throw new GateError('approval-invalid', ", "if (false) throw new GateError('approval-invalid', "],
+    ['daemon/approvals.ts', "if (get(id).status !== 'pending') throw new GateError('approval-invalid', ", "if (false) throw new GateError('approval-invalid', "]],
   // The refusal of key and credential files stops holding, so only the grant stands between the agent and the file.
   SECRET: ['ASSERT_GRANT_SECRET', ['daemon/uploads.ts',
     "const refuse = (reason: string): never => { throw new GateError('denied', ",

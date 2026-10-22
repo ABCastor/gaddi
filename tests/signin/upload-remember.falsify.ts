@@ -29,6 +29,8 @@ for (const mutation of mutations) {
     for (const dir of ['daemon', 'policy', 'shared']) fs.cpSync(path.join(repo, dir), path.join(root, dir), { recursive: true });
     const test = 'tests/signin/' + (mutation.test ?? 'upload-remember.test.ts');
     fs.mkdirSync(path.join(root, 'tests/signin'), { recursive: true }); fs.copyFileSync(path.join(repo, test), path.join(root, test));
+    fs.mkdirSync(path.join(root, 'tests/fixtures'), { recursive: true });
+    fs.copyFileSync(path.join(repo, 'tests/fixtures/owner-home.ts'), path.join(root, 'tests/fixtures/owner-home.ts'));
     const file = path.join(root, mutation.file ?? 'daemon/policy.ts'), source = fs.readFileSync(file, 'utf8');
     const start = mutation.section ? source.indexOf(mutation.section) : 0;
     assert.ok(start >= 0 && source.slice(start).includes(mutation.old), 'Mutation anchor missing: ' + mutation.name);

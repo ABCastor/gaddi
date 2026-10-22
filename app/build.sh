@@ -7,7 +7,7 @@ BUNDLE="$APP_DIR/build/Gaddi.app"
 mkdir -p "$BUNDLE/Contents/MacOS" "$APP_DIR/build/module-cache"
 SDK="$(/usr/bin/xcrun --sdk macosx --show-sdk-path)"
 ARCH="$(uname -m)"
-/usr/bin/xcrun swiftc -swift-version 5 -O -target "$ARCH-apple-macosx26.0" -sdk "$SDK" \
+/usr/bin/xcrun swiftc -whole-module-optimization -swift-version 5 -O -target "$ARCH-apple-macosx26.0" -sdk "$SDK" \
   -module-cache-path "$APP_DIR/build/module-cache" \
   -framework AppKit -framework LocalAuthentication -framework Security \
   -framework UserNotifications -framework CryptoKit \

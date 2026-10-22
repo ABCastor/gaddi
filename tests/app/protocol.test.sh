@@ -25,7 +25,7 @@ start_fake() {
   echo 'FAIL fake daemon did not start'; exit 1
 }
 start_fake normal
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun swiftc -swift-version 5 \
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun swiftc -whole-module-optimization -swift-version 5 \
   -module-cache-path "$REPO/app/build/module-cache" -framework CryptoKit \
   "$REPO/app/Sources/SocketClient.swift" "$REPO/app/Sources/Protocol.swift" "$REPO/app/Sources/ApprovalCard.swift" "$REPO/app/Tests/main.swift" \
   -o "$STATE/primitives"

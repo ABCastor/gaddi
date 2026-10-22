@@ -519,8 +519,7 @@ function requestGrant(params: IncomingParams): never {
   const action = { method: 'grant.request', caller, url: '', session, rules: rules.map(ruleString), minutes, label: label ?? null };
   let request = approvals.pendingFor(action);
   if (!request) {
-    // One open request per chat: a changed one replaces the old, so an agent cannot stack cards in front of the owner.
-    for (const older of pendingGrantsOf(session)) approvals.cancel(older.id);
+    // BR-GADDI-QUEUE
     request = approvals.hold({ kind: 'grant', tab: null, caller, url: '', detail: grantDetail(rules, minutes, label),
       reason: 'session grant', action, extendedWait: true, grant: { session, rules, minutes, ...(label ? { label } : {}) } });
   }
