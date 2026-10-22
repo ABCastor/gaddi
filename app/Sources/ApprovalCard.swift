@@ -336,7 +336,7 @@ final class ApprovalCard: NSStackView {
             let named = sites.count == 1 ? sites[0] : "these \(sites.count) sites"
             let button = PanelButton("Test zone: always allow on \(named)", kind: .quiet, symbol: "checkmark.shield") { zone() }
             button.isEnabled = enabled
-            button.toolTip = "Uploads, posts and deletes on \(sites.joined(separator: ", ")) run without asking, for every agent, until you remove it. Payments, sending, sign-in and security still ask."
+            button.toolTip = "Sign-in, uploads, posts, deletes and account or security changes on \(sites.joined(separator: ", ")) run without asking, for every agent, until you remove it. Payments and sending messages still ask."
             let row = NSStackView(views: [NSView(), button]); row.spacing = 10
             setCustomSpacing(10, after: arrangedSubviews.last!); addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
@@ -504,8 +504,8 @@ final class ZoneList: NSStackView {
         heading.font = Typeface.heading(18); heading.textColor = Palette.ink
         addArrangedSubview(heading)
         let explanation = NSTextField(wrappingLabelWithString: sites.isEmpty
-            ? "No test zones. Make a site you only use for testing a test zone and agents can upload, post and delete there without asking. Payments, sending messages, sign-in and security changes still ask every time."
-            : "Agents upload, post and delete on these sites without asking, until you remove them. Payments, sending messages, sign-in and security changes still ask every time. A zone covers whichever account is signed in on that site.")
+            ? "No test zones. Make a site you only use for testing a test zone and agents can sign in, upload, post, delete and change account or security settings there without asking. Payments and sending messages still ask every time."
+            : "Agents sign in, upload, post, delete and change account or security settings on these sites without asking, until you remove them. Payments and sending messages still ask every time. A zone covers whichever account is signed in on that site, so use it only for test accounts.")
         explanation.font = Typeface.interface(13); explanation.textColor = Palette.inkSoft
         addArrangedSubview(explanation)
         explanation.widthAnchor.constraint(equalTo: widthAnchor).isActive = true

@@ -99,11 +99,19 @@ struct Approval: Equatable {
             }
             return Array(NSOrderedSet(array: sites)) as? [String] ?? []
         }
+        // The same lists as daemon/grants.ts ZONE_VERBS and ZONE_PAGES; the broker decides, this only offers the button.
         let verbs = ["post", "publish", "pubblica", "share", "condividi", "delete", "delete forever", "delete permanently",
-                     "remove", "elimina", "elimina definitivamente", "cancella", "rimuovi"]
-        let waivable = kind == "upload" && reason == "upload of a local file"
+                     "remove", "elimina", "elimina definitivamente", "cancella", "rimuovi",
+                     "close account", "delete account", "chiudi conto", "chiudi account", "elimina account",
+                     "change password", "update password", "reset password", "cambia password", "modifica password", "reimposta password",
+                     "turn off 2-step verification", "remove phone", "add recovery", "disattiva verifica in due passaggi",
+                     "unsubscribe", "cancel subscription", "disdici", "annulla abbonamento", "annulla iscrizione"]
+        let pages = ["/settings/security", "/security", "/sicurezza", "/delete-account", "/close-account", "/elimina-account",
+                     "/chiudi-conto", "/unsubscribe", "/disdett"]
+        let waivable = kind == "upload" && reason == "upload of a local file" || kind == "signin"
             || kind == "click" && verbs.contains { reason == "verb:" + $0 }
             || kind == "press" && verbs.contains { reason == "enter-submits:" + $0 }
+            || pages.contains { reason == "url-pattern:" + $0 }
         guard waivable, let site = origin(url) else { return [] }
         return [site]
     }

@@ -279,7 +279,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     if (params.foreground !== undefined && typeof params.foreground !== 'boolean') throw new Error('foreground must be boolean');
     meta.url = url;
     await gate({ kind: method, meta, detail: url, action: { method, caller: meta.caller, url, group, foreground: params.foreground ?? false },
-      check: checkNavigation(policy, url), approval: params.approval });
+      check: zoneNavigation(checkNavigation(policy, url), url, meta), approval: params.approval });
     const result = await request('open', { url, group, foreground: params.foreground === true });
     meta.tab = tabId(tabObject(result)); meta.url = tabObject(result)?.url || url;
     if (typeof meta.tab === 'number' && Number.isSafeInteger(meta.tab) && meta.tab >= 0) {
@@ -401,7 +401,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     check = grantCheck(check, { kind: 'press', name: submitName });
     detail = args.key; args._description = { submitName };
   } else if (method === 'goto') {
-    args.url = navigationURL(params.url); detail = args.url; check = checkNavigation(policy, args.url);
+    args.url = navigationURL(params.url); detail = args.url; check = zoneNavigation(checkNavigation(policy, args.url), args.url, meta);
   } else if (method === 'eval') {
     args.expression = requiredString(params.expression, 'expression'); check = checkEval(policy, args.expression);
   } else if (method === 'scroll') {
@@ -508,6 +508,12 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
 // ---------------------------------------------------------------- session grants
 // A chat asks once. The owner answers in Gaddi with Touch ID. The broker acts on his signed answer
 // itself, so the agent never retries and never holds a token that could be replayed.
+// TEST-ZONE: opening a zone's own account or security page is not held there (grants.ts:checkZone).
+function zoneNavigation(check: PolicyCheck, url: string, meta: CallMeta) {
+  const zoned = checkZone(policy, url, check, { kind: 'navigate' });
+  if (zoned.zone) meta.zone = zoned.zone;
+  return zoned;
+}
 function pendingGrantsOf(session: string) {
   return approvals.pendingMatching(a => a.kind === 'grant' && isRecord(a.grant) && a.grant.session === session);
 }

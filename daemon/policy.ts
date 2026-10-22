@@ -253,8 +253,13 @@ export function uploadSite(url: unknown): string | undefined {
 }
 
 // A test zone is a whole site (exact origin) that a session grant could name: https or local http, never a refused
-// host (Gmail, banks) and never an address on the built-in protected list.
-export const zoneSite = uploadSite;
+// host (Gmail), never an address on the built-in protected list, and never an identity provider: a zone allows
+// sign-in and security changes, and on these sites that would be the owner's real identity, not a test account.
+const IDENTITY_HOSTS = /(^|\.)(google\.com|apple\.com|icloud\.com|live\.com|microsoft\.com|microsoftonline\.com|1password\.com|1password\.eu|okta\.com|auth0\.com|github\.com)$/i;
+export function zoneSite(url: unknown): string | undefined {
+  const site = uploadSite(url);
+  return site && !IDENTITY_HOSTS.test(new URL(site).hostname) ? site : undefined;
+}
 
 // Only ordinary upload holds can be remembered. File refusals happen before this check.
 export function checkRememberedUpload(policy: Policy, url: string, check: PolicyCheck): PolicyCheck {
@@ -273,6 +278,8 @@ export function checkRememberedUpload(policy: Policy, url: string, check: Policy
 // ---------------------------------------------------------------- helpers
 // Only the owner's policy can remember a site; POLICY_OFF grants no sign-in authority.
 export function checkSignin(policy: Policy, site: string): PolicyCheck {
+  // TEST-ZONE: a test zone signs in by itself, with the login the owner stored in 1Password for that site.
+  if (policy.zones?.sites.includes(site) && zoneSite(site) === site) return ALLOW('test zone');
   return policy.signin?.remember.includes(site) ? ALLOW('owner remembered this site') : HOLD('sign-in needs owner approval');
 }
 export function hostOf(url: string) {

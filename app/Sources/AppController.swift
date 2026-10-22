@@ -429,7 +429,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     private func addZones(_ sites: [String], answering approval: Approval?) {
         guard !sites.isEmpty else { return }
         let named = sites.joined(separator: ", ")
-        authenticated(reason: "Make \(named) a test zone: agents upload, post and delete there without asking until you remove it") { [self] context in
+        authenticated(reason: "Make \(named) a test zone: agents sign in, upload, post, delete and change account settings there without asking until you remove it") { [self] context in
             var refused: [String] = []
             for site in sites {
                 let ts = Int64(Date().timeIntervalSince1970 * 1000)

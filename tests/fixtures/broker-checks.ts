@@ -1426,9 +1426,15 @@ async function sessionGrant(c: Client, b: Bridge) {
       for (const name of ['Delete', 'Post', 'Elimina']) await named(name, async () => assert.equal(await outcome(click(undefined)), 'allowed', `${name} in a zone, even from the command line`));
       assert.equal(await outcome(upload(undefined)), 'allowed', 'an upload in a zone');
       assert.equal(await outcome(upload(undefined, { path: privateKeyFile })), 'denied', 'a secret file is still refused');
-      for (const name of ['Pay now', 'Send', 'Post and pay', 'Change password', 'Delete account']) {
+      for (const name of ['Change password', 'Delete account', 'Turn off 2-step verification', 'Unsubscribe']) {
+        await named(name, async () => assert.equal(await outcome(click(undefined)), 'allowed', `${name}: account and security changes run in a zone`));
+      }
+      for (const name of ['Pay now', 'Buy now', 'Send', 'Post and pay', 'Delete and send', 'Transfer', 'Ricarica']) {
         await named(name, async () => assert.equal(await outcome(click(undefined)), 'held', `${name} stays held in a zone`));
       }
+      assert.equal(await outcome(c.call('goto', { ...base(), url: 'https://unseen.example/settings/security' })), 'allowed', 'a zone opens its own security page');
+      assert.equal(await outcome(c.call('goto', { ...base(), url: 'https://unseen.example/checkout' })), 'held', 'a zone never opens a payment page');
+      assert.equal(await outcome(c.call('goto', { ...base(), url: 'https://other.example/settings/security' })), 'held', 'another site is not in the zone');
       await on(`${SHOP}/checkout`, async () => assert.equal(await outcome(upload(undefined)), 'held', 'a protected address stays held in a zone'));
       await named('Delete', async () => assert.equal(await outcome(click(undefined)), 'held', 'a link out of the zone stays held'), 'https://elsewhere.example/x');
       await on('https://other.example/shop', async () => assert.equal(await outcome(upload(undefined)), 'held', 'another site is not in the zone'));

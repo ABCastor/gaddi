@@ -190,20 +190,55 @@ export function checkGrant(grants: readonly Grant[], policy: Policy, pageURL: st
     grants.find(grant => grant.rules.some(rule => rule.permission === needed && covers(rule, target))), policy, pageURL, check, scope);
 }
 
-// TEST-ZONE: a site the owner marked as a test zone answers like a session grant covering that whole site for
-// upload, post and delete, for every caller, until he removes it. It goes through the same `waive` scan, so it can
-// never waive more than a grant could: money, sends, sign-in, security, protected addresses, a mixed name like
-// "Post and pay" and a link leaving the zone all stay held. Only the owner's signed choice puts a site in the list.
-const ZONE = { id: 'zone' };
-export function zoneCovers(policy: Policy, target: URL) {
-  return (policy.zones?.sites ?? []).includes(target.origin) && grantableAddress(target) && !protectedAddress(policy, target);
+// TEST-ZONE: a site the owner marked as his own test ground. On it, for every caller and until he removes it, the
+// broker waives holds on uploads, posts, deletes and account or security changes (passwords, two-step, recovery,
+// closing the account, unsubscribing, and the security and account-closure pages). Sign-in is answered in
+// policy.ts:checkSignin. Invariants (each falsified by a mutation in tests/gates/session-grant-mutations.test.sh):
+//  1. Only these hold reasons are waived. Money (pay, buy, order, transfer, top up and their pages) and sends stay held
+//     every time; a sent message may reach a real person and a payment page can claim to be a test, so neither is ever
+//     proven fake here. A send the owner remembered for a site still runs through its own rule.
+//  2. A name that also holds a verb outside the zone set ("Post and pay") stays held, as does a link leaving the zone
+//     or reaching a payment page, a refused host (Gmail) or an address the owner added to his own protected list.
+//  3. Only the owner's signed choice puts a site in the list; identity providers can never be zones (policy.ts:zoneSite).
+const ZONE_VERBS = ['post', 'publish', 'pubblica', 'share', 'condividi',
+  'delete', 'delete forever', 'delete permanently', 'remove', 'elimina', 'elimina definitivamente', 'cancella', 'rimuovi',
+  'close account', 'delete account', 'chiudi conto', 'chiudi account', 'elimina account',
+  'change password', 'update password', 'reset password', 'cambia password', 'modifica password', 'reimposta password',
+  'turn off 2-step verification', 'remove phone', 'add recovery', 'disattiva verifica in due passaggi',
+  'unsubscribe', 'cancel subscription', 'disdici', 'annulla abbonamento', 'annulla iscrizione'];
+// The built-in protected addresses that are account or security pages, not money. Everything else stays protected.
+const ZONE_PAGES = ['/settings/security', '/security', '/sicurezza', '/delete-account', '/close-account', '/elimina-account',
+  '/chiudi-conto', '/unsubscribe', '/disdett'];
+const zoneVerb = (verb: string) => ZONE_VERBS.includes(fold(verb));
+function zoneBlocked(policy: Policy, url: URL) {
+  const { hosts, patterns } = protections(policy);
+  return hosts.some(host => rx(host)?.test(hostOf(url.href))) || patterns.some(pattern => !ZONE_PAGES.includes(pattern) && rx(pattern)?.test(url.href));
 }
-export function checkZone(policy: Policy, pageURL: string, check: PolicyCheck, scope: GrantScope): PolicyCheck & { zone?: string } {
+export function zoneCovers(policy: Policy, target: URL) {
+  return (policy.zones?.sites ?? []).includes(target.origin) && grantableAddress(target) && !zoneBlocked(policy, target);
+}
+function zoneReason(kind: ZoneScope['kind'], reason: string | undefined) {
+  if (reason === undefined) return false;
+  if (kind === 'upload') return reason === UPLOAD_HOLD;
+  if (reason.startsWith('url-pattern:')) return ZONE_PAGES.includes(reason.slice('url-pattern:'.length));
+  const prefix = kind === 'click' ? 'verb:' : kind === 'press' ? 'enter-submits:' : undefined;
+  return prefix !== undefined && reason.startsWith(prefix) && zoneVerb(reason.slice(prefix.length));
+}
+export interface ZoneScope { kind: 'click' | 'press' | 'upload' | 'navigate'; name?: string; destination?: string }
+export function checkZone(policy: Policy, pageURL: string, check: PolicyCheck, scope: ZoneScope): PolicyCheck & { zone?: string } {
   if (check.outcome !== 'hold' || !(policy.zones?.sites ?? []).length) return check;
-  // Defence in depth: the zone answers only for the three grantable permissions, whatever waive asks.
-  const decision = waive((needed, target) => isPermission(needed) && zoneCovers(policy, target) ? ZONE : undefined, policy, pageURL, check, scope);
-  if (decision.outcome !== 'allow') return check;
-  return { outcome: 'allow', reason: 'test zone', zone: new URL(pageURL).origin };
+  const page = parseURL(pageURL);
+  // zoneReason is a backstop: every reason it refuses is also stopped by the name scan, zoneBlocked or the destination rule.
+  if (!page || !zoneCovers(policy, page) || !zoneReason(scope.kind, check.reason)) return check;
+  if (scope.kind === 'click' || scope.kind === 'press') {
+    for (const verb of protections(policy).verbs) if (phraseIn(scope.name, verb) && !zoneVerb(verb)) return check;
+  }
+  const leadsTo = scope.destination;
+  if (leadsTo) {
+    const target = parseURL(leadsTo);
+    if (!target || target.origin !== page.origin || !zoneCovers(policy, target)) return check;
+  }
+  return { outcome: 'allow', reason: 'test zone', zone: page.origin };
 }
 // Whether a grant rule asks for nothing a test zone does not already give.
 export function zoneCoversRule(policy: Policy, rule: GrantRule) {
