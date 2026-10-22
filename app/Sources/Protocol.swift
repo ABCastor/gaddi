@@ -218,6 +218,15 @@ struct Snapshot: Equatable {
 /// An unchanged poll cannot reopen the panel after the owner closes it.
 struct PendingApprovalVisibility {
     private var presented = Set<String>()
+    private var reviewing = false
+    mutating func opened(_ approvals: [Approval], preservingCurrentMode: Bool = false) {
+        if !preservingCurrentMode { reviewing = !approvals.isEmpty }
+    }
+    mutating func shouldDismiss(_ approvals: [Approval], connected: Bool, busy: Bool, hasError: Bool) -> Bool {
+        guard reviewing, connected, !busy, !hasError, approvals.isEmpty else { return false }
+        reviewing = false
+        return true
+    }
     mutating func shouldPresent(_ approvals: [Approval], busy: Bool, now: Date = Date()) -> Bool {
         let pending = Set(approvals.filter { $0.expiresAt.map { $0 > now } ?? false }.map(\.id))
         presented.formIntersection(pending)

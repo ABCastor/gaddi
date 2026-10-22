@@ -23,7 +23,7 @@ import { readUpload, UPLOAD_CHUNK } from './uploads.ts';
 import type { UploadFile } from './uploads.ts';
 import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail } from './approvals.ts';
 import { createProofVerifier, approvalMessage, signinRevokeMessage, sendRevokeMessage, uploadRevokeMessage } from './proof.ts';
-import { createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString } from './grants.ts';
+import { createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString, remoteWaivable } from './grants.ts';
 import type { GrantScope } from './grants.ts';
 import { createRemote } from './remote.ts';
 import { createBridge } from './bridge.ts';
@@ -136,13 +136,13 @@ const proofs = createProofVerifier({ publicKeyPath: process.env.GADDI_APPROVER_P
 // choice is read back here. The drop-in file is only a candidate key: it authorizes nothing by itself.
 const remote = createRemote({ statePath: path.join(home, 'remote.json'),
   keyPath: process.env.GADDI_REMOTE_KEY || path.join(home, 'remote-approver.pub'), proofs, emit, log });
-const approvals = createApprovals({ imageRoot: path.join(home, 'approvals'), log, ttlMinutes: Number(policy.approvals.ttl_minutes) > 0 ? Number(policy.approvals.ttl_minutes) : 10,
+const approvals = createApprovals({ waitMinutes: policy.approvals.wait_minutes, imageRoot: path.join(home, 'approvals'), log, ttlMinutes: Number(policy.approvals.ttl_minutes) > 0 ? Number(policy.approvals.ttl_minutes) : 10,
   onChange: () => {
     fs.writeFileSync(statePath + '.tmp', JSON.stringify({ approvals: approvals.persistable() }), { mode: 0o600 });
     fs.renameSync(statePath + '.tmp', statePath);
   },
   // Whether the owner's other device may answer this record right now, judged from the live policy and state.
-  remote: (a, facts) => remote.eligible(a, facts, policy), emit });
+  remote: (a, facts) => remote.eligible(a, facts, policy), remoteEpoch: remote.epoch, emit });
 try {
   const state = parseJSON(fs.readFileSync(statePath, 'utf8'));
   if (state === null) throw new TypeError("Cannot read properties of null (reading 'approvals')");
@@ -169,7 +169,9 @@ async function gate({ kind, meta, detail, action, check, approval, capture, targ
     catch (error) { log('approval capture unavailable:', /deadline|timeout|within 25 seconds/.test(errorMessage(error)) ? 'deadline exceeded' : 'bridge failed'); }
   }
   const remoteFacts = remoteScope ? { ...remoteScope, reason: check.reason } : undefined;
-  const a = existing || approvals.hold({ kind, ...meta, detail, action, reason: check.reason, rememberable: check.rememberable, picture, targetSelector: targetRef, remoteFacts });
+  const a = existing || approvals.hold({ kind, ...meta, detail, action, reason: check.reason, rememberable: check.rememberable, picture, targetSelector: targetRef, remoteFacts,
+    // AUTH-WAIT: only the existing grant-safe tier may wait longer, never money, sign-in or sends.
+    extendedWait: remoteFacts !== undefined && remoteWaivable(policy, remoteFacts.pageURL, check, remoteFacts.scope) });
   if (existing) approvals.attach(existing, remoteFacts);
   throw new GateError('held', `held: ${check.reason}; approve ${a.id} in Gaddi, then retry with its id`, approvalRef(a));
 }
@@ -520,7 +522,7 @@ function requestGrant(params: IncomingParams): never {
     // One open request per chat: a changed one replaces the old, so an agent cannot stack cards in front of the owner.
     for (const older of pendingGrantsOf(session)) approvals.cancel(older.id);
     request = approvals.hold({ kind: 'grant', tab: null, caller, url: '', detail: grantDetail(rules, minutes, label),
-      reason: 'session grant', action, grant: { session, rules, minutes, ...(label ? { label } : {}) } });
+      reason: 'session grant', action, extendedWait: true, grant: { session, rules, minutes, ...(label ? { label } : {}) } });
   }
   throw new GateError('held', `held: session grant; approve ${String(request.id)} in Gaddi. It takes effect as soon as the owner approves: do not retry`, approvalRef(request));
 }
@@ -645,7 +647,14 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
     if (typeof fingerprint === 'string' && /^[a-f0-9]{64}$/.test(fingerprint)) meta.remoteKey = fingerprint.slice(0, 16);
     return remote.enable(fingerprint, proof);
   },
-  'remote.disable': () => remote.disable(),
+  'remote.disable': () => {
+    // Turning off the signer also revokes unconsumed authority derived from that signer.
+    try { return remote.disable(); }
+    finally {
+      try { grants.revokeRemote(); }
+      finally { approvals.revokeRemote(); }
+    }
+  },
   'approval.remote': (params, _conn, meta) => remoteDecision(params, meta),
   'signin.remembered': () => ({ sites: policy.signin?.remember ?? [] }),
   'signin.revoke': ({ site, proof }) => {

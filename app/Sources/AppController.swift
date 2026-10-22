@@ -2,10 +2,41 @@ import AppKit
 import UserNotifications
 import LocalAuthentication
 
+// Keep the same menu and rows while it is tracking. Replacing statusItem.menu on
+// every broker snapshot can dismiss the owner's open menu.
+final class ApprovalMenu {
+    let menu = NSMenu()
+    private let waiting = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let error = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let running = NSMenuItem(title: "", action: nil, keyEquivalent: "")
+    private let phone = NSMenuItem(title: "Approving from your phone is on", action: nil, keyEquivalent: "")
+    private let review: NSMenuItem
+
+    init(target: AnyObject, open: Selector, remembered: Selector, quit: Selector) {
+        review = NSMenuItem(title: "Open Gaddi…", action: open, keyEquivalent: "")
+        let signins = NSMenuItem(title: "Remembered sign-ins…", action: remembered, keyEquivalent: "")
+        let exit = NSMenuItem(title: "Quit Gaddi", action: quit, keyEquivalent: "")
+        for item in [review, signins, exit] { item.target = target }
+        for item in [waiting, error, running, phone, .separator(), review, signins, .separator(), exit] { menu.addItem(item) }
+        menu.autoenablesItems = false
+    }
+
+    func update(connected: Bool, connectionText: String, count: Int, grants: Int, remote: Bool, errorText: String?) {
+        waiting.title = !connected ? connectionText : count == 0 ? "Nothing is waiting for you"
+            : count == 1 ? "1 action is waiting for you" : "\(count) actions are waiting for you"
+        error.title = errorText ?? ""; error.isHidden = errorText == nil
+        running.title = grants == 1 ? "1 session grant active" : "\(grants) session grants active"
+        running.isHidden = grants == 0; phone.isHidden = !remote
+        review.title = count == 0 ? "Open Gaddi…" : "Review and decide…"
+    }
+}
+
 final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private let model = BrowserModel()
     private let keys = SigningKey()
     private var statusItem: NSStatusItem!
+    private lazy var statusMenu = ApprovalMenu(target: self, open: #selector(openApprovals),
+        remembered: #selector(openRememberedSignins), quit: #selector(quit))
     private var snapshot = Snapshot()
     private var connected = false
     private var busy = false
@@ -55,6 +86,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         statusItem.button?.image = StatusMark.image()
         statusItem.button?.imagePosition = .imageLeading
         statusItem.button?.toolTip = "Gaddi"
+        statusItem.menu = statusMenu.menu
         let notifications = UNUserNotificationCenter.current()
         notifications.delegate = self
         notifications.requestAuthorization(options: [.alert, .sound]) { _, error in
@@ -101,6 +133,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
                 notifications.removePendingNotificationRequests(withIdentifiers: expired)
                 self.snapshot.approvals.removeAll(where: \.expired)
                 self.render()
+                self.presentPendingApprovals()
             }
             // The broker ends a grant at its time and says so, but a lost event must not leave one on screen.
             if self.snapshot.grants.contains(where: \.expired) {
@@ -113,35 +146,27 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     func applicationWillTerminate(_ notification: Notification) { timer?.invalidate(); model.stop() }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
-    private func menuItem(_ title: String, action: Selector?, object: Any? = nil) -> NSMenuItem {
-        let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
-        item.target = self; item.representedObject = object
-        return item
-    }
     private func render() {
-        let menu = NSMenu()
-        let waiting = snapshot.approvals.count
-        menu.addItem(menuItem(!connected ? connectionText
-            : waiting == 0 ? "Nothing is waiting for you"
-            : waiting == 1 ? "1 action is waiting for you" : "\(waiting) actions are waiting for you", action: nil))
-        if let errorText { menu.addItem(menuItem(errorText, action: nil)) }
-        let running = snapshot.grants.count
-        if running > 0 { menu.addItem(menuItem(running == 1 ? "1 session grant active" : "\(running) session grants active", action: nil)) }
-        if snapshot.remote.enabled { menu.addItem(menuItem("Approving from your phone is on", action: nil)) }
-        menu.addItem(.separator())
-        menu.addItem(menuItem(snapshot.approvals.isEmpty ? "Open Gaddi…" : "Review and decide…", action: #selector(openApprovals)))
-        menu.addItem(menuItem("Remembered sign-ins…", action: #selector(openRememberedSignins)))
-        menu.addItem(.separator())
-        menu.addItem(menuItem("Quit Gaddi", action: #selector(quit)))
-        menu.autoenablesItems = false
-        statusItem.menu = menu
+        statusMenu.update(connected: connected, connectionText: connectionText,
+            count: snapshot.approvals.count, grants: snapshot.grants.count,
+            remote: snapshot.remote.enabled, errorText: errorText)
         statusItem.button?.title = snapshot.approvals.isEmpty ? "" : " \(snapshot.approvals.count)"
         if approvalsPanel != nil { renderApprovals() }
     }
     @objc private func quit() { NSApp.terminate(nil) }
-    @objc private func openRememberedSignins() { requestedID = nil; openApprovals() }
+    @objc private func openRememberedSignins() {
+        requestedID = nil; openApprovals(); visibility.opened([])
+    }
     private func presentPendingApprovals() {
         guard connected else { return }
+        if visibility.shouldDismiss(snapshot.approvals, connected: connected, busy: busy, hasError: errorText != nil) {
+            requestedID = nil
+            approvalsPanel?.orderOut(nil)
+        }
+        if let id = requestedID, !snapshot.approvals.contains(where: { $0.id == id && !$0.expired }) {
+            requestedID = nil
+            renderApprovals()
+        }
         // A launch or notification ID is just a selection hint. Only the broker's
         // current, unexpired pending list may open the selected request.
         if let id = launchRequestID, !busy {
@@ -159,10 +184,12 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         }
     }
     @objc private func openApprovals() {
+        visibility.opened(snapshot.approvals)
         showApprovals()
         approvalsPanel?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
     }
     private func showApprovals() {
+        visibility.opened(snapshot.approvals, preservingCurrentMode: approvalsPanel?.isVisible == true)
         if approvalsPanel == nil {
             let panel = NSPanel(contentRect: NSRect(x: 0, y: 0, width: 600, height: 620),
                                 styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel], backing: .buffered, defer: false)

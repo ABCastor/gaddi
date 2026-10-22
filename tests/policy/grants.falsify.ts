@@ -56,7 +56,7 @@ const mutations: Mutation[] = [
   { name: 'GMAIL_RULE', assertion: 'ASSERT_GRANT_GMAIL_RULE',
     old: 'if (hosts.some(host => rx(host)?.test(hostOf(canonical)))) bad(', replacement: 'if (false) bad(' },
   { name: 'COUNT', assertion: 'ASSERT_GRANT_COUNT',
-    old: 'if (!Array.isArray(input) || input.length < 1 || input.length > GRANT_RULES_MAX) throw new Error(', replacement: 'if (!Array.isArray(input)) throw new Error(' },
+    old: 'if (!Array.isArray(input) || input.length < 1 || input.length > max) throw new Error(', replacement: 'if (!Array.isArray(input)) throw new Error(' },
   { name: 'MINUTES', assertion: 'ASSERT_GRANT_REQUEST',
     old: 'minutes < GRANT_MINUTES.min || minutes > GRANT_MINUTES.max', replacement: 'false' },
   { name: 'LABEL', assertion: 'ASSERT_GRANT_REQUEST', old: ' || UNSAFE_LABEL.test(label)', replacement: '' },

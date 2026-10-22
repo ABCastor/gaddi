@@ -15,8 +15,10 @@ const mutations: Mutation[] = [
   { name: 'SCOPE', assertion: 'ASSERT_REMOTE_KINDS',
     old: "remoteWaivable(policy, facts.pageURL, { outcome: 'hold', reason: facts.reason }, facts.scope)", replacement: 'true' },
   { name: 'CAP', assertion: 'ASSERT_REMOTE_KINDS', old: 'a.grant.minutes <= REMOTE_GRANT_MINUTES', replacement: 'true' },
+  { name: 'RULE_CAP', assertion: 'ASSERT_REMOTE_KINDS', old: ' && a.grant.rules.length <= 20', replacement: '' },
   { name: 'CAP_VALUE', assertion: 'ASSERT_REMOTE_KINDS', old: 'export const REMOTE_GRANT_MINUTES = 120;', replacement: 'export const REMOTE_GRANT_MINUTES = 720;' },
   { name: 'GRANT_SPEC', assertion: 'ASSERT_REMOTE_KINDS', old: 'isGrantSpec(a.grant) && ', replacement: '' },
+  { name: 'EPOCH', assertion: 'ASSERT_REMOTE_EPOCH', old: "epoch = crypto.randomBytes(16).toString('hex')", replacement: "epoch = '0'.repeat(32)" },
   // How a key becomes the trusted one, and stops being.
   { name: 'ENABLE_PROOF', assertion: 'ASSERT_REMOTE_KEYS',
     old: 'proofs.verify(proof, enableMessage(fingerprint, isRecord(proof) ? proof.ts : undefined));', replacement: '' },

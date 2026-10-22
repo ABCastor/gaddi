@@ -10,7 +10,7 @@ interface PolicyData {
  version: number; comment?: string;
  hold: { verbs: string[]; url_patterns: string[]; keys: { url: string; keys: string[] }[]; uploads?: boolean; extensions?: { disable?: boolean; uninstall?: boolean } };
  deny: { comment?: string; verbs_on_hosts: { host: string; verbs: string[] }[]; type_into: string[]; eval_patterns: string[] };
- approvals: { ttl_minutes: number };
+ approvals: { ttl_minutes: number; wait_minutes?: number; grant_rules_max?: number };
  signin?: { remember: string[] };
  sends?: { remember: SendRule[] };
  uploads?: { remember: string[] };
@@ -60,7 +60,9 @@ const schema: Schema = {
   hold: { verbs: [text], url_patterns: [pattern], keys: [{ url: pattern, keys: [text] }], uploads: v => typeof v === 'boolean',
     extensions: { disable: v => typeof v === 'boolean', uninstall: v => typeof v === 'boolean' } },
   deny: { comment: string, verbs_on_hosts: [{ host: pattern, verbs: [text] }], type_into: [text], eval_patterns: [pattern] },
-  approvals: { ttl_minutes: v => typeof v === 'number' && Number.isFinite(v) && v > 0 },
+  approvals: { ttl_minutes: v => typeof v === 'number' && Number.isFinite(v) && v > 0,
+    wait_minutes: v => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 && v <= 720,
+    grant_rules_max: v => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 && v <= 100 },
   signin: { remember: [exactOrigin] },
   sends: { remember: [{ site: exactOrigin, kind: v => v === 'click' || v === 'press', reason: sendReason }] },
   uploads: { remember: [exactOrigin] },

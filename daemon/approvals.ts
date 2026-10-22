@@ -60,18 +60,21 @@ export function remoteDigest(a: { kind?: unknown; id?: unknown; detail?: unknown
 }
 function actionHash(action: ApprovalAction) { return crypto.createHash('sha256').update(JSON.stringify(action)).digest('hex'); }
 
-export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = () => {}, imageRoot, log = () => {}, remote = () => false }:
-  { ttlMinutes?: number; onChange?: () => void; emit?: Emit; imageRoot?: string; log?: (...args: unknown[]) => void;
+export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onChange = () => {}, emit = () => {}, imageRoot, log = () => {}, remote = () => false, remoteEpoch = () => undefined }:
+  { ttlMinutes?: number; waitMinutes?: number; onChange?: () => void; emit?: Emit; imageRoot?: string; log?: (...args: unknown[]) => void;
     // Whether the owner's other device may answer this record right now (remote.ts decides, from live state).
-    remote?: (a: StoredApproval, facts: RemoteFacts | undefined) => boolean }) {
+    remote?: (a: StoredApproval, facts: RemoteFacts | undefined) => boolean; remoteEpoch?: () => string | undefined }) {
   const entries = new Map<unknown, StoredApproval>();
   // Invariant: remote approval's facts live here and nowhere else (see RemoteFacts). A record restored after a
   // restart has none, so it can only be answered with Touch ID until the agent's retry attaches them again.
   const facts = new WeakMap<StoredApproval, RemoteFacts>();
+  // AUTH-WAIT: monotonic deadlines prevent a backward wall-clock correction extending authority.
+  const deadlines = new WeakMap<StoredApproval, number>();
+  const activeCount = () => [...entries.values()].filter(a => a.status === 'pending' || a.status === 'granted').length;
   // Every record that leaves this module goes through here: what publicView shows, plus, while the owner's other
   // device may answer it, `remote: true` and the digest that device signs. Computed on every call from the live
   // state, never remembered, so turning the feature off removes the flag from the next list and event.
-  const view = (a: StoredApproval) => remote(a, facts.get(a)) ? { ...publicView(a), remote: true, digest: remoteDigest(a) } : publicView(a);
+  const view = (a: StoredApproval) => remote(a, facts.get(a)) ? { ...publicView(a), remote: true, epoch: remoteEpoch(), digest: remoteDigest(a) } : publicView(a);
   // Derive file names ourselves; a persisted path never authorizes deletion elsewhere.
   const imageFile = (id: unknown) => imageRoot && typeof id === 'string' && /^[a-f0-9]{16}$/.test(id)
     ? path.join(imageRoot, id + '.jpg') : undefined;
@@ -126,6 +129,9 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
     // Invariant: approval records without an action binding cannot authorize a tab action.
     if (list && !Array.isArray(list) && typeof list !== 'string') throw new TypeError('(list || []) is not iterable');
     for (const a of Array.isArray(list) || typeof list === 'string' ? list : []) if (isRecord(a) && a.id && /^[a-f0-9]{64}$/.test(String(a.actionHash)) && a.kind !== 'grant') {
+      // AUTH-WAIT: malformed persisted timestamps must never produce an immortal request.
+      if (typeof a.createdAt !== 'string' || typeof a.expiresAt !== 'string'
+        || !Number.isFinite(Date.parse(a.createdAt)) || !Number.isFinite(Date.parse(a.expiresAt))) continue;
       // A restored sign-in must have a valid origin before snapshots or expiry can expose it.
       if (a.kind === 'signin') {
         try { signinSite(a.url); } catch { continue; }
@@ -134,17 +140,23 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
       // requires a fresh signed app decision; the durable proof journal still rejects replay.
       if (a.status === 'granted') { a.status = 'pending'; delete a.resolvedAt; delete a.by; delete a.decidedAt; }
       entries.set(a.id, a);
+      deadlines.set(a, performance.now() + Math.max(0, Date.parse(String(a.expiresAt)) - Date.now()));
     }
   }
   function resolve(a: StoredApproval, status: string, extra: Partial<ApprovalRecord> = {}) {
-    if (status !== 'granted') removePicture(a);
+    // AUTH-WAIT: waiting for the owner never extends usable authority beyond the original TTL.
+    if (status === 'granted') {
+      a.expiresAt = new Date(Math.min(Date.parse(String(a.expiresAt)), Date.now() + ttlMinutes * 60000)).toISOString();
+      deadlines.set(a, Math.min(deadlines.get(a) ?? Infinity, performance.now() + ttlMinutes * 60000));
+    }
+    else removePicture(a);
     Object.assign(a, extra, { status, resolvedAt: new Date().toISOString() });
     onChange();
     emit('approval.resolved', { approval: view(a), tab: a.tab });
   }
   function expire() {
     for (const a of entries.values()) {
-      if ((a.status === 'pending' || a.status === 'granted') && Date.now() >= Date.parse(String(a.expiresAt))) resolve(a, 'expired');
+      if ((a.status === 'pending' || a.status === 'granted') && (Date.now() >= Date.parse(String(a.expiresAt)) || performance.now() >= (deadlines.get(a) ?? Infinity))) resolve(a, 'expired');
     }
   }
   const timer = setInterval(expire, 1000);
@@ -153,20 +165,23 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
     expire();
     return [...entries.values()].find(a => a.status === 'pending' && a.actionHash === actionHash(action) && a.targetSelector === targetSelector);
   }
-  function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false, grant, remoteFacts }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; remoteFacts?: RemoteFacts }) {
+  function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false, grant, remoteFacts, extendedWait = false }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; remoteFacts?: RemoteFacts; extendedWait?: boolean }) {
     expire();
     const hash = actionHash(action);
     const existing = pendingFor(action, targetSelector);
     if (existing) return existing;
+    // AUTH-WAIT: cap live records and their <=1 MB pictures without evicting an owner's request.
+    if (activeCount() >= 100) throw new GateError('approval-capacity', '100 requests are waiting; resolve existing requests before adding more');
     const now = Date.now();
     const a = { id: crypto.randomBytes(8).toString('hex'), kind, tab, caller, url: cleanURL(url),
-      ...(rememberable ? { rememberable: true } : {}), ...(targetSelector ? { targetSelector } : {}), ...(grant ? { grant } : {}),
+      ...(rememberable ? { rememberable: true } : {}), ...(targetSelector ? { targetSelector } : {}), ...(grant ? { grant: Object.freeze({ ...grant, rules: Object.freeze(grant.rules.map(rule => Object.freeze({ ...rule }))) }) } : {}),
       // A session grant's text is built by the broker from validated parts (no queries; its label is cleaned
       // first) and is exactly what the owner signs, so it is stored as built and never rewritten.
       detail: kind === 'grant' ? detail : cleanDetail(detail), reason: cleanDetail(reason), actionHash: hash, status: 'pending',
-      createdAt: new Date(now).toISOString(), expiresAt: new Date(now + ttlMinutes * 60000).toISOString() };
+      createdAt: new Date(now).toISOString(), expiresAt: new Date(now + (extendedWait ? waitMinutes : ttlMinutes) * 60000).toISOString() };
     savePicture(a, picture);
     entries.set(a.id, a);
+    deadlines.set(a, performance.now() + (extendedWait ? waitMinutes : ttlMinutes) * 60000);
     // Attached before the event goes out, so the first announcement already says whether it can be answered remotely.
     if (remoteFacts) facts.set(a, remoteFacts);
     const recent = [...entries.values()].filter(x => !(x.status === 'pending' || x.status === 'granted'));
@@ -213,6 +228,8 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
       throw new GateError('approval-invalid', 'remember requires a boolean on a sign-in grant, eligible send grant or eligible upload grant');
     }
     verifier.verify(proof, message(verb, a, isRecord(proof) ? proof.ts : undefined, remember));
+    // Verification and journal writes can cross the request deadline.
+    if (get(id).status !== 'pending') throw new GateError('approval-invalid', `approval ${id} is not pending`);
     // Durable policy must be saved before a remember decision can resolve the hold.
     if (remember) {
       if (!onRemember) throw new GateError('approval-invalid', 'remember storage unavailable');
@@ -235,6 +252,15 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
     if (!(a.status === 'pending' || a.status === 'granted')) throw new GateError('approval-invalid', `approval ${id} is ${a.status}`);
     resolve(a, 'cancelled');
     return view(a);
+  }
+  function revokeRemote() {
+    // AUTH-PHONE: remove every affected authority before any fallible save, cleanup or event.
+    // Do not call list/get here: an unrelated expiry sweep may fail while saving its own change.
+    const revoked = [...entries.values()].filter(a => a.status === 'granted' && a.by === 'remote');
+    for (const a of revoked) Object.assign(a, { status: 'cancelled', resolvedAt: new Date().toISOString() });
+    for (const a of revoked) removePicture(a);
+    if (revoked.length) onChange();
+    for (const a of revoked) emit('approval.resolved', { approval: view(a), tab: a.tab });
   }
   // A session grant has no agent retry: the broker acts on the signed decision itself, then closes
   // the record here, so a decision can never be acted on twice.
@@ -259,5 +285,5 @@ export function createApprovals({ ttlMinutes = 10, onChange = () => {}, emit = (
     return { pending: all.filter(a => (a.status === 'pending' || a.status === 'granted')).map(view),
       recent: all.filter(a => !(a.status === 'pending' || a.status === 'granted')).reverse().slice(0, 20).map(view) };
   }
-  return { pendingFor, pendingMatching, pruneImages, hold, attach, remotable, consume, signed, resolveRemote, cancel, complete, get, list, restore, persistable, stop: () => clearInterval(timer) };
+  return { pendingFor, pendingMatching, pruneImages, hold, attach, remotable, consume, signed, resolveRemote, revokeRemote, cancel, complete, get, list, restore, persistable, stop: () => clearInterval(timer) };
 }

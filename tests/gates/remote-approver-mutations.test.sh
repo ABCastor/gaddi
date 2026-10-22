@@ -29,7 +29,7 @@ for mutation in \
   OFF ENABLE_PROOF ENABLE_MATCH ENABLE_SAVED ENABLE_EVENT STORED_ONLY DISABLE_NOOP DISABLE_FILE DISABLE_EVENT \
   RESTART_FORGET INVALID_LOADED SIG_UNCHECKED BIND_KIND BIND_VERB BIND_DIGEST BIND_ID WINDOW NONCE_FORMAT NO_JOURNAL NONCE_JOURNAL \
   REATTACH ATTACH_ANNOUNCE PENDING_ONLY SCOPE_ANY GRANT_CAP SIGNIN QUERY MIXED DESTINATION PROTECTED ADDRESS TABLE \
-  BY_REMOTE DENY_VERB ANNOUNCE \
+  BY_REMOTE DENY_VERB ANNOUNCE REVOKE_ACTIVE \
   APPROVER GRANT_LIST GRANT_AUDIT AUDIT_APPROVER AUDIT_LEAK; do
   # Reset every source from the real tree, then apply ONE distinct mutation to this copy.
   for source in daemon/*.ts; do cp "$source" "$COPY/$source"; done
@@ -48,8 +48,8 @@ const table = {
   // Turning it on: Touch ID, the matching file, a private saved choice, an announcement.
   ENABLE_PROOF: ['ASSERT_REMOTE_ENABLE', ['daemon/remote.ts', 'proofs.verify(proof, enableMessage(fingerprint, isRecord(proof) ? proof.ts : undefined));', '']],
   ENABLE_MATCH: ['ASSERT_REMOTE_ENABLE', ['daemon/remote.ts', 'if (!found || found.fingerprint !== fingerprint) {', 'if (!found) {']],
-  ENABLE_SAVED: ['ASSERT_REMOTE_ENABLE', ['daemon/remote.ts', "save({ publicKey: String(found.key.export({ type: 'spki', format: 'pem' })), fingerprint, enabledAt });", '']],
-  ENABLE_EVENT: ['ASSERT_REMOTE_ENABLE', ['daemon/remote.ts', "emit('remote.changed', { enabled: true, fingerprint });", '']],
+  ENABLE_SAVED: ['ASSERT_REMOTE_ENABLE', ['daemon/remote.ts', "save({ publicKey: String(found.key.export({ type: 'spki', format: 'pem' })), fingerprint, enabledAt, epoch });", '']],
+  ENABLE_EVENT: ['ASSERT_REMOTE_ENABLE', ['daemon/remote.ts', "emit('remote.changed', { enabled: true, fingerprint, epoch });", '']],
   // Once on, only the key the owner turned on counts.
   STORED_ONLY: ['ASSERT_REMOTE_SWAP', ['daemon/remote.ts', 'active.key, signature)', '(candidate()?.key ?? active.key), signature)']],
   // Turning it off works at once, for anyone, and is remembered.
@@ -61,8 +61,9 @@ const table = {
   INVALID_LOADED: ['ASSERT_REMOTE_RESTART', ['daemon/remote.ts', "if (!key || fingerprintOf(key) !== saved.fingerprint) throw new Error('key');", "if (!key) throw new Error('key');"]],
   // A decision is signed by that key, for exactly one request, and is fresh.
   SIG_UNCHECKED: ['ASSERT_REMOTE_SIGNER', ['daemon/remote.ts', "if (!valid) return invalid('decision signature verification failed');", '']],
+  REVOKE_ACTIVE: ['ASSERT_REMOTE_REVOKE', ['daemon/daemon.ts', 'grants.revokeRemote();', '']],
   BIND_KIND: ['ASSERT_REMOTE_BINDING', ['daemon/remote.ts', '|${String(a.kind)}|${remoteDigest(a)}|', '|click|${remoteDigest(a)}|']],
-  BIND_VERB: ['ASSERT_REMOTE_BINDING', ['daemon/remote.ts', 'return `gaddi-remote|${verb}|', 'return `gaddi-remote|grant|']],
+  BIND_VERB: ['ASSERT_REMOTE_BINDING', ['daemon/remote.ts', 'return `gaddi-remote-v2|${epoch}|${verb}|', 'return `gaddi-remote-v2|${epoch}|grant|']],
   BIND_DIGEST: ['ASSERT_REMOTE_BINDING', ['daemon/remote.ts', '|${remoteDigest(a)}|${nonce}|${ts}`', '|${nonce}|${ts}`']],
   BIND_ID: ['ASSERT_REMOTE_BINDING', ['daemon/remote.ts', '|${String(a.id)}|${String(a.kind)}|', '|${String(a.kind)}|']],
   WINDOW: ['ASSERT_REMOTE_FRESH', ['daemon/remote.ts', 'if (Math.abs(Date.now() - ts) > WINDOW_MS) return invalid(', 'if (false) return invalid(']],

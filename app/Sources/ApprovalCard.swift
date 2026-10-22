@@ -292,7 +292,9 @@ final class ApprovalCard: NSStackView {
         where_.lineBreakMode = .byWordWrapping; where_.maximumNumberOfLines = 0; where_.isSelectable = true
         where_.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         // For a session grant this is the time to answer, not how long the grant would last.
-        let until = NSTextField(labelWithString: approval.expiresAt.map { "\(approval.kind == "grant" ? "decide by" : "until") \(displayTime($0))" } ?? "")
+        let count = approval.kind == "grant" ? ApprovalWords.grantParts(approval.detail).rules.count : 0
+        let countText = count > 20 ? "\(count) rules, " : ""
+        let until = NSTextField(labelWithString: approval.expiresAt.map { "\(countText)\(approval.kind == "grant" ? "decide by" : "until") \(displayTime($0))" } ?? "")
         until.font = Typeface.figures(12); until.textColor = Palette.inkSoft
         until.setContentHuggingPriority(.required, for: .horizontal)
         let meta = NSStackView(views: [where_, until]); meta.distribution = .fill; meta.spacing = 16; meta.alignment = .top

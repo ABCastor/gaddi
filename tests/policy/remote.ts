@@ -86,13 +86,14 @@ check('ASSERT_REMOTE_KEYS', () => {
   assert.equal(on.enabled, true); assert.equal(on.fingerprint, fp);
   assert.equal(proofs.verified.at(-1), `remote.enable|${fp}|1234`, 'the owner signs the fingerprint and the time');
   assert.equal(fs.statSync(statePath).mode & 0o777, 0o600, 'the saved choice is private');
-  assert.deepEqual(events.at(-1), ['remote.changed', { enabled: true, fingerprint: fp }]);
+  assert.deepEqual(events.at(-1), ['remote.changed', { enabled: true, fingerprint: fp, epoch: on.epoch }]);
   fs.writeFileSync(keyPath, pem(stranger.publicKey));
   assert.equal(remote.status().fingerprint, fp, 'a swapped file changes nothing');
   assert.equal(remote.status().candidate?.fingerprint, fingerprintOf(stranger.publicKey), 'it is only a candidate');
   const back = open(home);
   assert.equal(back.remote.enabled(), true, 'the choice is read back after a restart');
   assert.equal(back.remote.status().fingerprint, fp);
+  assert.equal(back.remote.epoch(), on.epoch, 'the enrollment generation survives an ordinary restart');
   const now = new Date().toISOString();
   for (const [why, text] of [
     ['not JSON', 'not json'],
@@ -147,8 +148,27 @@ check('ASSERT_REMOTE_KINDS', () => {
   for (const [minutes, expected] of [[5, true], [60, true], [120, true], [121, false], [720, false]] as const) {
     assert.equal(remote.eligible(record({ kind: 'grant', grant: spec(minutes) }), undefined, policy), expected, `a session grant of ${minutes} minutes`);
   }
+  // AUTH-LARGE-GRANT: larger Mac cards never silently expand phone authority.
+  const many = Array.from({ length: 24 }, (_, i) => ({ permission: 'post', origin: `https://app${i}.example.test`, path: '/' }));
+  assert.equal(remote.eligible(record({ kind: 'grant', grant: { ...spec(60), rules: many.slice(0, 20) } }), undefined, policy), true);
+  assert.equal(remote.eligible(record({ kind: 'grant', grant: { ...spec(60), rules: many } }), undefined, policy), false, 'over twenty rules stays Touch ID only');
   assert.equal(remote.eligible(record({ kind: 'grant' }), undefined, policy), false, 'a grant request without its spec');
   assert.equal(remote.eligible(record({ kind: 'grant', grant: { minutes: 60 } }), undefined, policy), false, 'or with a broken one');
+});
+
+check('ASSERT_REMOTE_EPOCH', () => {
+  const { remote, keyPath } = fresh();
+  fs.writeFileSync(keyPath, pem(bot.publicKey));
+  const target = { id: 'epoch-fixture', kind: 'click', detail: 'Post' };
+  remote.enable(fingerprintOf(bot.publicKey), { ts: 10, sig: 'owner' });
+  const previous = remote.epoch();
+  const ts = Date.now(), nonce = 'epoch-fixture-nonce-123456';
+  const digest = crypto.createHash('sha256').update('click|epoch-fixture|Post').digest('hex');
+  const sig = crypto.sign(null, Buffer.from(`gaddi-remote-v2|${previous}|grant|epoch-fixture|click|${digest}|${nonce}|${ts}`), bot.privateKey).toString('base64');
+  remote.disable();
+  remote.enable(fingerprintOf(bot.publicKey), { ts: 11, sig: 'owner' });
+  assert.notEqual(remote.epoch(), previous, 'reenrollment invalidates earlier card signatures even for the same key');
+  assert.throws(() => remote.verify(target, { verb: 'grant', nonce, ts, sig }), refusedWith('proof-invalid'));
 });
 
 // ---------------------------------------------------------------- what makes one decision valid
@@ -158,7 +178,7 @@ check('ASSERT_REMOTE_DECISION', () => {
   const target: StoredApproval = { id: 'abc123', kind: 'click', status: 'pending', detail: 'Post' };
   const digest = crypto.createHash('sha256').update('click|abc123|Post').digest('hex');
   const sign = (verb: string, nonce: string, ts: number, key: KeyObject = bot.privateKey, over = digest) =>
-    crypto.sign(null, Buffer.from(`gaddi-remote|${verb}|abc123|click|${over}|${nonce}|${ts}`), key).toString('base64');
+    crypto.sign(null, Buffer.from(`gaddi-remote-v2|${remote.epoch()}|${verb}|abc123|click|${over}|${nonce}|${ts}`), key).toString('base64');
   const now = Date.now();
   let n = 0;
   const nonce = () => `nonce-${String(++n).padStart(12, '0')}`;
@@ -170,6 +190,8 @@ check('ASSERT_REMOTE_DECISION', () => {
   remote.enable(fingerprintOf(bot.publicKey), { ts: 1, sig: 'owner' });
   const first = request('grant');
   assert.equal(remote.verify(target, first), 'grant', 'a good decision');
+  const beforeEpoch = remote.epoch();
+  assert.match(beforeEpoch!, /^[a-f0-9]{32}$/);
   assert.throws(() => remote.verify(target, first), refusedWith('proof-invalid'), 'is good once');
   // A different decision (so a different signature) under the same nonce: only the nonce can refuse it.
   assert.throws(() => remote.verify(target, request('deny', { nonce: first.nonce })), refusedWith('proof-invalid'), 'a nonce is used once');

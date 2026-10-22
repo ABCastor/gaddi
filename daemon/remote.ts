@@ -13,7 +13,7 @@
 //     through the very scan a session grant uses (grants.ts `remoteWaivable`). Payments, purchases, sends,
 //     sign-in, security and protected pages, key holds, navigation, extension operations and eval are never
 //     remotely approvable, whatever a signature says. Unknown means no.
-//  3. A decision is bound to one request (verb, id, kind and a digest of the text the owner reads), carries a nonce
+//  3. A decision is bound to one enrollment and request (epoch, verb, id, kind and a digest of the text the owner reads), carries a nonce
 //     and a timestamp, and is single use: its signature and its nonce are written to the durable journal BEFORE the
 //     broker acts, so a replay fails, also after a restart.
 //  4. HONEST LIMIT: the remote approver's key is a file readable by any process running as the same macOS user,
@@ -40,8 +40,8 @@ const KEY_FILE_MAX = 4096;
 
 export const enableMessage = (fingerprint: string, ts: unknown) => `remote.enable|${fingerprint}|${ts}`;
 // The text the remote approver signs. `digest` is remoteDigest(record): kind, id and the detail the owner reads.
-export function decisionMessage(verb: string, a: { id?: unknown; kind?: unknown; detail?: unknown }, nonce: string, ts: number) {
-  return `gaddi-remote|${verb}|${String(a.id)}|${String(a.kind)}|${remoteDigest(a)}|${nonce}|${ts}`;
+export function decisionMessage(verb: string, a: { id?: unknown; kind?: unknown; detail?: unknown }, nonce: string, ts: number, epoch: string) {
+  return `gaddi-remote-v2|${epoch}|${verb}|${String(a.id)}|${String(a.kind)}|${remoteDigest(a)}|${nonce}|${ts}`;
 }
 const sha256 = (data: Buffer) => crypto.createHash('sha256').update(data).digest('hex');
 
@@ -61,7 +61,7 @@ export function createRemote({ statePath, keyPath, proofs, emit = () => {}, log 
   emit?: (event: string, data: unknown) => void; log?: (...args: unknown[]) => void;
 }) {
   // The one key that may answer, with when the owner turned it on. Absent means off.
-  let active: { key: KeyObject; fingerprint: string; enabledAt: string } | undefined;
+  let active: { key: KeyObject; fingerprint: string; enabledAt: string; epoch: string } | undefined;
 
   // Enablement survives a restart, like a remembered sign-in: it is the owner's standing choice. But only a file
   // that is exactly what enable() wrote is believed; a key that is not Ed25519, a fingerprint that does not match
@@ -79,7 +79,11 @@ export function createRemote({ statePath, keyPath, proofs, emit = () => {}, log 
         || typeof saved.enabledAt !== 'string' || !Number.isFinite(Date.parse(saved.enabledAt))) throw new Error('shape');
       const key = ed25519(saved.publicKey);
       if (!key || fingerprintOf(key) !== saved.fingerprint) throw new Error('key');
-      active = { key, fingerprint: saved.fingerprint, enabledAt: saved.enabledAt };
+      // Existing owner enrollment keeps its scope; legacy proof bytes do not survive this protocol upgrade.
+      const epoch = saved.epoch === undefined
+        ? sha256(Buffer.from(`${saved.fingerprint}|${saved.enabledAt}`, 'utf8')).slice(0, 32) : saved.epoch;
+      if (typeof epoch !== 'string' || !/^[a-f0-9]{32}$/.test(epoch)) throw new Error('epoch');
+      active = { key, fingerprint: saved.fingerprint, enabledAt: saved.enabledAt, epoch };
       log(`remote approval is on (key ${saved.fingerprint.slice(0, 16)})`);
     } catch { log('remote approval state is invalid: it stays off'); }
   }
@@ -97,11 +101,11 @@ export function createRemote({ statePath, keyPath, proofs, emit = () => {}, log 
 
   function status() {
     const found = candidate();
-    return { enabled: active !== undefined, ...(active ? { fingerprint: active.fingerprint, enabledAt: active.enabledAt } : {}),
+    return { enabled: active !== undefined, ...(active ? { fingerprint: active.fingerprint, enabledAt: active.enabledAt, epoch: active.epoch } : {}),
       candidate: found ? { fingerprint: found.fingerprint } : null };
   }
 
-  function save(state: { publicKey: string; fingerprint: string; enabledAt: string }) {
+  function save(state: { publicKey: string; fingerprint: string; enabledAt: string; epoch: string }) {
     const temporary = statePath + '.' + crypto.randomUUID() + '.tmp';
     try {
       const fd = fs.openSync(temporary, 'wx', 0o600);
@@ -125,11 +129,11 @@ export function createRemote({ statePath, keyPath, proofs, emit = () => {}, log 
     if (!found || found.fingerprint !== fingerprint) {
       throw new GateError('approval-invalid', 'the key file is missing, or is no longer the key you were shown: nothing was turned on');
     }
-    const enabledAt = new Date().toISOString();
+    const enabledAt = new Date().toISOString(), epoch = crypto.randomBytes(16).toString('hex');
     // Written before it takes effect, so a failed write turns nothing on.
-    save({ publicKey: String(found.key.export({ type: 'spki', format: 'pem' })), fingerprint, enabledAt });
-    active = { key: found.key, fingerprint, enabledAt };
-    emit('remote.changed', { enabled: true, fingerprint });
+    save({ publicKey: String(found.key.export({ type: 'spki', format: 'pem' })), fingerprint, enabledAt, epoch });
+    active = { key: found.key, fingerprint, enabledAt, epoch };
+    emit('remote.changed', { enabled: true, fingerprint, epoch });
     return status();
   }
 
@@ -154,7 +158,7 @@ export function createRemote({ statePath, keyPath, proofs, emit = () => {}, log 
   // trusted. Unknown means no.
   function eligible(a: StoredApproval, facts: RemoteFacts | undefined, policy: Policy): boolean {
     if (!active || a.status !== 'pending') return false;
-    if (a.kind === 'grant') return isGrantSpec(a.grant) && a.grant.minutes <= REMOTE_GRANT_MINUTES;
+    if (a.kind === 'grant') return isGrantSpec(a.grant) && a.grant.minutes <= REMOTE_GRANT_MINUTES && a.grant.rules.length <= 20;
     if (a.kind !== 'click' && a.kind !== 'press' && a.kind !== 'upload') return false;
     return facts !== undefined && facts.scope.kind === a.kind
       && remoteWaivable(policy, facts.pageURL, { outcome: 'hold', reason: facts.reason }, facts.scope);
@@ -174,7 +178,7 @@ export function createRemote({ statePath, keyPath, proofs, emit = () => {}, log 
     const signature = Buffer.from(sig, 'base64');
     if (signature.length !== 64) return invalid('invalid decision signature');
     let valid = false;
-    try { valid = crypto.verify(null, Buffer.from(decisionMessage(verb, a, nonce, ts), 'utf8'), active.key, signature); }
+    try { valid = crypto.verify(null, Buffer.from(decisionMessage(verb, a, nonce, ts, active.epoch), 'utf8'), active.key, signature); }
     catch { return invalid('decision signature could not be checked'); }
     if (!valid) return invalid('decision signature verification failed');
     // Spent only after it verified, so unsigned noise never grows the journal; spent before anything is done.
@@ -182,5 +186,5 @@ export function createRemote({ statePath, keyPath, proofs, emit = () => {}, log 
     return verb;
   }
 
-  return { status, enabled: () => active !== undefined, enable, disable, eligible, verify };
+  return { status, epoch: () => active?.epoch, enabled: () => active !== undefined, enable, disable, eligible, verify };
 }

@@ -18,6 +18,19 @@ import AppKit
         check(Typeface.interface(13).familyName?.hasPrefix("Commissioner") == true, "interface text uses the bundled Commissioner")
         check(Typeface.figures(12).familyName?.hasPrefix("Martian Mono") == true, "times use the bundled Martian Mono")
 
+        let menu = ApprovalMenu(target: NSApp, open: #selector(NSApplication.hide(_:)),
+            remembered: #selector(NSApplication.hide(_:)), quit: #selector(NSApplication.hide(_:)))
+        let trackingMenu = menu.menu, rows = menu.menu.items
+        menu.update(connected: true, connectionText: "Connected", count: 2, grants: 1, remote: true, errorText: nil)
+        check(rows[0].title == "2 actions are waiting for you" && rows[5].title == "Review and decide…",
+              "the stable menu reflects the waiting queue")
+        menu.update(connected: true, connectionText: "Connected", count: 0, grants: 0, remote: false, errorText: "Readable failure")
+        check(menu.menu === trackingMenu && zip(rows, menu.menu.items).allSatisfy { pair in pair.0 === pair.1 },
+              "polling preserves the tracking menu and every row identity")
+        check(rows[0].title == "Nothing is waiting for you" && rows[5].title == "Open Gaddi…"
+              && !rows[1].isHidden && rows[1].title == "Readable failure" && rows[2].isHidden && rows[3].isHidden,
+              "an empty queue updates menu state without replacing it or hiding errors")
+
         // A capture with a clearly coloured target, as the broker would store it.
         let path = directory.appendingPathComponent("card-fixture.jpg")
         let width = 480, height = 260
@@ -483,6 +496,20 @@ import AppKit
         let phoneFrozen = RemotePanel(phoneOnStatus, decisions: [], canTurnOn: true, canTurnOff: false,
             turnOn: { fatalError("frozen turn on ran") }, turnOff: { fatalError("frozen turn off ran") })
         check(descendants(phoneFrozen).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }, "a disconnected panel cannot turn it off")
+        // AUTH-LARGE-GRANT: render the longest native request; the last rule must fit and remain readable.
+        let longRules = (1...100).map { "post on app\($0).example.test/" + String(repeating: "p", count: 170) }
+        let hundred = Approval(["id": "hundred", "kind": "grant", "caller": "codex", "reason": "session grant",
+            "detail": (longRules + ["for 2 hours"]).joined(separator: "\n"),
+            "expiresAt": Date().addingTimeInterval(540).timeIntervalSince1970 * 1000])!
+        for width: CGFloat in [528, 408] {
+            let card = ApprovalCard(hundred, enabled: true) { _ in }
+            _ = try render(card, width: width, name: "hundred-rules-\(Int(width))", appearance: NSAppearance(named: .aqua)!)
+            let labels = descendants(card).compactMap { $0 as? NSTextField }
+            check(labels.contains { $0.stringValue == longRules.joined(separator: "\n") }
+                  && labels.allSatisfy { fits($0, within: card) }, "all 100 longest rules fit at \(Int(width))pt, including rule 100")
+            check(labels.contains { $0.stringValue.hasPrefix("100 rules, decide by") }, "the large request states its rule count")
+        }
+
         let phoneCard = ApprovalCard(approval, enabled: true, remote: true) { _ in }
         _ = try render(phoneCard, width: 528, name: "phone-card-light-528", appearance: NSAppearance(named: .aqua)!)
         check(descendants(phoneCard).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Can also be approved from your phone." },

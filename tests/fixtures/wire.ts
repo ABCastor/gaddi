@@ -3,12 +3,12 @@ import { isRecord, isBrokerResult, isTabInfo, parseJSON } from '../../shared/pro
 import type { BrokerResult, Reply, TabInfo, ChromeRequest } from '../../shared/protocol.ts';
 import type { ApprovalRecord } from '../../daemon/approvals.ts';
 // `remote` and `digest` appear only while the owner's other device may answer the request (remote approval).
-export type PublicApproval = Omit<ApprovalRecord, 'actionHash' | 'grant'> & { remote?: boolean; digest?: string };
+export type PublicApproval = Omit<ApprovalRecord, 'actionHash' | 'grant'> & { remote?: boolean; digest?: string; epoch?: string };
 // An active session grant as the broker lists it: never the chat's session key, only whether it is the asker's own.
 // `approver` is present only when the owner's other device approved it.
 export interface PublicGrant { id: string; caller: string; label: string | null; rules: string[]; createdAt: string; expiresAt: string; mine: boolean; approver?: 'remote' }
 // What remote.status, remote.enable and remote.disable answer.
-export interface RemoteState { enabled: boolean; fingerprint?: string; enabledAt?: string; candidate: { fingerprint: string } | null }
+export interface RemoteState { enabled: boolean; fingerprint?: string; enabledAt?: string; epoch?: string; candidate: { fingerprint: string } | null }
 export interface AuditEntry { method: string; outcome: string; caller: string; tab: number | null; url: string; changed?: boolean; tabs?: { tab: number; url: string }[]; grant?: string; reason?: string; rules?: string[]; expiresAt?: string }
 interface ExtraResults {
   'approvals.list': { pending: PublicApproval[]; recent: PublicApproval[]; grants: PublicGrant[] };

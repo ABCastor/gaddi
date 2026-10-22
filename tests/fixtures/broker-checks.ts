@@ -38,7 +38,7 @@ if (scenario === 'remote-approver') {
 }
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 fs.writeFileSync(publicPath, publicKey.export({ type: 'spki', format: 'pem' }));
-fs.writeFileSync(path.join(home, 'policy.json'), JSON.stringify({ ...(scenario === 'sessions' && mode !== 'own' ? { browser: { window: 'shared', show: 'attention' } } : {}), approvals: { ttl_minutes: scenario === 'approval' ? 0.03 : scenario === 'approval-picture' ? 0.1 : 10 }, deny: { type_into: ['input[type=password]', 'input[autocomplete=current-password]', '.sensitive'] } }));
+fs.writeFileSync(path.join(home, 'policy.json'), JSON.stringify({ ...(scenario === 'sessions' && mode !== 'own' ? { browser: { window: 'shared', show: 'attention' } } : {}), approvals: { ...(scenario === 'approval-wait' ? { wait_minutes: 1, grant_rules_max: 100 } : {}), ttl_minutes: scenario === 'approval-wait' ? 0.1 : scenario === 'approval' ? 0.03 : scenario === 'approval-picture' ? 0.1 : 10 }, deny: { type_into: ['input[type=password]', 'input[autocomplete=current-password]', '.sensitive'] } }));
 if (scenario === 'eval-overlay') fs.copyFileSync(path.join(repo, 'tests/fixtures/eval-overlay.json'), path.join(home, 'policy.json'));
 const env = { ...process.env, GADDI_APP_LAUNCHER: launcher, OMNIREAD_BIN: path.join(home, 'missing-omniread'), GADDI_HOME: home, GADDI_SOCKET: socket, GADDI_APPROVER_PUB: publicPath,
   // Never the owner's own drop-in file, whatever his shell has set.
@@ -329,6 +329,46 @@ async function evalOverlay(c: Client, b: Bridge) {
   assert.deepEqual(bridge.calls.filter(m => m.method === 'chrome.eval').map(m => m.params.expression), expressions);
   pass('same-expressions-forward-without-overlay');
 }
+// AUTH-WAIT: drive the actual broker over its private socket, with fixture Chrome only.
+async function approvalWait(c: Client, b: Bridge) {
+  b.control.describeName = 'Post';
+  const held = await pending(c, await rejected(c, 'click', { tab: 7, selector: '#post' }, 'held'));
+  assert.ok(Date.parse(held.expiresAt!) - Date.now() > 50000, 'eligible action can wait a minute instead of six seconds');
+  b.control.describeName = 'Pay now';
+  const money = await pending(c, await rejected(c, 'click', { tab: 7, selector: '#pay' }, 'held'));
+  assert.ok(Date.parse(money.expiresAt!) - Date.now() < 7000, 'money never inherits the long wait');
+  await delay(7000);
+  assert.equal((await result(c, 'approvals.list')).pending.find(a => a.id === held.id)?.status, 'pending');
+  await rejected(c, 'approval.grant', { id: money.id, proof: proof(money) }, 'approval-invalid');
+  await result(c, 'approval.grant', { id: held.id, proof: proof(held) });
+  const granted = (await result(c, 'approvals.list')).pending.find(a => a.id === held.id);
+  assert.ok(granted && Date.parse(granted.expiresAt!) - Date.now() <= 6000, 'decision gives at most the original six-second authority');
+  b.control.describeName = 'Post';
+  await result(c, 'click', { tab: 7, selector: '#post', approval: held.id });
+  await rejected(c, 'click', { tab: 7, selector: '#post', approval: held.id }, 'approval-used');
+  pass('extended pending wait, restricted wait, short signed decision and one use through the live broker');
+  const session = 'wait-test-' + crypto.randomUUID();
+  const lifetime = client();
+  await result(lifetime, 'session.begin', { session });
+  const rules = Array.from({ length: 23 }, (_, i) => `post https://app${i}.example.test/projects`);
+  rules.push('post https://unseen.example/shop');
+  const large = await pending(c, await rejected(c, 'grant.request', { session, rules, minutes: 60 }, 'held'));
+  assert.equal(large.detail.split('\n').filter(line => line.startsWith('post on ')).length, 24, 'owner sees every rule');
+  await rejected(c, 'approval.grant', { id: large.id, proof: proof({ ...large, detail: large.detail + '\npost on attacker.example' }) }, 'proof-invalid');
+  await result(c, 'approval.grant', { id: large.id, proof: proof(large) });
+  const list = await result(c, 'approvals.list', { session });
+  assert.equal(list.grants.find(g => g.mine)?.rules.length, 24);
+  await result(c, 'close', { tabs: [7] });
+  b.tabs.push({ id: 9, active: true, url: 'https://unseen.example/shop', title: 'Replacement fixture' });
+  await result(c, 'click', { tab: 9, selector: '#post', session });
+  b.control.describeName = 'Pay now';
+  await rejected(c, 'click', { tab: 9, selector: '#pay', session }, 'held');
+  b.control.describeName = 'Post';
+  await rejected(c, 'click', { tab: 9, selector: '#post' }, 'held');
+  pass('24-rule grant is signed in full and covers a replacement tab only for its approved chat and verb');
+
+}
+
 async function approvalChecks(c: Client, b: Bridge) {
   const events = client(); await result(events, 'events.subscribe');
   const a = await pending(c, await rejected(c, 'click', { selector: '#pay' }, 'held'));
@@ -1549,13 +1589,13 @@ async function remoteApprover(c: Client, b: Bridge) {
     const message = options.text ?? `remote.enable|${fingerprint}|${ts}`;
     return { ts, sig: crypto.sign('sha256', Buffer.from(message), options.key ?? privateKey).toString('base64') };
   }
-  // One decision of the bot, built from the public contract: it signs gaddi-remote|verb|id|kind|digest|nonce|ts.
-  function decision(a: { id: string; kind: string; detail: string }, verb: 'grant' | 'deny', tweak: Tweak = {}) {
+  // Independent v2 frame, bound to the enrollment generation advertised on the immutable card.
+  function decision(a: { id: string; kind: string; detail: string; epoch?: string }, verb: 'grant' | 'deny', tweak: Tweak = {}) {
     const nonce = tweak.nonce ?? crypto.randomBytes(12).toString('base64url');
     const ts = tweak.ts ?? Date.now();
     const signed = { verb: String(verb), id: a.id, kind: a.kind, digest: digestOf(a), ...tweak.signs };
-    const parts = ['gaddi-remote', signed.verb, signed.id, signed.kind, signed.digest, nonce, String(ts)];
-    const skipped = tweak.omit === undefined ? -1 : { verb: 1, id: 2, kind: 3, digest: 4 }[tweak.omit];
+    const parts = ['gaddi-remote-v2', a.epoch ?? 'missing', signed.verb, signed.id, signed.kind, signed.digest, nonce, String(ts)];
+    const skipped = tweak.omit === undefined ? -1 : { verb: 2, id: 3, kind: 4, digest: 5 }[tweak.omit];
     const message = parts.filter((_, index) => index !== skipped).join('|');
     const sig = crypto.sign(null, Buffer.from(message), tweak.key ?? bot.privateKey).toString('base64');
     secrets.push(nonce, sig);
@@ -1733,6 +1773,30 @@ async function remoteApprover(c: Client, b: Bridge) {
     await runCLI(['remote', 'on'], 2);
     await runCLI(['remote', 'sideways'], 2);
     assert.equal((await result(conn, 'remote.status')).enabled, false, 'the command line cannot turn it on');
+  });
+
+  await check('ASSERT_REMOTE_REVOKE', async () => {
+    await reset(); await turnOn();
+    const one = await heldRecord(await clickAs('Post'));
+    assert.equal((await answer(decision(one, 'grant'))).error, undefined);
+    const native = await heldRecord(await clickAs('Delete'));
+    await result(conn, 'approval.grant', { id: native.id, proof: proof(native) });
+    const session = await liveSession();
+    const grant = await heldRecord(await askGrant(session, 45));
+    assert.equal((await answer(decision(grant, 'grant'))).error, undefined);
+    assert.equal((await grantsOf(session)).length, 1, 'positive control: remote grant really exists');
+    const waiting = await heldRecord(await clickAs('Post', undefined, { selector: '#other' }));
+    const stale = decision(waiting, 'grant');
+    await result(conn, 'remote.disable');
+    assert.equal((await recordOf(one.id)).status, 'cancelled', 'off revokes unused remote one-shot authority');
+    assert.equal((await recordOf(native.id)).status, 'granted', 'native authority is preserved');
+    assert.equal((await grantsOf(session)).length, 0, 'off revokes remote-derived active grants');
+    await turnOn();
+    const refreshed = await recordOf(waiting.id);
+    assert.notEqual(refreshed.epoch, waiting.epoch, 'same key gets a new enrollment epoch');
+    await refusedWith(stale, 'proof-invalid');
+    assert.equal((await recordOf(waiting.id)).status, 'pending', 'old button cannot resolve it');
+    assert.equal((await answer(decision(refreshed, 'grant'))).error, undefined, 'fresh generation still works');
   });
 
   await check('ASSERT_REMOTE_SIGNER', async () => {
@@ -2046,6 +2110,7 @@ try {
   else if (scenario === 'password') await passwords(c, b);
   else if (scenario === 'eval-overlay') await evalOverlay(c, b);
   else if (scenario === 'approval') await approvalChecks(c, b);
+  else if (scenario === 'approval-wait') await approvalWait(c, b);
   else if (scenario === 'approval-picture') await approvalPictures(c, b);
   else if (scenario === 'signed-grant') await signedGrant(c);
   else if (scenario === 'advice') await adviceChecks(c, b);

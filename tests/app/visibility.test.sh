@@ -31,3 +31,17 @@ if "$STATE/no-presentation" > "$STATE/mutation.log" 2>&1; then
 fi
 grep -Fq 'FAIL pending snapshot presents even without notifications or events' "$STATE/mutation.log"
 echo 'FALSIFIED invisible approvals: suppressing automatic presentation fails the original notification-independent visibility path'
+python3 - "$REPO/app/Sources/Protocol.swift" "$STATE/Protocol-dismiss.swift" <<'PY'
+from pathlib import Path
+import sys
+source = Path(sys.argv[1]).read_text()
+old = 'reviewing = false\n        return true'
+assert source.count(old) == 1
+Path(sys.argv[2]).write_text(source.replace(old, 'reviewing = false\n        return false'))
+PY
+compile "$STATE/Protocol-dismiss.swift" "$STATE/no-dismissal"
+if "$STATE/no-dismissal" > "$STATE/dismissal-mutation.log" 2>&1; then
+  echo 'FAIL stale review mutation passed'; exit 1
+fi
+grep -Fq 'FAIL the last approval closes its finished review' "$STATE/dismissal-mutation.log"
+echo 'FALSIFIED stale review: retaining the last resolved approval window fails the queue lifecycle check'

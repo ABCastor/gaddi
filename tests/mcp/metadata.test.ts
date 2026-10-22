@@ -12,10 +12,15 @@ try {
     env: { GADDI_SOCKET: `/tmp/gaddi-metadata-${crypto.randomUUID()}.sock` } }));
   const listed = await client.listTools();
   // Agents never decide: no tool reaches approval.remote or a remote.* method (the owner's other device,
-  // daemon/remote.ts), and none even mentions one. Checked before the exact list so a stray tool names itself.
+  // daemon/remote.ts). Help may explain owner phone approval without exposing a signing endpoint.
   for (const tool of listed.tools) {
-    assert.ok(!/remote|phone|another device/i.test(`${tool.name} ${tool.description ?? ''} ${JSON.stringify(tool.inputSchema)}`), `ASSERT_REMOTE_NO_MCP: ${tool.name}`);
+    assert.ok(!/remote|phone|another device/i.test(tool.name), `ASSERT_REMOTE_NO_MCP: ${tool.name}`);
   }
+  for (const tool of listed.tools) {
+    const properties = isRecord(tool.inputSchema.properties) ? tool.inputSchema.properties : {};
+    for (const field of ['proof', 'sig', 'nonce', 'fingerprint', 'verb']) assert.ok(!(field in properties), `ASSERT_REMOTE_NO_MCP: ${tool.name}.${field}`);
+  }
+  assert.match(listed.tools.find(t => t.name === 'browser_grant')!.description!, /Phone grants: max 120 minutes and 20 rules/);
   console.log('PASS ASSERT_REMOTE_NO_MCP');
   assert.deepEqual(listed.tools.map(t => t.name).sort(), [
     'tabs', 'bookmarks', 'look', 'wait', 'read', 'open', 'goto', 'back', 'click', 'type', 'press', 'hover', 'scroll', 'select', 'upload', 'signin', 'eval', 'emulate', 'screenshot', 'close', 'show', 'group', 'approvals', 'grant', 'status', 'extensions',
@@ -62,7 +67,7 @@ try {
   assert.deepEqual([...schema('grant').required].sort(), ['minutes', 'rules'], 'ASSERT_GRANT_SCHEMA');
   const grantRules = schema('grant').properties.rules;
   assert.ok(isRecord(grantRules) && isRecord(grantRules.items), 'ASSERT_GRANT_SCHEMA');
-  assert.equal(grantRules.type, 'array', 'ASSERT_GRANT_SCHEMA'); assert.equal(grantRules.minItems, 1, 'ASSERT_GRANT_SCHEMA'); assert.equal(grantRules.maxItems, 20, 'ASSERT_GRANT_SCHEMA');
+  assert.equal(grantRules.type, 'array', 'ASSERT_GRANT_SCHEMA'); assert.equal(grantRules.minItems, 1, 'ASSERT_GRANT_SCHEMA'); assert.equal(grantRules.maxItems, 100, 'ASSERT_GRANT_SCHEMA');
   assert.equal(grantRules.items.type, 'string', 'ASSERT_GRANT_SCHEMA'); assert.equal(grantRules.items.maxLength, 300, 'ASSERT_GRANT_SCHEMA');
   assert.match(String(grantRules.description), /upload\|post\|delete/, 'ASSERT_GRANT_SCHEMA');
   assert.match(String(grantRules.description), /https URL prefix/, 'ASSERT_GRANT_SCHEMA');

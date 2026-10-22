@@ -10,6 +10,8 @@ Each signature binds the decision to the approval ID, action kind, tab, digest o
 
 The approval panel can show a page capture around a click or Enter target. This is context for your decision, not proof that the page is honest. A page can change between inspection and Chrome input. Page-version checks narrow that gap but are not atomic with trusted input.
 
+The status menu updates in place while open. An approval review closes after its queue clears; authentication, visible errors and disconnections keep it open. A manually opened settings panel stays available when an approval arrives and resolves. Closing that panel and receiving a new request starts a fresh review.
+
 ## Remembered permissions
 
 Sign-in grants and upload permissions cover one exact origin, including scheme and port. Eligible sends cover that origin plus a specific send kind: Enter and a Send button have separate scopes. Remembering or revoking requires a signed app decision. Payments, deletion, security pages, uploads and denied actions never offer remembered send permission. The default policy remembers nothing.
@@ -18,7 +20,7 @@ An eligible upload card offers **Always allow uploads on this site** alongside *
 
 ## Session grants
 
-An agent can ask once, at the start of a chat, to skip a few holds for a while. It calls `browser_grant` with rules of the form `<upload|post|delete> <https address prefix>` (for example `upload https://github.com/settings`), a length from 5 minutes to 12 hours, and an optional label in its own words. Gaddi shows a card with the rules, the length and the label, marked as the agent's description. Only your answer creates the grant, with Touch ID in the Gaddi app or, if you have turned it on, from your phone for a grant of at most 2 hours (see [approvals from another device](#approvals-from-another-device)); nothing an agent or a page says can.
+An agent can ask once, at the start of a chat, to skip a few holds for a while. It calls `browser_grant` with rules of the form `<upload|post|delete> <https address prefix>` (for example `upload https://github.com/settings`), a length from 5 minutes to 12 hours, and an optional label in its own words. Gaddi shows a card with the rules, the length and the label, marked as the agent's description. Only your answer creates the grant, with Touch ID in the Gaddi app or, if you have turned it on, from your phone for a grant of at most 2 hours and twenty rules (see [approvals from another device](#approvals-from-another-device)); nothing an agent or a page says can.
 
 - **What can be waived.** Only an upload hold, a hold on `post`, `publish`, `share` (and their Italian forms) and a hold on `delete`, `remove` and their forms. Payments, purchases, sending email or messages, sign-in, account and security changes, every protected address, guarded keys, navigation holds, extension operations and any verb you add yourself stay held every time. A request that names any of those is refused outright, and Gmail cannot be named at all. A refused or denied action stays refused or denied.
 - **Where it applies.** A rule covers its exact site (scheme, host and port) and the path prefix on a path boundary: `/settings` covers `/settings/profile`, never `/settingsX`. A button whose name also contains a verb that is not granted ("Post and pay") stays held, and so does a link that leads outside the granted prefix or to a protected address. An upload still goes through the secret-file refusal first.
@@ -32,16 +34,16 @@ The owner can also edit the local policy. That file and the broker run under the
 
 ## Approvals from another device
 
-A separate program of yours, for instance a Telegram bot running on your own machine, can answer some of Gaddi's requests so that you can say yes from your phone. It is **off by default**. **Only your Touch ID in the Gaddi app turns it on.** **Anyone who can reach the socket can turn it off**, because turning it off only removes authority. It covers only the lowest tiers, and only requests that Gaddi itself marks as answerable.
+A separate program of yours, for instance a Telegram bot running on your own machine, can answer some of Gaddi's requests so that you can say yes from your phone. It is **off by default**. **Only your Touch ID in the Gaddi app turns it on.** **Anyone who can reach the socket can turn it off**, because turning it off only removes authority. It covers only the explicit upload/post/delete tier, and only requests Gaddi itself marks as answerable. Deletion can be permanent; uploads and publishing can expose data.
 
 ### What it can answer
 
-While it is on, a waiting request carries `remote: true` and a `digest` if it is one of these, and only then:
+While it is on, a waiting request carries `remote: true`, a `digest` and its enrollment `epoch` if it is one of these, and only then:
 
 - **An upload, a post or a delete** that a session grant on that page could waive. The hold is the same upload, post or delete hold; the page is an address a grant rule can name (https, or http on this Mac) and is not protected (payments, account and security pages, Gmail); every action word in the button's name is one of those three, so "Post and pay" is not; and a link's destination is on the same site and not protected. Gaddi judges this with the very scan session grants use, from the page address as it was when the request was held (a query can make a page protected), and again every time the request is listed or answered.
-- **A session-grant request of 2 hours or less.**
+- **A session-grant request of 2 hours or less and no more than twenty rules.**
 
-Never, whatever the program sends: payments and purchases, sending email or messages, sign-in, account and security changes and every protected address, guarded keys (such as Cmd+Enter in Gmail), navigation, extension operations, script evaluation, and anything Gaddi did not mark. Those need your Touch ID on this Mac every time.
+Never, whatever the program sends: payments and purchases, sending email or messages, sign-in, account and security changes and every protected address, guarded keys (such as Cmd+Enter in Gmail), navigation, extension operations, script evaluation, and anything Gaddi did not mark. They are outside this remote/session-grant path; separately remembered permissions are described above.
 
 ### The contract
 
@@ -49,11 +51,12 @@ Never, whatever the program sends: payments and purchases, sending email or mess
 2. **Turn on.** In the Gaddi panel, **Approvals from your phone**, **Turn on…** shows the waiting key's fingerprint (the first 16 hex digits of the SHA-256 of its DER SPKI, in groups of four) so you can compare it with the one the program shows you, then asks for Touch ID. Touch ID signs `remote.enable|<fingerprint>|<ts>` over the full fingerprint. Gaddi stores that key (`remote.json`, owner-only) and uses only it from then on. The saved choice survives a restart; a damaged file means off.
 3. **Listen.** Connect to the socket and send `{"id":1,"method":"events.subscribe","params":{"caller":"marcus"}}`. Act on `approval.pending` events whose `approval.remote === true`, or poll `approvals.list` and keep the rows where `remote === true`. Listen for `remote.changed` too: it announces on and off, and after it you should list again, because requests that were already waiting change their flag.
 4. **Show and answer.** Show the owner `caller`, `kind`, `detail`, and `url`. A request that has a page capture also carries `imagePath` (a JPEG on this Mac) and `box` (the target, in the picture's pixels); showing the picture with the target outlined lets him see what he is approving, as the Mac does. When he decides, send `{"method":"approval.remote","params":{"id":…,"verb":"grant"|"deny","nonce":…,"ts":…,"sig":…}}` where
-   - `sig` is the base64 Ed25519 signature (64 bytes) of the UTF-8 text `gaddi-remote|<verb>|<id>|<kind>|<digest>|<nonce>|<ts>`;
+   - `sig` is the base64 Ed25519 signature (64 bytes) of the UTF-8 text `gaddi-remote-v2|<epoch>|<verb>|<id>|<kind>|<digest>|<nonce>|<ts>`;
+   - `epoch` is the exact 32-hex enrollment generation from the displayed immutable card, never refreshed behind that card;
    - `digest` is the `digest` field of the request, the SHA-256 hex of `<kind>|<id>|<detail>`, so a decision cannot be moved to another request or to a request whose text changed;
    - `nonce` is 16 to 128 characters of `A-Za-z0-9_-`, never reused;
    - `ts` is the time in whole milliseconds, within 120 seconds of Gaddi's clock.
-5. **Off and status.** `remote.status` reports `{enabled, fingerprint, enabledAt, candidate}`. `remote.disable` turns it off at once and needs no proof.
+5. **Off and status.** `remote.status` reports `{enabled, fingerprint, enabledAt, epoch, candidate}`. `remote.disable` stops new decisions and revokes unused remote-derived approvals and active remote-derived grants; it needs no proof. It cannot undo an action already dispatched.
 
 An answer is refused with `denied` while the feature is off, with `approval-invalid` if the request is not waiting or cannot be answered this way (one answer for every such case), and with `proof-invalid` for a wrong key, a changed field, a stale time, a malformed nonce or a replay. The signature and the nonce are written to the same durable journal as Touch ID proofs *before* Gaddi acts, so a replay fails after a restart too. An approved action is then retried by the agent with `approval=<id>` exactly as after a Touch ID approval, and it still works once and only for the exact action. An approved session-grant request starts the grant as Touch ID would, and the grant is listed and audited as approved from the phone. A denial closes the request.
 
@@ -61,9 +64,41 @@ An answer is refused with `denied` while the feature is off, with `approval-inva
 
 The panel section is always shown. Off, it says in two sentences what it would allow and what stays Touch ID only. On, it shows the key's fingerprint and since when, with **Turn off**, which needs no Touch ID. The menu bar says when it is on. A waiting request it may answer says "Can also be approved from your phone", and the last ten answers it gave are listed with what, where and when. From a terminal, `gaddi remote` shows the status and `gaddi remote off` turns it off; there is no `on`, because turning it on is Touch ID in the app. No agent tool can answer or turn it on or off; `browser_approvals` lists waiting requests as before, so an agent can see which carry the flag. The audit records every answer as `approval.remote` with `approver: remote`, the request, its kind, the verb and the outcome, and every turn-on and turn-off; it never records a signature or a nonce.
 
+V2 signs the enrollment generation as well as the immutable request. Turning on creates a fresh random 128-bit generation. An older saved enrollment derives a stable generation from its fingerprint and enable time; this preserves an existing owner choice, while refusing all old v1 signatures. Ordinary restart keeps the generation. Disable/re-enable changes it even for the same key, so old phone cards cannot regain authority. Gaddi and its Marcus client must upgrade together; an old client fails closed.
+
 ### The limit
 
 The key of the phone approver is a file that any process running as your macOS user can read, so this path is weaker than Touch ID: a program on this Mac that can read that key can approve exactly what is described above, and nothing beyond it. That is why the scope is small, why it is off until you turn it on, and why it is one signed answer per request. It does not weaken what stays Touch ID only. As with everything else here, a process that can write Gaddi's own files can do more: it could write `remote.json` and restart the broker, as it could replace the Touch ID verification key `approver.pub`; the signed turn-on protects against everything that cannot write there. The facts Gaddi keeps about a waiting request live in memory only, so a request that was waiting when Gaddi restarted can only be answered with Touch ID until its agent asks again; Gaddi then announces it again with `approval.pending`. To change the key, turn the feature off, let the program write its new key, and turn it on again.
+
+## Optional longer waits and larger cards
+
+These options ship inactive. Omitting them preserves the configured request expiry and the maximum of twenty rules. This section is the policy record for the owner-requested approval improvements of 18 October 2026; it claims conformance for these rules, not repository-wide coverage.
+
+**AUTH-WAIT.** An eligible pending request may wait longer for an answer, while usable signed authority stays within `ttl_minutes` and remains single use. Only session grants and the same upload/post/delete tier eligible for remote approval use the longer wait. Payments, purchases, sign-in, sends, security changes, protected pages and unknown classes keep their existing expiry. A pending grant still needs its live chat; ending that chat cancels it. Restart never restores granted authority. A monotonic deadline prevents backward wall-clock changes from extending usable authority. Verification crossing the pending deadline fails after spending the proof. Invalid restored timestamps are rejected. New admission stops at one hundred live approval records and their bounded captures. Valid older state with more than one hundred records is retained; it must fall below the limit before a new request is admitted. Capacity refusal never evicts an existing request.
+
+**AUTH-PHONE.** Phone decisions bind immutable request data and enrollment generation, remain signed and one-use, and are revoked on disable. All affected in-memory authority is removed even if saving, expiry bookkeeping or reporting fails; an error still reports the failure. Enrollment still requires Touch ID. The local-key trust limit above remains explicit; no per-button biometric or phone-only-key claim is made. Implemented in `daemon/remote.ts`, `daemon/daemon.ts`, `daemon/grants.ts` and the paired Marcus client; tested by the remote gate, generation/revocation checks, `tests/policy/remote-revocation.ts` fault recovery and mutation suite.
+
+**AUTH-LARGE-GRANT.** The owner can raise the Mac card limit from twenty to at most one hundred rules. Every rule is validated, displayed and signed in full. Allowed verbs, protected addresses, chat isolation, revocation and maximum duration stay the same. Phone-approved grants stay limited to twenty rules and two hours. These are delegated implementation bounds under the owner's request for hours-long waits and larger grants; no setting is enabled by this change.
+
+The optional policy overlay fields are:
+
+```json
+{
+  "approvals": {
+    "ttl_minutes": 10,
+    "wait_minutes": 720,
+    "grant_rules_max": 100
+  }
+}
+```
+
+`wait_minutes` accepts whole minutes from 1 through 720; omission uses `ttl_minutes`. `grant_rules_max` accepts whole counts from 1 through 100; omission uses twenty. Overlay validation rejects malformed values before the broker listens. Quit Gaddi and stop the broker before an owner-approved overlay edit, then restart through the installation's existing service procedure. Never edit running application state externally. Keep other overlay fields when editing. Removing the two optional fields restores the original settings.
+
+A waiting request and a permission have different lifetimes. Answering near a request's expiry does not extend it past that deadline; otherwise the signed action has at most `ttl_minutes` left. A session grant's duration starts when approved and ends independently of the request's waiting time.
+
+These options do not make an individual approval portable across tabs. Site, verb and a control's name cannot establish which record, account or content a page will affect. Individual approvals retain their exact tab/action binding. A deliberately scoped session grant is the existing way to authorize eligible actions across replacement tabs: the owner approves the named site, path, verbs, chat and duration, rather than one particular target. It does not claim to approve one exact object.
+
+Implemented in `daemon/approvals.ts`, `daemon/daemon.ts`, `daemon/grants.ts`, `daemon/policy.ts` and `daemon/remote.ts`. Exercised by `tests/policy/approval-wait.ts`, `tests/gates/approval-wait.test.sh` and the existing grant/remote gate and mutation tests. The new gate runs a real isolated broker and fixture Chrome transport; it is not a real Telegram or biometric demonstration.
 
 ## 1Password sign-in
 

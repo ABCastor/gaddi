@@ -28,7 +28,7 @@ export interface GrantScope { kind: 'click' | 'press' | 'upload'; name?: string;
 export type GrantEnd = 'expired' | 'session-ended' | 'revoked';
 
 export const GRANT_MINUTES = { min: 5, max: 720 };
-export const GRANT_RULES_MAX = 20, GRANT_RULE_CHARS = 300, GRANT_URL_CHARS = 200, GRANT_LABEL_CHARS = 60;
+export const GRANT_RULES_MAX = 100, GRANT_RULE_CHARS = 300, GRANT_URL_CHARS = 200, GRANT_LABEL_CHARS = 60;
 
 const PERMISSIONS: readonly string[] = ['upload', 'post', 'delete'];
 export const isPermission = (value: unknown): value is GrantPermission => typeof value === 'string' && PERMISSIONS.includes(value);
@@ -85,7 +85,9 @@ function parseRule(input: unknown, policy: Policy): GrantRule {
 }
 
 export function parseGrantRules(input: unknown, policy: Policy): GrantRule[] {
-  if (!Array.isArray(input) || input.length < 1 || input.length > GRANT_RULES_MAX) throw new Error(`rules must list 1 to ${GRANT_RULES_MAX} rules`);
+  // AUTH-LARGE-GRANT: the owner opts into a larger card; every rule still crosses the same validation.
+  const max = policy.approvals.grant_rules_max ?? 20;
+  if (!Array.isArray(input) || input.length < 1 || input.length > max) throw new Error(`rules must list 1 to ${max} rules`);
   const unique = new Map<string, GrantRule>();
   for (const entry of input as unknown[]) {
     const rule = parseRule(entry, policy);
@@ -112,7 +114,8 @@ export function parseGrantRequest(params: { rules?: unknown; minutes?: unknown; 
 
 export function isGrantSpec(value: unknown): value is GrantSpec {
   return isRecord(value) && typeof value.session === 'string' && typeof value.minutes === 'number'
-    && Array.isArray(value.rules) && value.rules.every(rule => isRecord(rule) && isPermission(rule.permission)
+    && Number.isSafeInteger(value.minutes) && value.minutes >= GRANT_MINUTES.min && value.minutes <= GRANT_MINUTES.max
+    && Array.isArray(value.rules) && value.rules.length > 0 && value.rules.length <= GRANT_RULES_MAX && value.rules.every(rule => isRecord(rule) && isPermission(rule.permission)
       && typeof rule.origin === 'string' && typeof rule.path === 'string')
     && (value.label === undefined || typeof value.label === 'string');
 }
@@ -217,15 +220,18 @@ export function createGrants({ minuteMs = 60000, now = Date.now, emit = () => {}
     ...(grant.approver ? { approver: grant.approver } : {}),
     mine: mine !== undefined && grant.session === mine });
   const snapshot = (mine?: string) => [...entries.values()].map(entry => view(entry.grant, mine));
+  function reportEnd(id: string, grant: Grant, reason: GrantEnd) {
+    try { audit({ ts: iso(now()), caller: grant.caller, method: 'grant.end', tab: null, url: '', grant: id, reason, outcome: 'allow', ms: 0 }); }
+    catch { log('session grant end could not be audited'); }
+    emit('grants.changed', { grants: snapshot() });
+  }
   function end(id: string, reason: GrantEnd) {
     const entry = entries.get(id);
     if (!entry) return false;
     // The authority is gone before anything is written: a failing audit must never keep a grant alive
     // or take the broker down from a timer.
     entries.delete(id); clearTimeout(entry.timer);
-    try { audit({ ts: iso(now()), caller: entry.grant.caller, method: 'grant.end', tab: null, url: '', grant: id, reason, outcome: 'allow', ms: 0 }); }
-    catch { log('session grant end could not be audited'); }
-    emit('grants.changed', { grants: snapshot() });
+    reportEnd(id, entry.grant, reason);
     return true;
   }
   // Expiry is checked whenever a grant is looked at, not only by the timer, so a late timer never extends one.
@@ -235,9 +241,11 @@ export function createGrants({ minuteMs = 60000, now = Date.now, emit = () => {}
   function activate(spec: GrantSpec & { caller: string; approver?: 'remote' }): Grant {
     const created = now();
     const grant: Grant = { id: crypto.randomBytes(8).toString('hex'), session: spec.session, caller: spec.caller,
-      ...(spec.label ? { label: spec.label } : {}), rules: spec.rules, minutes: spec.minutes, createdAt: created,
+      ...(spec.label ? { label: spec.label } : {}), rules: spec.rules.map(rule => Object.freeze({ ...rule })), minutes: spec.minutes, createdAt: created,
       ...(spec.approver ? { approver: spec.approver } : {}),
       expiresAt: created + spec.minutes * minuteMs };
+    // AUTH-LARGE-GRANT: approved rule collections cannot be mutated through a shared reference.
+    Object.freeze(grant.rules); Object.freeze(grant);
     // Fail closed: a grant whose start cannot be written to the audit does not come into being.
     audit({ ts: iso(created), caller: grant.caller, method: 'grant.start', tab: null, url: '', grant: grant.id,
       ...(grant.approver ? { approver: grant.approver } : {}),
@@ -258,11 +266,17 @@ export function createGrants({ minuteMs = 60000, now = Date.now, emit = () => {}
     return snapshot(mine);
   }
   function revoke(id: string) { return end(id, 'revoked'); }
+  function revokeRemote() {
+    const revoked = [...entries].filter(([, entry]) => entry.grant.approver === 'remote');
+    // Reporting failure must never leave later remote grants active.
+    for (const [id, entry] of revoked) { entries.delete(id); clearTimeout(entry.timer); }
+    for (const [id, entry] of revoked) reportEnd(id, entry.grant, 'revoked');
+  }
   function endSession(session: string) {
     let ended = 0;
     for (const [id, entry] of [...entries]) if (entry.grant.session === session && end(id, 'session-ended')) ended++;
     return ended;
   }
   function stop() { for (const entry of entries.values()) clearTimeout(entry.timer); }
-  return { activate, active, list, revoke, endSession, stop };
+  return { activate, active, list, revoke, revokeRemote, endSession, stop };
 }
