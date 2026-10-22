@@ -128,6 +128,18 @@ export async function foreignFrame({ context, worker, daemon, url, pass }: {
     pass('a menu open from page load is removed: screenshot, eval, wheel scroll and a trusted click all work, and nothing is read from it');
   }
 
+  // The menu a field's focus opens is still loading when Gaddi first attaches, so Chrome
+  // lets that attach through and ends it, and the retry as well unless the frame is gone.
+  // Before the retry removed it first, on a busy Mac about one fresh tab in four failed (21 Oct 2026).
+  for (let i = 0; i < 8; i++) {
+    const { tab, page } = await open(`?fresh=${i}`);
+    const typed = await daemon.request('chrome.type', { tab, selector: '#email', text: 'owner@example.test' });
+    assert.equal(typed.error, undefined, `ASSERT_FOREIGN_TYPE_FRESH: tab ${i} ${JSON.stringify(typed.error)}`);
+    assert.equal(await page.locator('#email').inputValue(), 'owner@example.test', 'ASSERT_FOREIGN_TYPE_FRESH: lands once');
+    await call('chrome.close', { tabs: [tab] });
+  }
+  pass('type into a fresh tab whose field opens another extension\'s frame on focus succeeds every time (8 tabs)');
+
   // A menu that opens whenever its field gets focus, in a background agent tab.
   const { tab, page } = await open('');
   assert.equal(await attachError(tab), '', 'fixture starts without a foreign frame');

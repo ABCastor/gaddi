@@ -397,6 +397,9 @@ const isForeignFrameError = (error: unknown) => isRecord(error) && error.foreign
 const surelyUndelivered = (error: unknown) => isForeignFrameError(error) && isRecord(error) && error.maybeDelivered === false;
 async function attachDebugger(tab: number, check: Check, route?: Route) {
   const target = { tabId: tab };
+  // A retry after a frame ended the session: that frame may still be loading, so Chrome
+  // allows the attach and then ends this session too. Remove it before attaching.
+  if (route?.foreign && (await onPage(tab, 'closeForeignFrames', {}, check)).closed) route.note = FOREIGN_CLOSED;
   for (let until = 0; ; ) {
     try {
       await chrome.debugger.attach(target, '1.3');
