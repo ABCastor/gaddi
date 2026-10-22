@@ -121,8 +121,10 @@ export async function nativeInput({ context, worker, daemon, url, pass }: {
     assert.deepEqual(await page.evaluate(() => ({ hidden: document.hidden, focus: document.hasFocus() })),
       { hidden: true, focus: false }, 'ASSERT_NATIVE_BACKGROUND: no other CDP client may force visibility');
     if (action === 'click') {
+      // Count during the wait: a tab created in the background may draw once before Chrome hides it.
+      const framesBefore = await page.evaluate('window.framesSeen') as number;
       await page.waitForTimeout(1300);
-      assert.equal(await page.evaluate('window.framesSeen'), 0, 'native hidden fixture produces no animation frames');
+      assert.equal(await page.evaluate('window.framesSeen'), framesBefore, 'native hidden fixture produces no animation frames');
     }
     if (retained) await call('chrome.emulate', { tab, colorScheme: 'dark' });
     await worker.evaluate(`Object.assign(globalThis.nativeInputProbe, { tab: ${tab}, costs: [], samples: [] })`);

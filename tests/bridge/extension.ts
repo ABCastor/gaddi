@@ -125,9 +125,11 @@ try {
   }
   if (brokenInputFocus) {
     const source = fs.readFileSync(bg, 'utf8');
-    const enable = "await send('Emulation.setFocusEmulationEnabled', { enabled: input });";
-    assert.ok(source.includes(enable));
-    fs.writeFileSync(bg, source.replace(enable, '/* focus enable removed in disposable copy */'));
+    // Input actions only: reads and eval share the same switch to draw a hidden tab,
+    // so removing it everywhere stalls an earlier eval instead of the trusted click.
+    const enable = 'const trusted = (fn, input = true, retryInput = input) =>';
+    assert.equal(source.split(enable).length, 2, 'one default-input trusted wrapper');
+    fs.writeFileSync(bg, source.replace(enable, 'const trusted = (fn, input = false, retryInput = input) =>'));
   }
   for (const [enabled, file, marker, replacement] of [
     [brokenOutlineState, path.join(extension, 'dist/extension/content.js'), '/* OUTLINE_STATE_TEST_POINT */', 'return "";'],

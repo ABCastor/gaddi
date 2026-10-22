@@ -1,11 +1,15 @@
 // Native visibility and animation measurements in a disposable, headless Chrome.
+// A Playwright launch turns on focus emulation for every page, which keeps every
+// background tab visible and drawing. Chrome is started here and attached with
+// noDefaults so the extension is the only client that changes page state.
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
+import type { ChildProcess } from 'node:child_process';
 import { chromium } from 'playwright-core';
 import type { BrowserContext } from 'playwright-core';
 import { FakeDaemon, waitFor } from './fake-daemon.ts';
@@ -24,7 +28,7 @@ const extension=path.join(state,'extension'),profile=path.join(state,'profile');
 const hostName='com.abcastor.gaddi.bridge.test';
 const daemon=new FakeDaemon(path.join(state,'b'),undefined);
 const call=callsFor(daemon);
-let context:BrowserContext|undefined;
+let context:BrowserContext|undefined,chrome_:ChildProcess|undefined,chromeExit:Promise<unknown>|undefined;
 const server=http.createServer((_req,res)=>{
   res.setHeader('Content-Type','text/html');
   res.end('<title>Render fixture</title><input id="owner"><script>globalThis.renderFrames=0;function tick(){globalThis.renderFrames++;requestAnimationFrame(tick)}requestAnimationFrame(tick)</script>');
@@ -40,18 +44,27 @@ try {
   await daemon.start();
   await new Promise<void>((resolve,reject)=>{server.once('error',reject);server.listen(0,'127.0.0.1',resolve);});
   const url=`http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
-  const args=['--headless=new',`--load-extension=${extension}`,`--disable-extensions-except=${extension}`,'--no-first-run','--no-default-browser-check'];
+  const args=['--headless=new',`--user-data-dir=${profile}`,`--load-extension=${extension}`,`--disable-extensions-except=${extension}`,'--no-first-run','--no-default-browser-check',
+    '--disable-background-networking','--disable-component-update','--remote-debugging-port=0','about:blank'];
   requireHeadless(args);
-  context=await chromium.launchPersistentContext(profile,{executablePath,headless:true,chromiumSandbox:true,
-    ignoreDefaultArgs:['--disable-extensions','--headless','--disable-background-timer-throttling','--disable-backgrounding-occluded-windows','--disable-renderer-backgrounding'],args,
-    env:{...process.env,GADDI_SOCKET:daemon.socket,GADDI_BRIDGE_LOG:path.join(state,'bridge.log')}});
-  const worker=await waitFor(()=>context!.serviceWorkers()[0],'extension worker');
+  chrome_=spawn(executablePath,args,{env:{...process.env,GADDI_SOCKET:daemon.socket,GADDI_BRIDGE_LOG:path.join(state,'bridge.log')},stdio:'ignore'});
+  let launchError:Error|undefined;chrome_.on('error',error=>{launchError=error;});
+  chromeExit=new Promise(resolve=>chrome_!.once('close',resolve));
+  const port=await waitFor(()=>{
+    if(launchError)throw launchError;
+    const file=path.join(profile,'DevToolsActivePort');
+    return fs.existsSync(file)&&fs.readFileSync(file,'utf8').split('\n')[0];
+  },'test Chrome CDP port');
+  context=(await chromium.connectOverCDP(`http://127.0.0.1:${port}`,{noDefaults:true})).contexts()[0];
+  const worker=await waitFor(()=>context!.serviceWorkers().find(w=>w.url().endsWith('/dist/extension/bg.js')),'extension worker');
   await waitFor(()=>daemon.attachments.length,'test bridge');
   const owner=context.pages()[0];await owner.goto(url);await owner.bringToFront();
   const ownerTab=await call('chrome.active');
   const agent=await call('chrome.open',{url,group:'● Rendering',browser:{window:'own',show:'attention'}});
   assert.notEqual(agent.windowId,ownerTab.windowId,'ASSERT_RENDER_OWN_WINDOW');
-  const control=await worker.evaluate(async ({windowId,url})=>(await chrome.tabs.create({windowId,url,active:true})).id!,{windowId:agent.windowId,url});
+  // Gaddi's placeholder stays the active tab of its window, so the agent tab is behind it.
+  // A tab added there by anyone else is moved to the owner's window, so none is created here.
+  assert.equal(agent.active,false,'ASSERT_RENDER_BEHIND_ACTIVE_TAB');
   const sample=()=>worker.evaluate(async tab=>(await chrome.scripting.executeScript({target:{tabId:tab},world:'MAIN',func:()=>({visibility:document.visibilityState,focus:document.hasFocus(),frames:(globalThis as unknown as {renderFrames:number}).renderFrames})}))[0].result!,agent.id);
   const windows=()=>worker.evaluate(async()=> (await chrome.windows.getAll()).map(w=>({id:w.id,focused:w.focused,state:w.state})));
   const measure=async()=>{const before=await sample();await new Promise(r=>setTimeout(r,1500));const after=await sample();return {visibility:after.visibility,focus:after.focus,frames:after.frames-before.frames};};
@@ -68,7 +81,8 @@ try {
     };
     chrome.debugger.onEvent.addListener(ack);
     try {
-      const read=async()=> (await chrome.scripting.executeScript({target:{tabId:tab},world:'MAIN',func:()=>({visibility:document.visibilityState,focus:document.hasFocus(),frames:(globalThis as unknown as {renderFrames:number}).renderFrames})}))[0].result!;
+      // Read through the attached session: after a screencast on a hidden tab, injected scripts stall.
+      const read=async()=>((await chrome.debugger.sendCommand({tabId:tab},'Runtime.evaluate',{expression:'({visibility:document.visibilityState,focus:document.hasFocus(),frames:globalThis.renderFrames})',returnByValue:true})) as {result:{value:{visibility:string;focus:boolean;frames:number}}}).result.value;
       const before=await read();
       await chrome.debugger.sendCommand({tabId:tab},'Page.startScreencast',{format:'jpeg',quality:1,maxWidth:1,maxHeight:1,everyNthFrame:60});
       await new Promise(r=>setTimeout(r,1500));const during=await read();
@@ -84,11 +98,17 @@ try {
   assert.deepEqual(await windows(),windowsBefore,'ASSERT_RENDER_WINDOW_FOCUS');
   assert.equal((await call('chrome.active')).id,ownerTab.id,'ASSERT_RENDER_OWNER_TAB');
   console.log(`RENDER_MEASUREMENTS ${JSON.stringify({browser:execFileSync(executablePath,['--version'],{encoding:'utf8'}).trim(),baseline,screencast,during,after})}`);
-  await call('chrome.close',{tabs:[agent.id,control]});
-  assert.ok(!(await windows()).some(w=>w.id===agent.windowId),'ASSERT_RENDER_WINDOW_CLOSED');
+  await call('chrome.close',{tabs:[agent.id]});
+  // The placeholder keeps the Gaddi window for the Chrome run (extension/README.md); only the agent tab goes.
+  const left=await worker.evaluate(async windowId=>(await chrome.tabs.query({windowId})).map(t=>t.url),agent.windowId);
+  assert.deepEqual(left,[await worker.evaluate(()=>chrome.runtime.getURL('placeholder.html'))],'ASSERT_RENDER_WINDOW_PLACEHOLDER_ONLY');
   console.log('== background rendering: 9 passed, 0 failed');
 } finally {
-  await context?.close();await daemon.stop();server.closeAllConnections();
+  if(chrome_&&chrome_.exitCode===null){
+    chrome_.kill('SIGTERM');const killTimer=setTimeout(()=>chrome_!.kill('SIGKILL'),5000);
+    await chromeExit;clearTimeout(killTimer);
+  }
+  await daemon.stop();server.closeAllConnections();
   if(server.listening)await new Promise<void>(resolve=>server.close(()=>resolve()));
   fs.rmSync(state,{recursive:true,force:true});
 }
