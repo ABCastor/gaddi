@@ -1433,6 +1433,12 @@ async function sessionGrant(c: Client, b: Bridge) {
         await named(name, async () => assert.equal(await outcome(click(undefined)), 'held', `${name} stays held in a zone`));
       }
       assert.equal(await outcome(c.call('goto', { ...base(), url: 'https://unseen.example/settings/security' })), 'allowed', 'a zone opens its own security page');
+      try {
+        b.control.focusSubmit = 'Delete';
+        assert.equal(await outcome(enter(undefined)), 'allowed', 'Enter on a Delete form in a zone');
+        b.control.focusSubmit = 'Change password';
+        assert.equal(await outcome(enter(undefined)), 'held', 'Enter on an account form stays held: its destination is unseen');
+      } finally { b.control.focusSubmit = 'Search'; }
       assert.equal(await outcome(c.call('goto', { ...base(), url: 'https://unseen.example/checkout' })), 'held', 'a zone never opens a payment page');
       assert.equal(await outcome(c.call('goto', { ...base(), url: 'https://other.example/settings/security' })), 'held', 'another site is not in the zone');
       await on(`${SHOP}/checkout`, async () => assert.equal(await outcome(upload(undefined)), 'held', 'a protected address stays held in a zone'));

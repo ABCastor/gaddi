@@ -14,7 +14,7 @@ check('ASSERT_ZONE_SITE', () => {
   assert.equal(zoneSite('https://ticktick.com'), 'https://ticktick.com');
   assert.equal(zoneSite('http://localhost:3000'), 'http://localhost:3000');
   for (const site of ['https://mail.google.com', 'https://accounts.google.com', 'https://tasks.google.com', 'https://appleid.apple.com',
-    'https://www.icloud.com', 'https://login.live.com', 'https://my.1password.com', 'https://github.com', 'http://example.com']) {
+    'https://www.icloud.com', 'https://login.live.com', 'https://my.1password.com', 'https://github.com', 'http://example.com', 'https://google.com.', 'https://ticktick.com.']) {
     assert.equal(zoneSite(site), undefined, `${site} can never be a zone`);
   }
 });
@@ -25,6 +25,11 @@ check('ASSERT_ZONE_SIGNIN', () => {
   policy = setZone(overlay, 'https://ticktick.com', true);
   assert.deepEqual(checkSignin(policy, 'https://ticktick.com'), { outcome: 'allow', reason: 'test zone' }, 'a zone signs in by itself');
   assert.equal(checkSignin(policy, 'https://todoist.com').outcome, 'hold', 'another site still asks');
+  const owned = JSON.parse(fs.readFileSync(overlay, 'utf8'));
+  fs.writeFileSync(overlay, JSON.stringify({ ...owned, deny: { verbs_on_hosts: [{ host: 'ticktick\\.com', verbs: ['archive'] }], type_into: [], eval_patterns: [] } }));
+  assert.equal(checkSignin(loadPolicy({ overlay }), 'https://ticktick.com').outcome, 'hold', "the owner's own refused host wins over the zone");
+  fs.writeFileSync(overlay, JSON.stringify(owned));
+  policy = loadPolicy({ overlay });
   policy = setZone(overlay, 'https://ticktick.com', false);
   assert.equal(checkSignin(policy, 'https://ticktick.com').outcome, 'hold', 'removing the zone makes sign-in ask again');
   assert.throws(() => setZone(overlay, 'https://accounts.google.com', true), /invalid test zone/, 'an identity provider is refused');

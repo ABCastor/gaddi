@@ -258,7 +258,10 @@ export function uploadSite(url: unknown): string | undefined {
 const IDENTITY_HOSTS = /(^|\.)(google\.com|apple\.com|icloud\.com|live\.com|microsoft\.com|microsoftonline\.com|1password\.com|1password\.eu|okta\.com|auth0\.com|github\.com)$/i;
 export function zoneSite(url: unknown): string | undefined {
   const site = uploadSite(url);
-  return site && !IDENTITY_HOSTS.test(new URL(site).hostname) ? site : undefined;
+  if (!site) return undefined;
+  // A trailing dot names the same host to DNS; it is refused outright rather than normalised.
+  const host = new URL(site).hostname;
+  return !host.endsWith('.') && !IDENTITY_HOSTS.test(host) ? site : undefined;
 }
 
 // Only ordinary upload holds can be remembered. File refusals happen before this check.
@@ -279,7 +282,10 @@ export function checkRememberedUpload(policy: Policy, url: string, check: Policy
 // Only the owner's policy can remember a site; POLICY_OFF grants no sign-in authority.
 export function checkSignin(policy: Policy, site: string): PolicyCheck {
   // TEST-ZONE: a test zone signs in by itself, with the login the owner stored in 1Password for that site.
-  if (policy.zones?.sites.includes(site) && zoneSite(site) === site) return ALLOW('test zone');
+  // The owner's own refused hosts and protected addresses still win over the zone.
+  if (policy.zones?.sites.includes(site) && zoneSite(site) === site
+    && !protections(policy).hosts.some(host => rx(host)?.test(hostOf(site)))
+    && !policy.hold.url_patterns.some(pattern => rx(pattern)?.test(site + '/'))) return ALLOW('test zone');
   return policy.signin?.remember.includes(site) ? ALLOW('owner remembered this site') : HOLD('sign-in needs owner approval');
 }
 export function hostOf(url: string) {

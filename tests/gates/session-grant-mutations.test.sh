@@ -26,7 +26,7 @@ echo "PASS session-grant pristine copy: $(grep -Ec '^PASS ASSERT_GRANT_' "$BASE"
 FALSIFIED=0
 for mutation in \
   OTHER_SESSION CLI LIVE_REQUIRED ENDED_ASK PROOF REMEMBER REVOKE SESSION_END AUDIT APPROVAL_CREDIT UPLOAD CLICK ENTER \
-  LEAK_VIEW LEAK_DISK CLEAN_GRANT FOLD ZONE ZONE_MIXED ZONE_PAYMENT EXPIRY LIST BOUNDARY ORIGIN PERMISSION MIXED PROTECTED DESTINATION NEVER GMAIL TABLE DETAIL \
+  LEAK_VIEW LEAK_DISK CLEAN_GRANT FOLD ZONE ZONE_MIXED ZONE_ENTER ZONE_PAYMENT EXPIRY LIST BOUNDARY ORIGIN PERMISSION MIXED PROTECTED DESTINATION NEVER GMAIL TABLE DETAIL \
   NEEDED DENY SECRET RESTART; do
   # Reset every source from the real tree, then apply ONE distinct mutation to this copy.
   for source in daemon/*.ts; do cp "$source" "$COPY/$source"; done
@@ -68,7 +68,10 @@ const table = {
   CLEAN_GRANT: ['ASSERT_GRANT_DETAIL', ['daemon/approvals.ts', "detail: kind === 'grant' ? detail : cleanDetail(detail),", 'detail: cleanDetail(detail),']],
   FOLD: ['ASSERT_GRANT_FOLD', ['daemon/daemon.ts', 'const folded = union.size <= max;', 'const folded = false;']],
   ZONE: ['ASSERT_ZONE', ['daemon/grants.ts', 'return (policy.zones?.sites ?? []).includes(target.origin) && grantableAddress(target) && !zoneBlocked(policy, target);', 'return grantableAddress(target) && !zoneBlocked(policy, target);']],
-  ZONE_MIXED: ['ASSERT_ZONE', ['daemon/grants.ts', "if (phraseIn(scope.name, verb) && !zoneVerb(verb)) return check;", "if (false) return check;"]],
+  ZONE_MIXED: ['ASSERT_ZONE', ['daemon/grants.ts', "if (phraseIn(scope.name, verb) && !allowed(verb)) return check;", "if (false) return check;"]],
+  ZONE_ENTER: ['ASSERT_ZONE',
+    ['daemon/grants.ts', "return kind === 'press' ? ENTER_VERBS.includes(verb) : ZONE_VERBS.includes(verb);", 'return ZONE_VERBS.includes(verb);'],
+    ['daemon/grants.ts', "const allowed = scope.kind === 'press' ? (verb: string) => ENTER_VERBS.includes(fold(verb)) : zoneVerb;", 'const allowed = zoneVerb;']],
   ZONE_PAYMENT: ['ASSERT_ZONE', ['daemon/grants.ts', "patterns.some(pattern => !ZONE_PAGES.includes(pattern) && rx(pattern)?.test(url.href));", "false;"]],
   EXPIRY: ['ASSERT_GRANT_EXPIRY', ['daemon/grants.ts', 'expiresAt: created + spec.minutes * minuteMs };', 'expiresAt: created + spec.minutes * minuteMs * 1000 };']],
   LIST: ['ASSERT_GRANT_LIST', ['daemon/grants.ts', 'mine: mine !== undefined && grant.session === mine });', 'mine: true });']],

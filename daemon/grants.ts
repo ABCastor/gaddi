@@ -210,6 +210,8 @@ const ZONE_VERBS = ['post', 'publish', 'pubblica', 'share', 'condividi',
 const ZONE_PAGES = ['/settings/security', '/security', '/sicurezza', '/delete-account', '/close-account', '/elimina-account',
   '/chiudi-conto', '/unsubscribe', '/disdett'];
 const zoneVerb = (verb: string) => ZONE_VERBS.includes(fold(verb));
+// Enter submits a form whose destination the broker cannot see, so it keeps grant parity: post and delete only.
+const ENTER_VERBS = ZONE_VERBS.slice(0, 13);
 function zoneBlocked(policy: Policy, url: URL) {
   const { hosts, patterns } = protections(policy);
   return hosts.some(host => rx(host)?.test(hostOf(url.href))) || patterns.some(pattern => !ZONE_PAGES.includes(pattern) && rx(pattern)?.test(url.href));
@@ -222,7 +224,9 @@ function zoneReason(kind: ZoneScope['kind'], reason: string | undefined) {
   if (kind === 'upload') return reason === UPLOAD_HOLD;
   if (reason.startsWith('url-pattern:')) return ZONE_PAGES.includes(reason.slice('url-pattern:'.length));
   const prefix = kind === 'click' ? 'verb:' : kind === 'press' ? 'enter-submits:' : undefined;
-  return prefix !== undefined && reason.startsWith(prefix) && zoneVerb(reason.slice(prefix.length));
+  if (prefix === undefined || !reason.startsWith(prefix)) return false;
+  const verb = fold(reason.slice(prefix.length));
+  return kind === 'press' ? ENTER_VERBS.includes(verb) : ZONE_VERBS.includes(verb);
 }
 export interface ZoneScope { kind: 'click' | 'press' | 'upload' | 'navigate'; name?: string; destination?: string }
 export function checkZone(policy: Policy, pageURL: string, check: PolicyCheck, scope: ZoneScope): PolicyCheck & { zone?: string } {
@@ -231,7 +235,8 @@ export function checkZone(policy: Policy, pageURL: string, check: PolicyCheck, s
   // zoneReason is a backstop: every reason it refuses is also stopped by the name scan, zoneBlocked or the destination rule.
   if (!page || !zoneCovers(policy, page) || !zoneReason(scope.kind, check.reason)) return check;
   if (scope.kind === 'click' || scope.kind === 'press') {
-    for (const verb of protections(policy).verbs) if (phraseIn(scope.name, verb) && !zoneVerb(verb)) return check;
+    const allowed = scope.kind === 'press' ? (verb: string) => ENTER_VERBS.includes(fold(verb)) : zoneVerb;
+    for (const verb of protections(policy).verbs) if (phraseIn(scope.name, verb) && !allowed(verb)) return check;
   }
   const leadsTo = scope.destination;
   if (leadsTo) {
