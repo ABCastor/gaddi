@@ -1386,28 +1386,59 @@ async function sessionGrant(c: Client, b: Bridge) {
     assert.equal(await outcome(upload(session)), 'held');
   });
 
-  // BR-GADDI-QUEUE: owner observation in the R20-GADDI canonical note, 18 October.
-  await check('ASSERT_GRANT_QUEUE', async () => {
+  // GRANT-FOLD (replaces BR-GADDI-QUEUE): owner feedback 19 October, one card per chat instead of a flood.
+  await check('ASSERT_GRANT_FOLD', async () => {
     const session = await liveSession();
-    const queued: PublicApproval[] = [];
-    for (let i = 0; i < 7; i++) queued.push(await asked(await ask(session, [`post ${SHOP}/queue-${i}`], 30 + i)));
-    assert.equal(new Set(queued.map(a => a.id)).size, 7, 'seven distinct requests retain seven identities');
-    const again = await asked(await ask(session, [`post ${SHOP}/queue-0`], 30));
-    assert.equal(again.id, queued[0].id, 'an identical retry reuses its pending record');
+    let last: PublicApproval | undefined;
+    for (let i = 0; i < 7; i++) last = await asked(await ask(session, [`post ${SHOP}/queue-${i}`], 30 + i));
+    assert.ok(last);
     const listed = await result(c, 'approvals.list');
-    for (const a of queued) {
-      assert.equal(listed.pending.find(p => p.id === a.id)?.status, 'pending', 'each distinct request remains queued');
-      assert.equal(listed.recent.some(p => p.id === a.id), false, 'a newer request does not cancel an older one');
+    const mine = listed.pending.filter(p => p.kind === 'grant' && p.status === 'pending' && /queue-/.test(p.detail));
+    assert.equal(mine.length, 1, 'seven requests from one chat wait as one card');
+    assert.equal(mine[0].id, last.id, 'the card is the latest request');
+    for (let i = 0; i < 7; i++) assert.match(mine[0].detail, new RegExp(`queue-${i}\\b`), `rule ${i} survives the fold`);
+    assert.match(mine[0].detail, /for 36 minutes/, 'the longest time asked for');
+    const again = await asked(await ask(session, [`post ${SHOP}/queue-0`], 30));
+    assert.equal(again.id, last.id, 'a retry of a rule already on the card changes nothing');
+    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 0, 'folding grants no authority');
+    const other = await liveSession();
+    const theirs = await asked(await ask(other, [`post ${SHOP}/queue-0`], 30));
+    assert.notEqual(theirs.id, last.id, 'another chat never joins this card');
+    await result(c, 'approval.grant', { id: last.id, proof: proof(last) });
+    const granted = (await grantsOf(session)).filter(g => g.mine);
+    assert.equal(granted.length, 1); assert.equal(granted[0].rules.length, 7, 'one approval grants every folded rule');
+    const covered = await ask(session, [`post ${SHOP}/queue-3`], 30);
+    assert.equal(covered.error, undefined, 'a rule the chat already holds needs no new card');
+  });
+
+  await check('ASSERT_ZONE', async () => {
+    const site = 'https://unseen.example';
+    const zoneProof = (target: string, ts = Date.now()) => ({ ts, sig: crypto.sign('sha256', Buffer.from(`zones.add|${target}|${ts}`), privateKey).toString('base64') });
+    await named('Delete', async () => assert.equal(await outcome(click(undefined)), 'held', 'before: a delete with no grant is held'));
+    assert.equal((await c.call('zones.add', { site, proof: { ts: Date.now(), sig: 'AAAA' } })).error?.code, 'proof-invalid', 'adding needs the owner signature');
+    assert.equal((await c.call('zones.add', { site: 'https://mail.google.com', proof: zoneProof('https://mail.google.com') })).error?.code, 'approval-invalid', 'a refused site is never a zone');
+    const session = await liveSession();
+    const waiting = await asked(await ask(session, [`delete ${SHOP}`], 60));
+    const added = await c.call('zones.add', { site, proof: zoneProof(site) });
+    assert.equal(added.error, undefined, JSON.stringify(added));
+    assert.equal((await result(c, 'approvals.list')).pending.find(p => p.id === waiting.id)?.status ?? 'closed', 'closed', 'a grant request the zone covers is closed');
+    try {
+      for (const name of ['Delete', 'Post', 'Elimina']) await named(name, async () => assert.equal(await outcome(click(undefined)), 'allowed', `${name} in a zone, even from the command line`));
+      assert.equal(await outcome(upload(undefined)), 'allowed', 'an upload in a zone');
+      assert.equal(await outcome(upload(undefined, { path: privateKeyFile })), 'denied', 'a secret file is still refused');
+      for (const name of ['Pay now', 'Send', 'Post and pay', 'Change password', 'Delete account']) {
+        await named(name, async () => assert.equal(await outcome(click(undefined)), 'held', `${name} stays held in a zone`));
+      }
+      await on(`${SHOP}/checkout`, async () => assert.equal(await outcome(upload(undefined)), 'held', 'a protected address stays held in a zone'));
+      await named('Delete', async () => assert.equal(await outcome(click(undefined)), 'held', 'a link out of the zone stays held'), 'https://elsewhere.example/x');
+      await on('https://other.example/shop', async () => assert.equal(await outcome(upload(undefined)), 'held', 'another site is not in the zone'));
+      assert.ok(auditLines().some(line => line.zone === site && line.outcome === 'allow'), 'the audit names the zone');
+      const answer = await ask(await liveSession(), [`post ${SHOP}`], 60);
+      assert.equal(answer.error, undefined, 'a grant request inside a zone needs no card');
+    } finally {
+      assert.equal((await c.call('zones.remove', { site })).error, undefined, 'removing needs no proof');
     }
-    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 0, 'queuing grants no authority');
-    await result(c, 'approval.deny', { id: queued[0].id, proof: proof(queued[0], 'deny') });
-    await result(c, 'approval.grant', { id: queued[2].id, proof: proof(queued[2]) });
-    const after = await result(c, 'approvals.list');
-    assert.equal(after.recent.find(a => a.id === queued[0].id)?.status, 'denied');
-    assert.equal((await grantsOf(session)).filter(g => g.mine).length, 1, 'only the explicitly approved scope becomes active');
-    for (const a of queued.filter((_, i) => i !== 0 && i !== 2)) {
-      assert.equal(after.pending.find(p => p.id === a.id)?.status, 'pending', 'deciding one request preserves the other five');
-    }
+    await named('Delete', async () => assert.equal(await outcome(click(undefined)), 'held', 'after removal the delete is held again'));
   });
 
   await check('ASSERT_GRANT_DETAIL', async () => {
@@ -1417,7 +1448,7 @@ async function sessionGrant(c: Client, b: Bridge) {
     assert.equal(a.caller, 'grant-agent');
     assert.equal(a.detail, 'post on unseen.example/shop\nupload on unseen.example/shop\nfor 3 hours\n“Update the shop page”');
     // What the owner signs is the text the broker built, not a cleaned copy: a bare local origin keeps no added slash.
-    const local = await asked(await ask(session, ['post http://localhost:3000'], 5));
+    const local = await asked(await ask(await liveSession(), ['post http://localhost:3000'], 5));
     assert.equal(local.detail, 'post on http://localhost:3000\nfor 5 minutes');
   });
 

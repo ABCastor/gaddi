@@ -90,6 +90,8 @@ const server = net.createServer(socket => {
         if (mode === 'snapshot-error' && Date.now() - started < 2000) {
           socket.end(JSON.stringify({ id, error: { message: 'transient snapshot failure' } }) + '\n');
         } else { reply(socket, id, { pending, recent: [answered], grants }); }
+      } else if (method === 'zones.list') {
+        reply(socket, id, { sites: ['https://zone.example.test'] });
       } else if (method === 'remote.status') {
         reply(socket, id, { enabled: false, candidate: { fingerprint } });
       } else if (method === 'uploads.remembered') {

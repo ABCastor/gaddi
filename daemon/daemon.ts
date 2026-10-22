@@ -9,21 +9,22 @@ import type { PolicyCheck } from './policy.ts';
 import type { ApprovalAction, StoredApprovalRef, StoredApproval, RemoteFacts } from './approvals.ts';
 // `decision` and `remoteKey` exist only to be written to the audit: who answered from another device and what,
 // never the signature or the nonce.
-interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: unknown; url: string }[]; upload?: { name: string; bytes?: number }; signin?: SigninResult; grantId?: string; reason?: string;
+interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: unknown; url: string }[]; upload?: { name: string; bytes?: number }; signin?: SigninResult; grantId?: string; zone?: string; reason?: string;
   decision?: { approval: string; kind?: string; verb?: string }; remoteKey?: string }
 
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from './policy.ts';
+import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from './policy.ts';
 import { signinSite, listLogins, chooseLogin, runSignin } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
 import { readUpload, UPLOAD_CHUNK } from './uploads.ts';
 import type { UploadFile } from './uploads.ts';
 import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail } from './approvals.ts';
-import { createProofVerifier, approvalMessage, signinRevokeMessage, sendRevokeMessage, uploadRevokeMessage } from './proof.ts';
-import { createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString, remoteWaivable } from './grants.ts';
+import { createProofVerifier, approvalMessage, signinRevokeMessage, sendRevokeMessage, uploadRevokeMessage, zoneAddMessage } from './proof.ts';
+import { createGrants, checkGrant, checkZone, zoneCoversRule, parseGrantRequest, grantDetail, isGrantSpec, ruleString, remoteWaivable } from './grants.ts';
+import type { GrantRule } from './grants.ts';
 import type { GrantScope } from './grants.ts';
 import { createRemote } from './remote.ts';
 import { createBridge } from './bridge.ts';
@@ -44,7 +45,7 @@ const policyPath = path.join(home, 'policy.json');
 let policy = loadPolicy({ overlay: policyPath, log });
 const signinSecrets = createSigninSecrets();
 const subscribers = new Set<Socket>(), connections = new Set<Socket>();
-const nonAuditedMethods = new Set(['status', 'approvals.list', 'signin.remembered', 'sends.remembered', 'uploads.remembered', 'bridge.status', 'bridge.health', 'events.subscribe', 'session.begin', 'remote.status']);
+const nonAuditedMethods = new Set(['status', 'approvals.list', 'signin.remembered', 'sends.remembered', 'uploads.remembered', 'zones.list', 'bridge.status', 'bridge.health', 'events.subscribe', 'session.begin', 'remote.status']);
 interface Session { caller: string; owned: Set<number>; lastActivity: number; endedAt?: number }
 const sessions = new Map<string, Session>();
 // A tab put in front of the user is his from then on, whichever agent brought it forward.
@@ -304,7 +305,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   meta.tab = resolvedTab; meta.url = pageURL;
   // Invariant: a hold becomes an allow here only through the calling chat's own unexpired session
   // grant (grants.ts). A CLI call has no session, so grantSession is undefined and it gets none.
-  let grantId: string | undefined;
+  let grantId: string | undefined, zone: string | undefined;
   // What remote approval will judge again if this call becomes a hold: the page as it is now, with its query
   // (a query can make a page protected), and the same raw name and destination the grant scan reads.
   let remoteScope: Omit<RemoteFacts, 'reason'> | undefined;
@@ -312,7 +313,11 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     const decision = checkGrant(grants.active(grantSession(params)), policy, pageURL, held, scope);
     grantId = decision.grant;
     remoteScope = { pageURL, scope };
-    return decision;
+    if (decision.outcome !== 'hold') return decision;
+    // TEST-ZONE: the owner's standing choice for a whole site, for every caller (a CLI call included).
+    const zoned = checkZone(policy, pageURL, held, scope);
+    zone = zoned.zone;
+    return zoned;
   };
   const args: ChromeParams = { tab: resolvedTab };
   if (method === 'signin') {
@@ -448,6 +453,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       ...(upload ? { file: { name: upload.name, bytes: upload.bytes.length, sha256: upload.sha256 } } : {}) } });
   // A supplied approval went through consume, so only an action the grant itself waived is credited to it.
   if (grantId && !params.approval) meta.grantId = grantId;
+  if (zone && !grantId && !params.approval) meta.zone = zone;
   // Add the wire field only after gating so existing approval action hashes stay valid.
   if (method === 'click' || method === 'press' && /^(enter|return)$/i.test(args.key!)) args.checkedDescription = args._description;
   if (targetSelector && targetSelector !== ':focus') args.selector = targetSelector;
@@ -505,25 +511,52 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
 function pendingGrantsOf(session: string) {
   return approvals.pendingMatching(a => a.kind === 'grant' && isRecord(a.grant) && a.grant.session === session);
 }
-function requestGrant(params: IncomingParams): never {
+function requestGrant(params: IncomingParams) {
   const caller = typeof params.caller === 'string' ? params.caller : 'unknown';
   const session = grantSession(params);
   if (session === undefined || !liveSessions.has(session)) {
     throw new Error('a session grant needs a live agent chat (its MCP connection); a CLI call or an ended chat cannot ask for one');
   }
   const parsed = parseGrantRequest(params, policy);
-  const { rules, minutes } = parsed;
+  const { minutes } = parsed;
   // The label is stored exactly as the card will show it (addresses lose their queries), so what the
   // owner signs and what the grant later lists are the same words.
-  const label = parsed.label === undefined ? undefined : cleanDetail(parsed.label).trim() || undefined;
-  const action = { method: 'grant.request', caller, url: '', session, rules: rules.map(ruleString), minutes, label: label ?? null };
+  let label = parsed.label === undefined ? undefined : cleanDetail(parsed.label).trim() || undefined;
+  // GRANT-FOLD: a rule the chat already holds for long enough, or that a test zone already gives everyone, needs no card.
+  const until = Date.now() + (minutes - Math.min(10, minutes / 2)) * GRANT_MINUTE_MS;
+  const held = grants.active(session);
+  const needed = parsed.rules.filter(rule => !zoneCoversRule(policy, rule)
+    && !held.some(grant => grant.expiresAt >= until && grant.rules.some(r => ruleString(r) === ruleString(rule))));
+  if (needed.length === 0) {
+    return { granted: true, waiting: false, message: 'already allowed: every rule is covered by a test zone or by a grant this chat already has. Keep working.' };
+  }
+  // GRANT-FOLD (replaces BR-GADDI-QUEUE, owner feedback 19 October: one card per chat, not a flood). A chat's new
+  // request folds into the one it already has waiting: the card shows every rule it asked for and the longest time.
+  // Nothing it asked for is dropped, the owner still signs exactly what the card shows, and a fold that would pass
+  // the card limit queues as its own request instead.
+  const max = policy.approvals.grant_rules_max ?? 20;
+  const waiting = pendingGrantsOf(session);
+  const union = new Map<string, GrantRule>(needed.map(rule => [ruleString(rule), rule]));
+  let longest = minutes;
+  for (const request of waiting) {
+    const spec = request.grant;
+    if (!isGrantSpec(spec)) continue;
+    for (const rule of spec.rules) if (!zoneCoversRule(policy, rule)) union.set(ruleString(rule), rule);
+    longest = Math.max(longest, spec.minutes);
+    label ??= spec.label;
+  }
+  const folded = union.size <= max;
+  const rules = folded ? [...union].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, rule]) => rule) : needed;
+  const time = folded ? longest : minutes;
+  const action = { method: 'grant.request', caller, url: '', session, rules: rules.map(ruleString), minutes: time, label: label ?? null };
   let request = approvals.pendingFor(action);
   if (!request) {
-    // BR-GADDI-QUEUE
-    request = approvals.hold({ kind: 'grant', tab: null, caller, url: '', detail: grantDetail(rules, minutes, label),
-      reason: 'session grant', action, extendedWait: true, grant: { session, rules, minutes, ...(label ? { label } : {}) } });
+    request = approvals.hold({ kind: 'grant', tab: null, caller, url: '', detail: grantDetail(rules, time, label),
+      reason: 'session grant', action, extendedWait: true, grant: { session, rules, minutes: time, ...(label ? { label } : {}) } });
   }
-  throw new GateError('held', `held: session grant; approve ${String(request.id)} in Gaddi. It takes effect as soon as the owner approves: do not retry`, approvalRef(request));
+  // The folded requests are now inside the new one: they leave the owner's list.
+  if (folded) for (const older of waiting) if (older.id !== request.id) approvals.cancel(older.id);
+  throw new GateError('held', `held: session grant; approve ${String(request.id)} in Gaddi. It takes effect as soon as the owner approves: do not retry. Ask once per chat with every rule you need: a later request from this chat joins this one`, approvalRef(request));
 }
 function activateGrant(id: unknown, proof: unknown, remember: unknown) {
   // Refused before the proof is looked at, so a refused choice never uses a signature up.
@@ -679,6 +712,24 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
     policy = setSendRemember(policyPath, rule, false, policy.off);
     emit('sends.remembered', { rules: policy.sends?.remember ?? [] });
     return { rules: policy.sends?.remember ?? [] };
+  },
+  // TEST-ZONE. Adding needs the owner's signature; removing only takes authority away. A waiting grant request
+  // that asks only for what the zones now give is closed: the chat already has it.
+  'zones.list': () => ({ sites: policy.zones?.sites ?? [] }),
+  'zones.add': ({ site, proof }) => {
+    if (typeof site !== 'string' || zoneSite(site) !== site) throw new GateError('approval-invalid', 'a test zone must be a whole site (https, or http on this Mac) that is not protected');
+    proofs.verify(proof, zoneAddMessage(site, isRecord(proof) ? proof.ts : undefined));
+    policy = setZone(policyPath, site, true, policy.off);
+    for (const request of approvals.pendingMatching(a => a.kind === 'grant' && isGrantSpec(a.grant)
+      && a.grant.rules.every(rule => zoneCoversRule(policy, rule)))) approvals.cancel(request.id);
+    emit('zones.changed', { sites: policy.zones?.sites ?? [] });
+    return { sites: policy.zones?.sites ?? [] };
+  },
+  'zones.remove': ({ site }) => {
+    if (typeof site !== 'string') throw new GateError('approval-invalid', 'site required');
+    if ((policy.zones?.sites ?? []).includes(site)) policy = setZone(policyPath, site, false, policy.off);
+    emit('zones.changed', { sites: policy.zones?.sites ?? [] });
+    return { sites: policy.zones?.sites ?? [] };
   },
   'approval.cancel': ({ id }) => ({ cancelled: approvals.cancel(id) }),
   // Article extraction can decode entities after HTML leaves the broker. Sanitize its final text too.
@@ -837,6 +888,7 @@ async function handle(input: unknown, conn: Socket) {
       ...(typeof params.harness === 'string' ? { harness: params.harness } : {}), method, tab: meta.tab,
       url: cleanURL(meta.url), ...(meta.tabs ? { tabs: meta.tabs } : {}), ...(meta.upload ? { upload: meta.upload } : {}),
       ...(meta.grantId ? { grant: meta.grantId } : {}),
+      ...(meta.zone ? { zone: meta.zone } : {}),
       ...(meta.reason ? { reason: meta.reason } : {}),
       // A decision from another device names who, which request and what was decided: never its signature or nonce.
       ...(meta.decision ? { approver: 'remote', kind: meta.decision.kind, verb: meta.decision.verb } : {}),

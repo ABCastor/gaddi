@@ -83,6 +83,32 @@ struct Approval: Equatable {
         return site
     }
     var canRemember: Bool { kind == "signin" && site != nil || sendPermission != nil || uploadSite != nil }
+    /// TEST-ZONE: the whole sites this request could be answered for, for good, by making them test zones.
+    /// Only the holds a zone can waive offer it: a grant request, an upload, or a post/delete control. The broker
+    /// checks every site again (protected sites and addresses are refused there).
+    var zoneSites: [String] {
+        func origin(_ text: String) -> String? {
+            guard let url = URL(string: text), let scheme = url.scheme, let host = url.host,
+                  scheme == "https" || scheme == "http" && ["localhost", "127.0.0.1"].contains(host) else { return nil }
+            return "\(scheme)://\(host)\(url.port.map { ":\($0)" } ?? "")"
+        }
+        if kind == "grant" {
+            // Rule lines read "post on app.todoist.com/x" (https implied) or "post on http://localhost:3000".
+            let sites = ApprovalWords.grantParts(detail).rules.compactMap { line -> String? in
+                guard let range = line.range(of: " on ") else { return nil }
+                let place = String(line[range.upperBound...])
+                return origin(place.hasPrefix("http://") ? place : "https://" + place)
+            }
+            return Array(NSOrderedSet(array: sites)) as? [String] ?? []
+        }
+        let verbs = ["post", "publish", "pubblica", "share", "condividi", "delete", "delete forever", "delete permanently",
+                     "remove", "elimina", "elimina definitivamente", "cancella", "rimuovi"]
+        let waivable = kind == "upload" && reason == "upload of a local file"
+            || kind == "click" && verbs.contains { reason == "verb:" + $0 }
+            || kind == "press" && verbs.contains { reason == "enter-submits:" + $0 }
+        guard waivable, let site = origin(url) else { return [] }
+        return [site]
+    }
     var expired: Bool { expiresAt.map { $0 <= Date() } ?? true }
     /// What the banner says. Plain words, the same sentence the panel opens with;
     /// the policy's own reason string never reaches a surface the user reads.
@@ -108,6 +134,12 @@ struct Approval: Equatable {
 func signinRevokeMessage(site: String, timestamp: Int64) throws -> String {
     guard !site.isEmpty, !site.contains("|") else { throw AppError("Invalid sign-in origin") }
     return "signin.revoke|\(site)|\(timestamp)"
+}
+
+/// TEST-ZONE: what Touch ID signs to make a whole site a test zone.
+func zoneAddMessage(site: String, timestamp: Int64) throws -> String {
+    guard !site.isEmpty, !site.contains("|") else { throw AppError("Invalid test zone site") }
+    return "zones.add|\(site)|\(timestamp)"
 }
 
 func uploadRevokeMessage(site: String, timestamp: Int64) throws -> String {
@@ -206,6 +238,8 @@ struct Snapshot: Equatable {
     var rememberedSignins: [String] = []
     var rememberedSends: [SendPermission] = []
     var rememberedUploads: [String] = []
+    /// Sites the owner made test zones: uploads, posts and deletes there run without asking, for every agent.
+    var zones: [String] = []
     var grants: [SessionGrant] = []
     var remote = RemoteStatus()
     /// The waiting approvals the owner's other device may also answer.
@@ -292,6 +326,15 @@ final class BrowserModel {
             }
             var next = Snapshot()
             next.rememberedUploads = uploadSites.sorted()
+            // A broker that does not know test zones is simply older; a malformed list is an error, because a zone
+            // the owner cannot see is authority he cannot end.
+            do {
+                let answer = try client.call("zones.list")
+                guard let zoneSites = answer["sites"] as? [String] else { throw AppError("Daemon returned an invalid test zone list") }
+                next.zones = zoneSites.sorted()
+            } catch {
+                if !error.localizedDescription.contains("unknown method") { throw error }
+            }
             next.rememberedSends = sendPermissions.sorted { ($0.site, $0.kind, $0.reason) < ($1.site, $1.kind, $1.reason) }
             next.rememberedSignins = sites.sorted()
             // Session grants arrive with the approvals. A broker without them is simply older; a malformed
@@ -333,7 +376,7 @@ final class BrowserModel {
         let data = event["data"] as? JSONObject ?? event
         onEvent?(name, data)
         switch name {
-        case "approval.pending", "approval.resolved", "signin.remembered", "sends.remembered", "uploads.remembered", "grants.changed", "remote.changed":
+        case "approval.pending", "approval.resolved", "signin.remembered", "sends.remembered", "uploads.remembered", "grants.changed", "remote.changed", "zones.changed":
             refresh()
         default: break
         }

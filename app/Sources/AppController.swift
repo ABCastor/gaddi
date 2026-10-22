@@ -14,6 +14,8 @@ final class ApprovalMenu {
 
     init(target: AnyObject, open: Selector, remembered: Selector, quit: Selector) {
         review = NSMenuItem(title: "Open Gaddi…", action: open, keyEquivalent: "")
+        // "1 action is waiting for you" is what the owner clicks: it opens the review, like the row below it.
+        waiting.action = open; waiting.target = target
         let signins = NSMenuItem(title: "Remembered sign-ins…", action: remembered, keyEquivalent: "")
         let exit = NSMenuItem(title: "Quit Gaddi", action: quit, keyEquivalent: "")
         for item in [review, signins, exit] { item.target = target }
@@ -28,10 +30,11 @@ final class ApprovalMenu {
         running.title = grants == 1 ? "1 session grant active" : "\(grants) session grants active"
         running.isHidden = grants == 0; phone.isHidden = !remote
         review.title = count == 0 ? "Open Gaddi…" : "Review and decide…"
+        waiting.isEnabled = connected
     }
 }
 
-final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSWindowDelegate {
     private let model = BrowserModel()
     private let keys = SigningKey()
     private var statusItem: NSStatusItem!
@@ -48,6 +51,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         let rememberedSignins: [String]
         let rememberedSends: [SendPermission]
         let rememberedUploads: [String]
+        let zones: [String]
         let grants: [SessionGrant]
         let remote: RemoteStatus
         let remoteApprovable: Set<String>
@@ -63,6 +67,8 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     private var timer: Timer?
     private var requestedID: String?
     private var launchRequestID: String?
+    /// The owner clicked a banner: whatever is waiting opens, even if that one request has gone since.
+    private var ownerAsked = false
     private var visibility = PendingApprovalVisibility()
     static let approvalNotification = Notification.Name("com.abcastor.gaddi.show-approval")
 
@@ -103,9 +109,11 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             DispatchQueue.main.async {
                 guard let self else { return }
                 let resolved = Set(self.snapshot.approvals.map(\.id)).subtracting(snapshot.approvals.map(\.id))
+                // One banner per agent: it goes when that agent has nothing left waiting.
+                let quiet = Set(self.snapshot.approvals.map(\.caller)).subtracting(snapshot.approvals.map(\.caller)).map(Self.bannerID)
                 let notifications = UNUserNotificationCenter.current()
-                notifications.removeDeliveredNotifications(withIdentifiers: Array(resolved))
-                notifications.removePendingNotificationRequests(withIdentifiers: Array(resolved))
+                notifications.removeDeliveredNotifications(withIdentifiers: Array(resolved) + quiet)
+                notifications.removePendingNotificationRequests(withIdentifiers: Array(resolved) + quiet)
                 self.snapshot = snapshot; self.connected = true; self.connectionText = "Connected"
                 self.render()
                 self.presentPendingApprovals()
@@ -128,10 +136,12 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             guard let self else { return }
             if self.snapshot.approvals.contains(where: \.expired) {
                 let expired = self.snapshot.approvals.filter(\.expired).map(\.id)
-                let notifications = UNUserNotificationCenter.current()
-                notifications.removeDeliveredNotifications(withIdentifiers: expired)
-                notifications.removePendingNotificationRequests(withIdentifiers: expired)
+                let callers = Set(self.snapshot.approvals.map(\.caller))
                 self.snapshot.approvals.removeAll(where: \.expired)
+                let quiet = callers.subtracting(self.snapshot.approvals.map(\.caller)).map(Self.bannerID)
+                let notifications = UNUserNotificationCenter.current()
+                notifications.removeDeliveredNotifications(withIdentifiers: expired + quiet)
+                notifications.removePendingNotificationRequests(withIdentifiers: expired + quiet)
                 self.render()
                 self.presentPendingApprovals()
             }
@@ -171,6 +181,13 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         // current, unexpired pending list may open the selected request.
         if let id = launchRequestID, !busy {
             launchRequestID = nil
+            if ownerAsked {
+                // A banner stands for everything its agent has waiting, so the review opens on the whole list.
+                ownerAsked = false; requestedID = nil
+                visibility.acknowledge(snapshot.approvals)
+                openApprovals()
+                return
+            }
             if snapshot.approvals.contains(where: { $0.id == id && !$0.expired }) {
                 requestedID = id
                 visibility.acknowledge(snapshot.approvals)
@@ -186,7 +203,18 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     @objc private func openApprovals() {
         visibility.opened(snapshot.approvals)
         showApprovals()
-        approvalsPanel?.makeKeyAndOrderFront(nil); NSApp.activate(ignoringOtherApps: true)
+        // The owner asked for it (menu, banner, Dock): a real app window that stays above his other windows until he
+        // closes it, so the activation that macOS hands back to the previous app cannot bury it.
+        NSApp.setActivationPolicy(.regular)
+        approvalsPanel?.level = .floating
+        approvalsPanel?.makeKeyAndOrderFront(nil); NSApp.activate()
+    }
+    func windowWillClose(_ notification: Notification) {
+        approvalsPanel?.level = .normal
+        NSApp.setActivationPolicy(.accessory)
+    }
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        openApprovals(); return false
     }
     private func showApprovals() {
         visibility.opened(snapshot.approvals, preservingCurrentMode: approvalsPanel?.isVisible == true)
@@ -196,7 +224,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             panel.title = "Gaddi"; panel.titlebarAppearsTransparent = true
             panel.hidesOnDeactivate = false
             panel.backgroundColor = Palette.paper; panel.isReleasedWhenClosed = false
-            panel.minSize = NSSize(width: 480, height: 320); panel.center(); approvalsPanel = panel
+            panel.minSize = NSSize(width: 480, height: 320); panel.center(); panel.delegate = self; approvalsPanel = panel
         }
         renderApprovals()
         approvalsPanel?.orderFrontRegardless()
@@ -207,6 +235,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             rememberedSignins: snapshot.rememberedSignins,
             rememberedSends: snapshot.rememberedSends,
             rememberedUploads: snapshot.rememberedUploads,
+            zones: snapshot.zones,
             grants: snapshot.grants,
             remote: snapshot.remote,
             remoteApprovable: snapshot.remoteApprovable,
@@ -245,10 +274,15 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             })
         }
         if !displayed.isEmpty || (snapshot.approvals.isEmpty && requestedID == nil) {
-            add(ApprovalList(displayed, enabled: connected && keyReady && !busy, remote: snapshot.remoteApprovable) { [weak self] approval, verb in
-                self?.decide(approval, verb: verb)
-            })
+            add(ReviewList(displayed, enabled: connected && keyReady && !busy, remote: snapshot.remoteApprovable,
+                decide: { [weak self] approval, verb in self?.decide(approval, verb: verb) },
+                decideAll: { [weak self] approvals, verb in self?.decideAll(approvals, verb: verb) },
+                zone: { [weak self] approval in self?.makeZone(approval) }))
         }
+        add(PanelRule())
+        add(ZoneList(snapshot.zones, canAdd: connected && keyReady && !busy, canRemove: connected && !busy,
+            add: { [weak self] site in self?.addZones([site], answering: nil) },
+            remove: { [weak self] site in self?.removeZone(site) }))
         add(PanelRule())
         // Standing authority comes first and is always shown, even empty. Ending a grant needs no
         // Touch ID (it only removes authority), so this list does not wait for the signing key.
@@ -272,11 +306,16 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             self?.revokeUpload(site)
         })
     }
+    static func bannerID(_ caller: String) -> String { "agent:" + caller }
     private func notify(_ approval: Approval) {
+        // One banner per agent, replaced as its requests arrive, so a burst is one notification, not a flood.
+        let waiting = snapshot.approvals.filter { $0.caller == approval.caller && !$0.expired }.count
         let content = UNMutableNotificationContent()
-        content.title = approval.notification()
-        content.body = ApprovalWords.reason(approval.reason) + " Open Gaddi to decide."; content.sound = .default
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: approval.id, content: content, trigger: nil)) { error in
+        content.title = waiting > 1 ? "\(approval.caller) has \(waiting) requests waiting" : approval.notification()
+        content.body = (waiting > 1 ? "Latest: " + approval.notification() + "." : ApprovalWords.reason(approval.reason)) + " Open Gaddi to decide."
+        content.sound = waiting > 1 ? nil : .default
+        content.userInfo = ["id": approval.id]
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: Self.bannerID(approval.caller), content: content, trigger: nil)) { error in
             if let error { diagnostic("Approval notification failed: \(error.localizedDescription)") }
         }
         // Notification authorization and Focus mode cannot hide the decision:
@@ -289,7 +328,10 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
         DispatchQueue.main.async {
-            if let id = approvalRequestID(response.notification.request.identifier) { self.requestApproval(id) }
+            let raw = response.notification.request.content.userInfo["id"] as? String ?? response.notification.request.identifier
+            if let id = approvalRequestID(raw) { self.ownerAsked = true; self.requestApproval(id) }
+            // A banner whose request has gone still opens the review: clicking it must always show something.
+            else { self.openApprovals() }
         }; completionHandler()
     }
     private func showError(_ title: String, error: Error) {
@@ -349,6 +391,75 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             let signed = try keys.sign(message, context: context)
             _ = try model.client.call("approval.\(verb)", ["id": approval.id, "remember": remember,
                 "proof": ["ts": ts, "sig": signed.signature.base64EncodedString()]])
+        }
+    }
+    /// One Touch ID for a whole group from one agent. Each request is still signed on its own, and only if it is
+    /// still waiting and unchanged after authentication; a request that changed is skipped and named.
+    private func decideAll(_ group: [Approval], verb: String) {
+        let live = group.filter { !$0.expired }
+        guard !live.isEmpty, ["grant", "deny"].contains(verb) else { return }
+        // Invariant: bulk approval only for the tier a grant could cover; anything else is approved one by one.
+        if verb == "grant" && live.contains(where: { $0.kind != "grant" && $0.zoneSites.isEmpty }) { return }
+        let caller = live[0].caller
+        let what = live.prefix(3).map { "\(ApprovalWords.title($0).verb) \(ApprovalWords.title($0).object)" }.joined(separator: "; ")
+        let more = live.count > 3 ? " and \(live.count - 3) more" : ""
+        authenticated(reason: "\(verb == "grant" ? "Approve" : "Deny") \(live.count) requests from \(caller): \(what)\(more)") { [self] context in
+            let list = try model.client.call("approvals.list")
+            let pending = (list["pending"] as? [JSONObject] ?? []).filter { $0["status"] as? String == "pending" }.compactMap(Approval.init)
+            var skipped = 0
+            for approval in live {
+                guard let current = pending.first(where: { $0.id == approval.id }), !current.expired, current == approval else { skipped += 1; continue }
+                let ts = Int64(Date().timeIntervalSince1970 * 1000)
+                let signed = try keys.sign(try current.signingMessage(verb: verb, timestamp: ts), context: context)
+                do {
+                    _ = try model.client.call("approval.\(verb)", ["id": approval.id, "remember": false,
+                        "proof": ["ts": ts, "sig": signed.signature.base64EncodedString()]])
+                } catch { skipped += 1 }
+            }
+            if skipped > 0 { throw AppError("\(skipped) of \(live.count) had changed, expired or were already answered; the rest were done") }
+        }
+    }
+    /// TEST-ZONE from a waiting request: its sites become test zones and the request is answered, with one Touch ID.
+    private func makeZone(_ approval: Approval) {
+        let sites = approval.zoneSites
+        guard !sites.isEmpty, !approval.expired else { return }
+        addZones(sites, answering: approval)
+    }
+    private func addZones(_ sites: [String], answering approval: Approval?) {
+        guard !sites.isEmpty else { return }
+        let named = sites.map(ApprovalWords.host).joined(separator: ", ")
+        authenticated(reason: "Make \(named) a test zone: agents upload, post and delete there without asking until you remove it") { [self] context in
+            var refused: [String] = []
+            for site in sites {
+                let ts = Int64(Date().timeIntervalSince1970 * 1000)
+                let signed = try keys.sign(try zoneAddMessage(site: site, timestamp: ts), context: context)
+                do {
+                    _ = try model.client.call("zones.add", ["site": site, "proof": ["ts": ts, "sig": signed.signature.base64EncodedString()]])
+                } catch { refused.append(ApprovalWords.host(site)) }
+            }
+            // A grant request the zones now cover is closed by the broker. A one-time action is approved too, so the
+            // agent's retry with its id goes through; the zone answers every later one.
+            if let approval, approval.kind != "grant" {
+                let list = try model.client.call("approvals.list")
+                let current = (list["pending"] as? [JSONObject] ?? []).filter { $0["status"] as? String == "pending" }
+                    .compactMap(Approval.init).first { $0.id == approval.id }
+                if let current, !current.expired, current == approval {
+                    let ts = Int64(Date().timeIntervalSince1970 * 1000)
+                    let signed = try keys.sign(try current.signingMessage(verb: "grant", timestamp: ts), context: context)
+                    _ = try model.client.call("approval.grant", ["id": approval.id, "remember": false,
+                        "proof": ["ts": ts, "sig": signed.signature.base64EncodedString()]])
+                }
+            }
+            if !refused.isEmpty { throw AppError("\(refused.joined(separator: ", ")) cannot be a test zone (a protected site, or not a whole https site)") }
+        }
+    }
+    private func removeZone(_ site: String) {
+        // Removing a zone only takes authority away, so it asks for no Touch ID.
+        guard connected, !busy else { return }
+        model.queue.async { [self] in
+            do { _ = try model.client.call("zones.remove", ["site": site]) }
+            catch { DispatchQueue.main.async { self.showError("The test zone was not removed", error: error) } }
+            model.refresh()
         }
     }
     private func endGrant(_ grant: SessionGrant) {

@@ -26,7 +26,7 @@ echo "PASS session-grant pristine copy: $(grep -Ec '^PASS ASSERT_GRANT_' "$BASE"
 FALSIFIED=0
 for mutation in \
   OTHER_SESSION CLI LIVE_REQUIRED ENDED_ASK PROOF REMEMBER REVOKE SESSION_END AUDIT APPROVAL_CREDIT UPLOAD CLICK ENTER \
-  LEAK_VIEW LEAK_DISK CLEAN_GRANT QUEUE EXPIRY LIST BOUNDARY ORIGIN PERMISSION MIXED PROTECTED DESTINATION NEVER GMAIL TABLE DETAIL \
+  LEAK_VIEW LEAK_DISK CLEAN_GRANT FOLD ZONE ZONE_WAIVE EXPIRY LIST BOUNDARY ORIGIN PERMISSION MIXED PROTECTED DESTINATION NEVER GMAIL TABLE DETAIL \
   NEEDED DENY SECRET RESTART; do
   # Reset every source from the real tree, then apply ONE distinct mutation to this copy.
   for source in daemon/*.ts; do cp "$source" "$COPY/$source"; done
@@ -66,7 +66,9 @@ const table = {
     "function persistable() { return [...entries.values()].filter(a => a.kind !== 'grant'); }",
     'function persistable() { return [...entries.values()]; }']],
   CLEAN_GRANT: ['ASSERT_GRANT_DETAIL', ['daemon/approvals.ts', "detail: kind === 'grant' ? detail : cleanDetail(detail),", 'detail: cleanDetail(detail),']],
-  QUEUE: ['ASSERT_GRANT_QUEUE', ['daemon/daemon.ts', '// BR-GADDI-QUEUE', 'for (const older of pendingGrantsOf(session)) approvals.cancel(older.id);']],
+  FOLD: ['ASSERT_GRANT_FOLD', ['daemon/daemon.ts', 'const folded = union.size <= max;', 'const folded = false;']],
+  ZONE: ['ASSERT_ZONE', ['daemon/grants.ts', 'return (policy.zones?.sites ?? []).includes(target.origin) && grantableAddress(target);', 'return grantableAddress(target);']],
+  ZONE_WAIVE: ['ASSERT_ZONE', ['daemon/grants.ts', 'if (decision.outcome !== \'allow\') return check;\n  return { outcome: \'allow\', reason: \'test zone\'', 'if (false) return check;\n  return { outcome: \'allow\', reason: \'test zone\'']],
   EXPIRY: ['ASSERT_GRANT_EXPIRY', ['daemon/grants.ts', 'expiresAt: created + spec.minutes * minuteMs };', 'expiresAt: created + spec.minutes * minuteMs * 1000 };']],
   LIST: ['ASSERT_GRANT_LIST', ['daemon/grants.ts', 'mine: mine !== undefined && grant.session === mine });', 'mine: true });']],
   BOUNDARY: ['ASSERT_GRANT_BOUNDARY', ['daemon/grants.ts', "url.pathname.startsWith(rule.path + '/')", 'url.pathname.startsWith(rule.path)']],

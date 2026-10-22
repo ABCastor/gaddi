@@ -34,7 +34,7 @@ export function mapGrantError(error: unknown): CallToolResult {
   const approval: Record<string, unknown> = isRecord(e.approval) ? e.approval : {};
   const id = approval.id != null ? String(approval.id) : 'unknown';
   const expiry = approval.expiresAt ?? approval.expires;
-  return text(`HELD (approval ${id}): session grant. The owner decides with Touch ID in Gaddi, or by phone if enabled for this request (at most 120 minutes and 20 rules). It takes effect as soon as they approve: do not retry, just keep working. browser_approvals lists the grants that are active.${expiry ? ` The request expires ${expiry}.` : ''}`);
+  return text(`HELD (approval ${id}): session grant. The owner decides with Touch ID in Gaddi, or by phone if enabled for this request (at most 120 minutes and 20 rules). It takes effect as soon as they approve: do not retry, just keep working. Do not ask again for more sites one by one: a new ask from this chat joins this card. browser_approvals lists the grants that are active.${expiry ? ` The request expires ${expiry}.` : ''}`);
 }
 
 function text(s: unknown): { content: [{ type: 'text'; text: string }] } {

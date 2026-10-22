@@ -267,7 +267,8 @@ enum ApprovalWords {
 /// One held action: what the agent wants, where, what it looks like, and the decision.
 final class ApprovalCard: NSStackView {
     /// `remote` is true while the owner's other device may also answer this request; the card then says so.
-    init(_ approval: Approval, enabled: Bool, remote: Bool = false, decide: @escaping (String) -> Void) {
+    /// `zone`, when given, makes the request's sites test zones (and answers it) with one Touch ID.
+    init(_ approval: Approval, enabled: Bool, remote: Bool = false, zone: (() -> Void)? = nil, decide: @escaping (String) -> Void) {
         super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 0
         let words = ApprovalWords.title(approval)
@@ -328,6 +329,16 @@ final class ApprovalCard: NSStackView {
             remember.isEnabled = enabled && approval.site != nil
             let row = NSStackView(views: [NSView(), remember]); row.spacing = 10
             setCustomSpacing(10, after: actions); addArrangedSubview(row)
+            row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        }
+        if let zone, !approval.zoneSites.isEmpty {
+            let sites = approval.zoneSites.map(ApprovalWords.host)
+            let named = sites.count == 1 ? sites[0] : "these \(sites.count) sites"
+            let button = PanelButton("Test zone: always allow on \(named)", kind: .quiet, symbol: "checkmark.shield") { zone() }
+            button.isEnabled = enabled
+            button.toolTip = "Uploads, posts and deletes on \(sites.joined(separator: ", ")) run without asking, for every agent, until you remove it. Payments, sending, sign-in and security still ask."
+            let row = NSStackView(views: [NSView(), button]); row.spacing = 10
+            setCustomSpacing(10, after: arrangedSubviews.last!); addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         for view in [heading, meta, because, actions] { view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
@@ -461,7 +472,8 @@ final class RemotePanel: NSStackView {
 /// The same pending-action body serves the live panel and the offscreen harness.
 final class ApprovalList: NSStackView {
     /// `remote` holds the ids of the waiting requests the owner's other device may also answer.
-    init(_ approvals: [Approval], enabled: Bool, remote: Set<String> = [], decide: @escaping (Approval, String) -> Void) {
+    init(_ approvals: [Approval], enabled: Bool, remote: Set<String> = [], zone: ((Approval) -> Void)? = nil,
+         decide: @escaping (Approval, String) -> Void) {
         super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 28
         func add(_ view: NSView) {
@@ -474,7 +486,94 @@ final class ApprovalList: NSStackView {
         }
         for (index, approval) in approvals.enumerated() {
             if index > 0 { add(PanelRule()) }
-            add(ApprovalCard(approval, enabled: enabled && !approval.expired, remote: remote.contains(approval.id)) { decide(approval, $0) })
+            add(ApprovalCard(approval, enabled: enabled && !approval.expired, remote: remote.contains(approval.id),
+                             zone: zone.map { act in { act(approval) } }) { decide(approval, $0) })
+        }
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+}
+
+/// TEST-ZONE: the owner's standing test ground. Always shown, even empty. Adding needs Touch ID; removing only
+/// takes authority away, so it asks for none.
+final class ZoneList: NSStackView {
+    private let field = NSTextField()
+    init(_ sites: [String], canAdd: Bool, canRemove: Bool, add: @escaping (String) -> Void, remove: @escaping (String) -> Void) {
+        super.init(frame: .zero)
+        orientation = .vertical; alignment = .leading; spacing = 12
+        let heading = NSTextField(labelWithString: "Test zones")
+        heading.font = Typeface.heading(18); heading.textColor = Palette.ink
+        addArrangedSubview(heading)
+        let explanation = NSTextField(wrappingLabelWithString: sites.isEmpty
+            ? "No test zones. Make a site you only use for testing a test zone and agents can upload, post and delete there without asking. Payments, sending messages, sign-in and security changes still ask every time."
+            : "Agents upload, post and delete on these sites without asking, until you remove them. Payments, sending messages, sign-in and security changes still ask every time. A zone covers whichever account is signed in on that site.")
+        explanation.font = Typeface.interface(13); explanation.textColor = Palette.inkSoft
+        addArrangedSubview(explanation)
+        explanation.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        for site in sites {
+            let label = NSTextField(labelWithString: site)
+            label.font = Typeface.interface(13); label.textColor = Palette.ink; label.isSelectable = true
+            label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            let button = PanelButton("Remove", kind: .secondary) { remove(site) }
+            button.isEnabled = canRemove
+            let row = NSStackView(views: [label, button]); row.spacing = 12; row.alignment = .centerY
+            addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        }
+        field.placeholderString = "https://staging.example.com"
+        field.font = Typeface.interface(13)
+        field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let button = PanelButton("Add test zone", kind: .secondary, symbol: "touchid") { [weak self] in
+            guard let self else { return }
+            let text = self.field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let url = URL(string: text.contains("://") ? text : "https://" + text), let scheme = url.scheme, let host = url.host else { return }
+            add("\(scheme)://\(host)\(url.port.map { ":\($0)" } ?? "")")
+        }
+        field.isEnabled = canAdd; button.isEnabled = canAdd
+        let row = NSStackView(views: [field, button]); row.spacing = 12; row.alignment = .centerY
+        addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+    }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
+}
+
+/// Everything waiting, grouped by the agent that asked, biggest group first. A group of two or more can be
+/// approved or denied as a whole with one Touch ID.
+final class ReviewList: NSStackView {
+    init(_ approvals: [Approval], enabled: Bool, remote: Set<String> = [],
+         decide: @escaping (Approval, String) -> Void, decideAll: @escaping ([Approval], String) -> Void,
+         zone: @escaping (Approval) -> Void) {
+        super.init(frame: .zero)
+        orientation = .vertical; alignment = .leading; spacing = 28
+        func add(_ view: NSView) {
+            addArrangedSubview(view)
+            view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        }
+        if approvals.isEmpty {
+            let empty = NSTextField(wrappingLabelWithString: "Nothing is waiting for you. Actions that need your approval appear here.")
+            empty.font = Typeface.interface(14); empty.textColor = Palette.inkSoft; add(empty)
+        }
+        let groups = Dictionary(grouping: approvals, by: \.caller).sorted { ($1.value.count, $0.key) < ($0.value.count, $1.key) }
+        for (index, group) in groups.enumerated() {
+            if index > 0 { add(PanelRule()) }
+            let live = group.value.filter { !$0.expired }
+            // Only the tier a grant could cover is approved in bulk; a payment, send or sign-in is always its own decision.
+            let bulk = live.filter { $0.kind == "grant" || !$0.zoneSites.isEmpty }
+            if groups.count > 1 || live.count > 1 {
+                let title = NSTextField(labelWithString: "\(group.key) · \(group.value.count) waiting")
+                title.font = Typeface.heading(16); title.textColor = Palette.machine
+                title.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                var views: [NSView] = [title, NSView()]
+                if live.count > 1 {
+                    let deny = PanelButton("Deny all", kind: .secondary) { decideAll(live, "deny") }
+                    deny.isEnabled = enabled; views.append(deny)
+                }
+                if bulk.count > 1 {
+                    let approve = PanelButton(bulk.count == live.count ? "Approve all \(bulk.count)" : "Approve \(bulk.count) posts, deletes and uploads",
+                                              kind: .primary, symbol: "touchid") { decideAll(bulk, "grant") }
+                    approve.isEnabled = enabled; views.append(approve)
+                }
+                let header = NSStackView(views: views); header.spacing = 10; header.alignment = .centerY
+                add(header)
+            }
+            add(ApprovalList(group.value, enabled: enabled, remote: remote, zone: zone, decide: decide))
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }

@@ -14,6 +14,8 @@ interface PolicyData {
  signin?: { remember: string[] };
  sends?: { remember: SendRule[] };
  uploads?: { remember: string[] };
+ // Test zones: sites the owner marked as his own test ground (TEST-ZONE in docs/authorization.md).
+ zones?: { sites: string[] };
  browser: { window: 'own' | 'shared'; show: 'attention' | 'front' };
 }
 export interface Policy extends PolicyData { off: boolean; sources: string[] }
@@ -66,6 +68,7 @@ const schema: Schema = {
   signin: { remember: [exactOrigin] },
   sends: { remember: [{ site: exactOrigin, kind: v => v === 'click' || v === 'press', reason: sendReason }] },
   uploads: { remember: [exactOrigin] },
+  zones: { sites: [exactOrigin] },
   browser: { window: v => v === 'own' || v === 'shared', show: v => v === 'attention' || v === 'front' },
 };
 function validate(value: unknown, shape: Schema = schema, at = 'policy', required = false): void {
@@ -120,6 +123,9 @@ export function loadPolicy({ overlay = path.join(process.env.GADDI_HOME || path.
   }
   for (const site of policy.uploads?.remember ?? []) {
     if (!uploadSite(site)) throw new Error('policy.uploads.remember: invalid upload site');
+  }
+  for (const site of policy.zones?.sites ?? []) {
+    if (zoneSite(site) !== site) throw new Error('policy.zones.sites: invalid test zone site');
   }
   if (off) {
     log('!!!!!!!!!! GADDI_POLICY_OFF=1: EVERY GATE IS DISABLED. Test-only. Never run like this for real work. !!!!!!!!!!');
@@ -180,6 +186,20 @@ export function setUploadRemember(overlay: string, site: unknown, remember: bool
   return saveRememberedPolicy(overlay, { ...local, uploads: { remember: [...sites] } }, off);
 }
 
+// TEST-ZONE: called only after the daemon verifies the owner's Touch ID signature (adding) or for removal,
+// which only takes authority away. Same private atomic overlay writer as the remembered choices.
+export function setZone(overlay: string, site: unknown, on: boolean, off = false): Policy {
+  validate({ zones: { sites: [site] } });
+  if (zoneSite(site) !== site) throw new Error('policy.zones.sites: invalid test zone site');
+  const current = loadPolicy({ overlay, off });
+  const local: unknown = fs.existsSync(overlay) ? parseJSON(fs.readFileSync(overlay, 'utf8')) : {};
+  validate(local);
+  if (!isRecord(local)) throw new Error('Invalid policy overlay');
+  const sites = new Set(current.zones?.sites ?? []);
+  if (on) sites.add(site as string); else sites.delete(site as string);
+  return saveRememberedPolicy(overlay, { ...local, zones: { sites: [...sites] } }, off);
+}
+
 // Reject refused hosts and protected pages even when an overlay loosens ordinary holds.
 const builtInPolicy: PolicyData = JSON.parse(fs.readFileSync(DEFAULT_POLICY, 'utf8'));
 // Invariant: the built-in refused hosts, protected addresses and hold verbs always apply on top of
@@ -231,6 +251,10 @@ export function uploadSite(url: unknown): string | undefined {
     return page.origin;
   } catch { return; }
 }
+
+// A test zone is a whole site (exact origin) that a session grant could name: https or local http, never a refused
+// host (Gmail, banks) and never an address on the built-in protected list.
+export const zoneSite = uploadSite;
 
 // Only ordinary upload holds can be remembered. File refusals happen before this check.
 export function checkRememberedUpload(policy: Policy, url: string, check: PolicyCheck): PolicyCheck {

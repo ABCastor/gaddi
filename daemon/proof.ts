@@ -4,7 +4,7 @@ import type { StoredApproval } from './approvals.ts';
 import crypto from 'node:crypto';
 import { GateError } from './approvals.ts';
 import { signinSite } from './signin.ts';
-import { sendRule, uploadSite, UPLOAD_HOLD } from './policy.ts';
+import { sendRule, uploadSite, zoneSite, UPLOAD_HOLD } from './policy.ts';
 import type { SendRule } from './policy.ts';
 
 export function approvalMessage(verb: string, a: Pick<StoredApproval, "id" | "kind" | "tab" | "detail" | "url" | "reason" | "rememberable">, ts: unknown, remember = false) {
@@ -27,6 +27,13 @@ export function signinRevokeMessage(site: string, ts: unknown) { return `signin.
 export function uploadRevokeMessage(site: string, ts: unknown) {
   if (uploadSite(site) !== site) throw new GateError('approval-invalid', 'exact upload origin required');
   return `uploads.revoke|${site}|${ts}`;
+}
+
+// TEST-ZONE: adding a site needs the owner's Touch ID signature over exactly this text. Removing one only takes
+// authority away, so it is unsigned.
+export function zoneAddMessage(site: string, ts: unknown) {
+  if (zoneSite(site) !== site) throw new GateError('approval-invalid', 'exact test zone origin required');
+  return `zones.add|${site}|${ts}`;
 }
 
 export function sendRevokeMessage(rule: SendRule, ts: unknown) {

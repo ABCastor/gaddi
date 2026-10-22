@@ -50,10 +50,10 @@ node - "$GADDI_FAKE_RECORD" <<'NODE'
 const fs = require('node:fs');
 const rows = fs.readFileSync(process.argv[2], 'utf8').trim().split('\n').map(JSON.parse);
 if (rows.filter(x => x.method === 'events.subscribe').length < 2) throw Error('No reconnect');
-for (const method of ['approvals.list', 'signin.remembered', 'sends.remembered', 'uploads.remembered', 'remote.status']) {
+for (const method of ['approvals.list', 'signin.remembered', 'sends.remembered', 'uploads.remembered', 'zones.list', 'remote.status']) {
   if (rows.filter(x => x.method === method).length < 2) throw Error(`No refresh for ${method}`);
 }
-if (rows.some(x => !['events.subscribe', 'approvals.list', 'signin.remembered', 'sends.remembered', 'uploads.remembered', 'remote.status'].includes(x.method) && !x.method?.startsWith('test.') && !x.subscriptions)) throw Error('App called an unsupported or mutating method');
+if (rows.some(x => !['events.subscribe', 'approvals.list', 'signin.remembered', 'sends.remembered', 'uploads.remembered', 'zones.list', 'remote.status'].includes(x.method) && !x.method?.startsWith('test.') && !x.subscriptions)) throw Error('App called an unsupported or mutating method');
 NODE
 echo 'PASS app events: existing approvals, Unicode/fragmented events, resolution and reconnect recovery'
 cleanup
