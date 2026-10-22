@@ -310,7 +310,8 @@ async function waitOnTab(tab: number, params: ChromeParams, scope: Deadline) {
             onPage(tab, 'wait', { ...args, timeout: Math.min(2000, remaining) }, scope.check),
             new Promise<null>(resolve => {
               const done = () => { wake = undefined; resolve(null); };
-              wake = done; timer = setTimeout(done, Math.min(2100, remaining + 100));
+              // A busy renderer can take hundreds of ms to answer even a check-now wait.
+              wake = done; timer = setTimeout(done, Math.min(2000, remaining) + 1000);
             }),
           ]);
           if (result?.met) return { met: true, ms: Date.now() - start, url: (await getTab(tab)).url || '' };

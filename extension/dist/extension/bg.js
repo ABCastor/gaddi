@@ -351,8 +351,9 @@ async function waitOnTab(tab, params, scope) {
                         onPage(tab, 'wait', { ...args, timeout: Math.min(2000, remaining) }, scope.check),
                         new Promise(resolve => {
                             const done = () => { wake = undefined; resolve(null); };
+                            // A busy renderer can take hundreds of ms to answer even a check-now wait.
                             wake = done;
-                            timer = setTimeout(done, Math.min(2100, remaining + 100));
+                            timer = setTimeout(done, Math.min(2000, remaining) + 1000);
                         }),
                     ]);
                     if (result?.met)

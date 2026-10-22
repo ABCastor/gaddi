@@ -687,6 +687,17 @@ await new Promise(resolve => setImmediate(resolve));
 assert.equal(replies.size, 0, 'late results never produce a second reply');
 pass('25-second deadline includes queue wait, skips expired work and releases the queue before the old injection settles');
 
+// A check-now wait (timeout 0) on a busy renderer: the page answers late but truthfully.
+let releaseWait!: (result: PageResult) => void;
+pageResult = action => action === 'wait' ? new Promise(resolve => { releaseWait = resolve; }) : {};
+const checkNow = request('chrome.wait', { tab: recoveryTab, selector: '#gone', gone: true, timeout: 0 });
+await waitFor(() => releaseWait, 'check-now wait injection pending');
+const replyGrace = timers.findLast(timer => !timer.cleared && timer.delay >= 50 && timer.delay <= 3100)!;
+assert.ok(replyGrace.delay >= 500, `ASSERT_WAIT_REPLY_GRACE: a busy page gets ${replyGrace.delay} ms to answer a check-now wait`);
+releaseWait({ met: true });
+assert.equal((await checkNow).result!.met, true, 'ASSERT_WAIT_REPLY_GRACE');
+pass('a check-now wait gives a busy page time to answer instead of reporting not met');
+
 let releaseClick!: (result: PageResult) => void, releaseEval!: (result: PageResult) => void;
 pageResult = action => action === 'settle' ? { signature: 'after', url: tab.url } : new Promise(resolve => {
   if (action === 'clickPoint') releaseClick = resolve;
