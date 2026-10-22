@@ -134,10 +134,11 @@ import AppKit
             return fits
         }
         func make(_ id: String, kind: String = "click", detail: String, reason: String,
-                  url: String = "https://workspace.example.com/project/messages", picture: Bool = true) -> Approval {
+                  url: String = "https://workspace.example.com/project/messages", picture: Bool = true, context: JSONObject? = nil) -> Approval {
             var object: JSONObject = ["id": id, "kind": kind, "detail": detail, "caller": "codex",
                 "url": url, "tab": "12", "reason": reason,
                 "expiresAt": Date().addingTimeInterval(540).timeIntervalSince1970 * 1000]
+            if let context { object["context"] = context; object["allows"] = "This one action, once, within 10 minutes at most." }
             if picture {
                 object["imagePath"] = path.path
                 object["box"] = ["x": 150, "y": 120, "width": 150, "height": 50]
@@ -154,50 +155,57 @@ import AppKit
         // Eval has no current HOLD policy. This fixture exercises a possible stored
         // approval without changing that policy or claiming a live eval hold exists.
         let fixtures = [
+            // Who asked and why, at the longest the broker lets through (80, 60 and 160 characters).
+            Fixture(approval: make("context", detail: "Delete forever", reason: "verb:delete", context: [
+                "agent": "Pi", "chat": "Pack WEB-1: delete my Garmin test courses and the duplicate routes from this morning",
+                "project": "Fitness App, routes and coach research for the Garmin side",
+                "why": "Remove the three test courses I created this morning so only the real routes stay on the watch, as you asked in the routes spec today ok"]),
+                heading: "Click “Delete forever”", place: source,
+                reason: "Held because its name contains “delete”."),
             Fixture(approval: make("delete", detail: "Delete forever", reason: "verb:delete"),
-                heading: "codex wants to click “Delete forever”", place: source,
+                heading: "Click “Delete forever”", place: source,
                 reason: "Held because its name contains “delete”."),
             Fixture(approval: make("send", detail: "Send", reason: "verb:send"),
-                heading: "codex wants to click “Send”", place: source,
+                heading: "Click “Send”", place: source,
                 reason: "Held because its name contains “send”."),
             Fixture(approval: make("link", detail: "Billing settings -> https://accounts.example.com/billing/settings", reason: "url-pattern:billing"),
-                heading: "codex wants to click “Billing settings”",
+                heading: "Click “Billing settings”",
                 place: "\(source), which leads to accounts.example.com/billing/settings",
                 reason: "Held because this address is on the protected list."),
             Fixture(approval: make("enter", kind: "press", detail: "Enter", reason: "enter-submits:send"),
-                heading: "codex wants to press Enter", place: source,
+                heading: "Press Enter", place: source,
                 reason: "Held because Enter would activate a button or link with “send” in its name."),
             Fixture(approval: make("open", kind: "open", detail: "https://accounts.example.com/billing/settings", reason: "url-pattern:billing",
                 url: "https://accounts.example.com/billing/settings", picture: false),
-                heading: "codex wants to open a new tab", place: "to accounts.example.com/billing/settings",
+                heading: "Open a new tab", place: "to accounts.example.com/billing/settings",
                 reason: "Held because this address is on the protected list."),
             Fixture(approval: make("goto", kind: "goto", detail: "https://accounts.example.com/billing/settings", reason: "url-pattern:billing", picture: false),
-                heading: "codex wants to navigate this tab", place: "to accounts.example.com/billing/settings",
+                heading: "Navigate this tab", place: "to accounts.example.com/billing/settings",
                 reason: "Held because this address is on the protected list."),
             Fixture(approval: make("eval-synthetic", kind: "eval", detail: "eval", reason: "manual-review:script", picture: false),
-                heading: "codex wants to run a script", place: source,
+                heading: "Run a script", place: source,
                 reason: "Held because this action needs your approval."),
             Fixture(approval: make("extension-disable", kind: "extension.disable", detail: "Fixture extension", reason: "extension:disable", url: "chrome://extensions", picture: false),
-                heading: "codex wants to disable extension “Fixture extension”", place: "in Chrome",
+                heading: "Disable extension “Fixture extension”", place: "in Chrome",
                 reason: "Held because this action needs your approval."),
             Fixture(approval: make("extension-remove", kind: "extension.uninstall", detail: "Fixture extension", reason: "extension:uninstall", url: "chrome://extensions", picture: false),
-                heading: "codex wants to remove extension “Fixture extension”", place: "in Chrome",
+                heading: "Remove extension “Fixture extension”", place: "in Chrome",
                 reason: "Held because this action needs your approval."),
             Fixture(approval: make("extension-install", kind: "extension.install", detail: "Fixture extension", reason: "extension:install", url: "", picture: false),
-                heading: "codex wants to install extension “Fixture extension”", place: "in Chrome",
+                heading: "Install extension “Fixture extension”", place: "in Chrome",
                 reason: "Held because this action needs your approval."),
             Fixture(approval: make("unnamed", detail: "", reason: "manual-review:control"),
-                heading: "codex wants to click an unnamed control", place: source,
+                heading: "Click an unnamed control", place: source,
                 reason: "Held because this action needs your approval."),
             Fixture(approval: make("unnamed-link", detail: "-> https://accounts.example.com/billing/settings", reason: "url-pattern:billing"),
-                heading: "codex wants to click an unnamed control",
+                heading: "Click an unnamed control",
                 place: "\(source), which leads to accounts.example.com/billing/settings",
                 reason: "Held because this address is on the protected list."),
             Fixture(approval: make("guarded-key", kind: "press", detail: "Control+Enter", reason: "key:Control+Enter on workspace.example.com", picture: false),
-                heading: "codex wants to press Control+Enter", place: source,
+                heading: "Press Control+Enter", place: source,
                 reason: "Held because Control+Enter is guarded on this site."),
             Fixture(approval: make("long-name", detail: "Delete forever all selected messages and their attachments from the shared project archive", reason: "verb:delete"),
-                heading: "codex wants to click “Delete forever all selected messages and their attachments from the shared project archive”", place: source,
+                heading: "Click “Delete forever all selected messages and their attachments from the shared project archive”", place: source,
                 reason: "Held because its name contains “delete”.")
         ]
         check(ApprovalWords.title(make("unnamed-untrimmed", detail: " -> https://accounts.example.com/billing", reason: "url-pattern:billing")).object == "an unnamed control",
@@ -213,6 +221,13 @@ import AppKit
                     let visible = labels.map(\.stringValue)
                     check(visible.contains(fixture.heading) && visible.contains(fixture.place) && visible.contains(fixture.reason),
                           "\(id): the full action, address and plain reason are visible")
+                    // Every card says who asked (harness, and chat when known) and why, or that no reason was given.
+                    let approval = fixture.approval
+                    check(visible.contains(approval.who) && visible.contains { $0.hasPrefix("Why  ") }
+                          && (approval.why == nil ? visible.contains("Why  the agent gave no reason")
+                              : visible.contains("Why  “\(approval.why!)” (the agent’s words)") && visible.contains("Project  \(approval.project!)")
+                                && visible.contains("If you approve  \(approval.allows!)")),
+                          "\(id): who asked, the project, why and what approving allows are visible")
                     check(labels.allSatisfy { fits($0, within: card) }, "\(id): every text line fits without clipping")
                     let heading = labels.first { $0.stringValue == fixture.heading }!
                     let attributes = heading.attributedStringValue.attributes(at: 0, effectiveRange: nil)
@@ -288,7 +303,7 @@ import AppKit
                 check(buttons.map(\.title).sorted() == ["Allow once", "Always allow on this site", "Deny"].sorted(),
                       "signin-\(theme)-\(Int(width)): only sign-in cards offer both allow choices")
                 check(descendants(card).compactMap { $0 as? NSTextField }.allSatisfy { fits($0, within: card) }
-                      && descendants(card).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "codex wants to sign in with “Fixture login”" }
+                      && descendants(card).compactMap { $0 as? NSTextField }.contains { $0.stringValue == "Sign in with “Fixture login”" }
                       && buttons.allSatisfy { card.bounds.contains($0.convert($0.bounds, to: card)) },
                       "signin-\(theme)-\(Int(width)): exact origin and all controls fit")
                 for title in ["Allow once", "Always allow on this site", "Deny"] { buttons.first { $0.title == title }!.performClick(nil) }
@@ -386,8 +401,9 @@ import AppKit
                 let visible = labels.map(\.stringValue)
                 check(buttons.map(\.title).sorted() == ["Approve with Touch ID", "Deny"].sorted(),
                       "grant-\(theme)-\(Int(width)): approve and deny only, never Always allow")
-                check(visible.contains("codex wants to work without asking you for 3 hours")
-                      && visible.contains("post on www.linkedin.com/company\nupload on github.com/settings\nDescribed by the agent as: “Update the profile”")
+                check(visible.contains("Work without asking you for 3 hours")
+                      && visible.contains("post on www.linkedin.com/company\nupload on github.com/settings")
+                      && visible.contains("Why  “Update the profile” (the agent’s words)")
                       && visible.contains("Payments, purchases, sending messages, sign-in and security changes still ask you every time."),
                       "grant-\(theme)-\(Int(width)): the heading, every rule and the fixed sentence are visible")
                 check(visible.contains { $0.hasPrefix("decide by ") } && !visible.contains { $0.hasPrefix("until ") },

@@ -30,6 +30,9 @@ export interface BrokerParams extends ChromeParams {
   remember?: boolean; site?: string; reason?: string;
   // browser_grant: what to waive (`<upload|post|delete> <address prefix>`), for how long, and the agent's own words.
   rules?: string[]; minutes?: number; label?: string;
+  // Shown to the owner if the call is held, never acted on: the agent's one-line purpose, and its chat and project
+  // as the harness names them (daemon/approvals.ts ApprovalContext).
+  why?: string; context?: { chat?: string; project?: string };
   // Approving from another device (the owner's phone approver; no MCP tool ever sends these): `fingerprint` names
   // the key that Touch ID turns on, and one decision is `{ id, verb, nonce, ts, sig }`.
   fingerprint?: string; verb?: string; nonce?: string; ts?: number; sig?: string;

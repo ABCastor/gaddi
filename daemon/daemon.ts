@@ -6,11 +6,15 @@ import type { Socket } from 'node:net';
 import { isRecord, parseJSON, errorMessage, hasErrorCode, versionParam } from '../shared/protocol.ts';
 import type { IncomingParams, ChromeParams, WireError, BrokerResults, SigninResult } from '../shared/protocol.ts';
 import type { PolicyCheck } from './policy.ts';
-import type { ApprovalAction, StoredApprovalRef, StoredApproval, RemoteFacts } from './approvals.ts';
+import type { ApprovalAction, StoredApprovalRef, StoredApproval, RemoteFacts, ApprovalContext } from './approvals.ts';
 // `decision` and `remoteKey` exist only to be written to the audit: who answered from another device and what,
 // never the signature or the nonce.
 interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: unknown; url: string }[]; upload?: { name: string; bytes?: number }; signin?: SigninResult; grantId?: string; zone?: string; reason?: string;
-  decision?: { approval: string; kind?: string; verb?: string }; remoteKey?: string }
+  decision?: { approval: string; kind?: string; verb?: string }; remoteKey?: string;
+  // Shown on the card if this call is held (approvals.ts ApprovalContext); never audited, never part of the action.
+  context?: ApprovalContext;
+  // The asking chat's session key (as for grants); never audited or shown, only bound into a held action.
+  chat?: string }
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -21,7 +25,7 @@ import { signinSite, listLogins, chooseLogin, runSignin } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
 import { readUpload, UPLOAD_CHUNK } from './uploads.ts';
 import type { UploadFile } from './uploads.ts';
-import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail } from './approvals.ts';
+import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail, approvalContext } from './approvals.ts';
 import { createProofVerifier, approvalMessage, signinRevokeMessage, sendRevokeMessage, uploadRevokeMessage, zoneAddMessage } from './proof.ts';
 import { createGrants, checkGrant, checkZone, zoneCoversRule, parseGrantRequest, grantDetail, isGrantSpec, ruleString, remoteWaivable } from './grants.ts';
 import type { GrantRule } from './grants.ts';
@@ -157,6 +161,9 @@ const grants = createGrants({ minuteMs: GRANT_MINUTE_MS, emit, audit, log });
 async function gate({ kind, meta, detail, action, check, approval, capture, targetSelector, remoteScope }: { kind: string; meta: CallMeta; detail: string; action: ApprovalAction; check: PolicyCheck; approval: unknown; capture?: () => Promise<unknown>; targetSelector?: string;
   // The page and the raw name and destination the grant scan reads, kept beside the hold for remote approval.
   remoteScope?: Omit<RemoteFacts, 'reason'> }) {
+  // Invariant: a held action belongs to the chat that asked. Another chat's identical request gets its own card
+  // (with its own who and why) and cannot spend this one's approval. A CLI call has no chat and binds as before.
+  if (meta.chat) action = { ...action, chat: meta.chat };
   // Only isolated-world references are retained; raw selectors may contain page data.
   const targetRef = typeof targetSelector === 'string' && /^@[A-Za-z0-9_-]{6}:[0-9a-z]+$/.test(targetSelector) ? targetSelector : undefined;
   if (check.outcome === 'deny') throw new GateError('denied', `denied: ${check.reason} (no approval path)`);
@@ -170,7 +177,7 @@ async function gate({ kind, meta, detail, action, check, approval, capture, targ
     catch (error) { log('approval capture unavailable:', /deadline|timeout|within 25 seconds/.test(errorMessage(error)) ? 'deadline exceeded' : 'bridge failed'); }
   }
   const remoteFacts = remoteScope ? { ...remoteScope, reason: check.reason } : undefined;
-  const a = existing || approvals.hold({ kind, ...meta, detail, action, reason: check.reason, rememberable: check.rememberable, picture, targetSelector: targetRef, remoteFacts,
+  const a = existing || approvals.hold({ kind, ...meta, detail, action, reason: check.reason, rememberable: check.rememberable, picture, targetSelector: targetRef, remoteFacts, context: meta.context,
     // AUTH-WAIT: only the existing grant-safe tier may wait longer, never money, sign-in or sends.
     extendedWait: remoteFacts !== undefined && remoteWaivable(policy, remoteFacts.pageURL, check, remoteFacts.scope) });
   if (existing) approvals.attach(existing, remoteFacts);
@@ -558,8 +565,10 @@ function requestGrant(params: IncomingParams) {
   const action = { method: 'grant.request', caller, url: '', session, rules: rules.map(ruleString), minutes: time, label: label ?? null };
   let request = approvals.pendingFor(action);
   if (!request) {
+    // A grant's purpose is its label (signed with the rules); the card shows it as the agent's why.
     request = approvals.hold({ kind: 'grant', tab: null, caller, url: '', detail: grantDetail(rules, time, label),
-      reason: 'session grant', action, extendedWait: true, grant: { session, rules, minutes: time, ...(label ? { label } : {}) } });
+      reason: 'session grant', action, extendedWait: true, grant: { session, rules, minutes: time, ...(label ? { label } : {}) },
+      context: approvalContext(caller, { context: params.context, why: label ?? params.why }) });
   }
   // The folded requests are now inside the new one: they leave the owner's list.
   if (folded) for (const older of waiting) if (older.id !== request.id) approvals.cancel(older.id);
@@ -647,11 +656,11 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
   'bridge.attach': ({ kind }, conn) => bridge.attach(conn, kind),
   'bridge.status': () => bridge.status(),
   'bridge.health': ({ lastSelfHeal }, conn) => bridge.health(conn, { lastSelfHeal }),
-  extensions: params => serial(async () => {
+  extensions: (params, _conn, meta) => serial(async () => {
     const operation = params.operation ?? 'list';
     const connection = operation === 'install' ? undefined : bridge.connection();
     return extensionCall(params, typeof params.caller === 'string' ? params.caller : 'unknown', policy,
-      args => bridge.request('chrome.extensions', args, connection), gate);
+      args => bridge.request('chrome.extensions', args, connection), options => gate({ ...options, meta: { ...options.meta, context: meta.context, chat: meta.chat } }));
   }),
   // `mine` marks the grants of the asking chat; the session key itself is never sent.
   'approvals.list': params => ({ ...approvals.list(), grants: grants.list(grantSession(params)) }),
@@ -867,6 +876,8 @@ async function handle(input: unknown, conn: Socket) {
   const start = Date.now(), id = req?.id ?? null, method = req?.method;
   const params: IncomingParams = isRecord(req?.params) ? req.params : {};
   const meta: CallMeta = { caller: typeof params.caller === 'string' ? params.caller : 'unknown', tab: null, url: null };
+  meta.context = approvalContext(meta.caller, params);
+  meta.chat = grantSession(params);
   let result: unknown, error: (Omit<WireError, 'approval'> & { approval?: StoredApprovalRef }) | undefined;
   try {
     const methodName = typeof method === 'string' ? method : String(method);

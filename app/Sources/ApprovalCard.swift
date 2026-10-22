@@ -237,8 +237,8 @@ enum ApprovalWords {
     static func place(_ approval: Approval) -> String {
         if approval.kind == "grant" {
             let parts = grantParts(approval.detail)
-            let described = parts.label.map { ["Described by the agent as: “\($0)”"] } ?? []
-            return (parts.rules + described).joined(separator: "\n")
+            // The label, the agent's own words, is the card's Why line.
+            return parts.rules.joined(separator: "\n")
         }
         if approval.kind.hasPrefix("extension.") { return "in Chrome" }
         if approval.canRemember, let site = approval.site { return "on \(site)" }
@@ -273,10 +273,14 @@ final class ApprovalCard: NSStackView {
         orientation = .vertical; alignment = .leading; spacing = 0
         let words = ApprovalWords.title(approval)
         let headingFont = Typeface.heading(22)
-        let title = NSMutableAttributedString(string: approval.caller, attributes: [
-            .font: headingFont, .foregroundColor: Palette.machine])
-        title.append(NSAttributedString(string: " wants to \(words.verb) \(words.object)", attributes: [
-            .font: headingFont, .foregroundColor: Palette.ink]))
+        // Who first (the harness and its chat), then the decision itself as the heading.
+        let who = NSTextField(wrappingLabelWithString: approval.who)
+        who.font = Typeface.interface(13, 600); who.textColor = Palette.machine; who.isSelectable = true
+        who.lineBreakMode = .byWordWrapping; who.maximumNumberOfLines = 2
+        who.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+        let verb = words.verb.prefix(1).uppercased() + words.verb.dropFirst()
+        let title = NSMutableAttributedString(string: "\(verb) \(words.object)", attributes: [
+            .font: headingFont, .foregroundColor: Palette.ink])
         let paragraph = NSMutableParagraphStyle()
         // AppKit rounds a fractional multiline height down, which can leave its
         // final line unpainted. Keep the existing leading on a whole-point grid.
@@ -295,11 +299,27 @@ final class ApprovalCard: NSStackView {
         // For a session grant this is the time to answer, not how long the grant would last.
         let count = approval.kind == "grant" ? ApprovalWords.grantParts(approval.detail).rules.count : 0
         let countText = count > 20 ? "\(count) rules, " : ""
-        let until = NSTextField(labelWithString: approval.expiresAt.map { "\(countText)\(approval.kind == "grant" ? "decide by" : "until") \(displayTime($0))" } ?? "")
+        // The time to answer, never how long the approval would last: that is the "If you approve" line.
+        let until = NSTextField(labelWithString: approval.expiresAt.map { "\(countText)decide by \(displayTime($0))" } ?? "")
         until.font = Typeface.figures(12); until.textColor = Palette.inkSoft
         until.setContentHuggingPriority(.required, for: .horizontal)
         let meta = NSStackView(views: [where_, until]); meta.distribution = .fill; meta.spacing = 16; meta.alignment = .top
 
+        // Labelled facts: the project, the agent's own purpose (its words, not checked), and what approving gives.
+        func fact(_ label: String, _ value: String, quiet: Bool = false) -> NSTextField {
+            let text = NSMutableAttributedString(string: label + "  ", attributes: [
+                .font: Typeface.interface(13, 600), .foregroundColor: Palette.inkSoft])
+            text.append(NSAttributedString(string: value, attributes: [
+                .font: Typeface.interface(13), .foregroundColor: quiet ? Palette.inkSoft : Palette.ink]))
+            let field = NSTextField(wrappingLabelWithString: ""); field.attributedStringValue = text
+            field.lineBreakMode = .byWordWrapping; field.maximumNumberOfLines = 0; field.isSelectable = true
+            field.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+            return field
+        }
+        var facts: [NSTextField] = []
+        if let project = approval.project { facts.append(fact("Project", project)) }
+        facts.append(approval.why.map { fact("Why", "“\($0)” (the agent’s words)") } ?? fact("Why", "the agent gave no reason", quiet: true))
+        if let allows = approval.allows { facts.append(fact("If you approve", allows)) }
         let because = NSTextField(wrappingLabelWithString: ApprovalWords.reason(approval.reason))
         because.font = Typeface.interface(13); because.textColor = Palette.inkSoft
         because.setAccessibilityHelp(approval.reason)
@@ -312,8 +332,11 @@ final class ApprovalCard: NSStackView {
         let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         let actions = NSStackView(views: [spacer, deny, approve]); actions.spacing = 10
 
+        addArrangedSubview(who); setCustomSpacing(4, after: who)
         addArrangedSubview(heading); setCustomSpacing(6, after: heading)
-        addArrangedSubview(meta); setCustomSpacing(18, after: meta)
+        addArrangedSubview(meta); setCustomSpacing(12, after: meta)
+        for field in facts { addArrangedSubview(field); setCustomSpacing(4, after: field) }
+        if let last = facts.last { setCustomSpacing(18, after: last) }
         if let picture = ApprovalPictureView(approval) {
             addArrangedSubview(picture); setCustomSpacing(12, after: picture)
             picture.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
@@ -341,7 +364,7 @@ final class ApprovalCard: NSStackView {
             setCustomSpacing(10, after: arrangedSubviews.last!); addArrangedSubview(row)
             row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
-        for view in [heading, meta, because, actions] { view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
+        for view in [who, heading, meta, because, actions] + facts { view.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
         if remote { phone.widthAnchor.constraint(equalTo: widthAnchor).isActive = true }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
@@ -550,7 +573,8 @@ final class ReviewList: NSStackView {
             let empty = NSTextField(wrappingLabelWithString: "Nothing is waiting for you. Actions that need your approval appear here.")
             empty.font = Typeface.interface(14); empty.textColor = Palette.inkSoft; add(empty)
         }
-        let groups = Dictionary(grouping: approvals, by: \.caller).sorted { ($1.value.count, $0.key) < ($0.value.count, $1.key) }
+        // One group per chat (harness and chat title), so two chats of the same harness are never mixed.
+        let groups = Dictionary(grouping: approvals, by: \.who).sorted { ($1.value.count, $0.key) < ($0.value.count, $1.key) }
         for (index, group) in groups.enumerated() {
             if index > 0 { add(PanelRule()) }
             let live = group.value.filter { !$0.expired }

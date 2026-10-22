@@ -77,11 +77,25 @@ let grantApproval = Approval(["id": "grant1", "kind": "grant", "caller": "codex"
     "expiresAt": "2099-01-01T00:00:00.000Z"])!
 check(ApprovalWords.title(grantApproval).verb == "work without asking you" && ApprovalWords.title(grantApproval).object == "for 3 hours",
       "a session grant is worded as working unattended for a time")
-check(grantApproval.notification() == "codex wants to work without asking you for 3 hours", "the banner says the same")
-check(ApprovalWords.place(grantApproval) == "post on www.linkedin.com/company\nupload on github.com/settings\nDescribed by the agent as: “Update the profile”",
+check(grantApproval.notification() == "Work without asking you for 3 hours: post on www.linkedin.com/company, upload on github.com/settings", "the banner says the same")
+check(ApprovalWords.place(grantApproval) == "post on www.linkedin.com/company\nupload on github.com/settings" && grantApproval.why == "Update the profile",
       "the card lists every rule, then the agent's own words")
 check(ApprovalWords.reason("session grant") == "Payments, purchases, sending messages, sign-in and security changes still ask you every time.",
       "the card says what still asks every time")
+// Who asked and why: decoded from the broker's context as one clean line each, and never part of what is signed.
+let withContext: JSONObject = ["id": "ctx1", "kind": "click", "caller": "pi", "tab": 7, "detail": "Delete test item", "reason": "verb:delete",
+    "url": "http://127.0.0.1:18777/", "allows": "This one action, once, within 10 minutes at most.",
+    "context": ["agent": "Pi", "chat": "Garmin\u{202E} cleanup\n", "project": "Fitness App", "why": "Remove the duplicate test course"],
+    "expiresAt": "2099-01-01T00:00:00.000Z"]
+let contextual = Approval(withContext)!
+check(contextual.who == "Pi · Garmin cleanup" && contextual.project == "Fitness App" && contextual.why == "Remove the duplicate test course"
+      && contextual.allows == "This one action, once, within 10 minutes at most.", "a held action decodes who asked, its project, why and what approving allows")
+check(contextual.notification() == "Click “Delete test item” on 127.0.0.1:18777", "the banner names the action and its place")
+var bare = withContext; bare["context"] = nil; bare["allows"] = nil
+let plain = Approval(bare)!
+check(plain.who == "pi" && plain.why == nil && plain.allows == nil, "a request from before context still decodes, named by its caller")
+let signedWith = try? contextual.signingMessage(verb: "grant", timestamp: 1), signedWithout = try? plain.signingMessage(verb: "grant", timestamp: 1)
+check(signedWith != nil && signedWith == signedWithout, "context never changes the signed message")
 // The labelled grant above already proves rules, duration and description are read from the signed text; this one has no description.
 let plainGrant = ApprovalWords.grantParts("upload on github.com/settings\nfor 5 minutes")
 check(plainGrant.rules == ["upload on github.com/settings"] && plainGrant.duration == "5 minutes" && plainGrant.label == nil,

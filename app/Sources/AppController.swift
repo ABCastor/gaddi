@@ -114,7 +114,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
                 guard let self else { return }
                 let resolved = Set(self.snapshot.approvals.map(\.id)).subtracting(snapshot.approvals.map(\.id))
                 // One banner per agent: it goes when that agent has nothing left waiting.
-                let quiet = Set(self.snapshot.approvals.map(\.caller)).subtracting(snapshot.approvals.map(\.caller)).map(Self.bannerID)
+                let quiet = Set(self.snapshot.approvals.map(\.who)).subtracting(snapshot.approvals.map(\.who)).map(Self.bannerID)
                 let notifications = UNUserNotificationCenter.current()
                 notifications.removeDeliveredNotifications(withIdentifiers: Array(resolved) + quiet)
                 notifications.removePendingNotificationRequests(withIdentifiers: Array(resolved) + quiet)
@@ -140,9 +140,9 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             guard let self else { return }
             if self.snapshot.approvals.contains(where: \.expired) {
                 let expired = self.snapshot.approvals.filter(\.expired).map(\.id)
-                let callers = Set(self.snapshot.approvals.map(\.caller))
+                let callers = Set(self.snapshot.approvals.map(\.who))
                 self.snapshot.approvals.removeAll(where: \.expired)
-                let quiet = callers.subtracting(self.snapshot.approvals.map(\.caller)).map(Self.bannerID)
+                let quiet = callers.subtracting(self.snapshot.approvals.map(\.who)).map(Self.bannerID)
                 let notifications = UNUserNotificationCenter.current()
                 notifications.removeDeliveredNotifications(withIdentifiers: expired + quiet)
                 notifications.removePendingNotificationRequests(withIdentifiers: expired + quiet)
@@ -325,17 +325,21 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             self?.revokeUpload(site)
         })
     }
-    static func bannerID(_ caller: String) -> String { "agent:" + caller }
+    static func bannerID(_ who: String) -> String { "agent:" + who }
     private func notify(_ approval: Approval) {
-        // One banner per agent, replaced as its requests arrive, so a burst is one notification, not a flood.
-        let waiting = snapshot.approvals.filter { $0.caller == approval.caller && !$0.expired }.count
-        let caller = approval.caller.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) && !(0x202A...0x202E).contains($0.value) && !(0x2066...0x2069).contains($0.value) }.map(String.init).joined()
+        // One banner per chat, replaced as its requests arrive, so a burst is one notification, not a flood.
+        // Lock-screen order: who asked (title), what (subtitle), why (body). `who` is already one clean line.
+        let waiting = snapshot.approvals.filter { $0.who == approval.who && !$0.expired }.count
         let content = UNMutableNotificationContent()
-        content.title = waiting > 1 ? "\(caller) has \(waiting) requests waiting" : approval.notification()
-        content.body = (waiting > 1 ? "Latest: " + approval.notification() + "." : ApprovalWords.reason(approval.reason)) + " Open Gaddi to decide."
+        content.title = approval.who
+        content.subtitle = waiting > 1 ? "\(waiting) requests waiting · latest: \(approval.notification())" : approval.notification()
+        let why = approval.why.map { "Why: \($0)" + ($0.hasSuffix(".") ? "" : ".") } ?? ApprovalWords.reason(approval.reason)
+        let project = approval.project.map { " Project: \($0)." } ?? ""
+        let allows = approval.allows.map { " If you approve: \($0.prefix(1).lowercased() + $0.dropFirst())" } ?? ""
+        content.body = why + project + allows + " Open Gaddi to decide."
         content.sound = waiting > 1 ? nil : .default
         content.userInfo = ["id": approval.id]
-        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: Self.bannerID(approval.caller), content: content, trigger: nil)) { error in
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: Self.bannerID(approval.who), content: content, trigger: nil)) { error in
             if let error { diagnostic("Approval notification failed: \(error.localizedDescription)") }
         }
         // Notification authorization and Focus mode cannot hide the decision:

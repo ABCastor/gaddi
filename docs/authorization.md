@@ -8,6 +8,12 @@ The approval app stores an encrypted, Mac-bound Secure Enclave key blob and its 
 
 Each signature binds the decision to the approval ID, action kind, tab, digest of the displayed detail and timestamp. The app rereads the pending action after authentication. The broker accepts proofs only within sixty seconds and records consumed signatures and operations before acting. Reusing a proof, changing the action or changing a bound target fails. A broker restart returns an unconsumed grant to pending, requiring another approval.
 
+## Who asked and why
+
+Every card, banner and phone message names who asked before what: the agent harness, its chat's title, the project, the agent's one-line purpose, the exact action and target, and what approving allows ("This one action, once, within 10 minutes at most." or, for a session grant, every listed action for its length, in that chat only). An agent sets `why` on any call that can be held (open, goto, read a URL, click, press, upload, signin, extensions); a session grant's label is its why. Its harness names the chat and project: `GADDI_CHAT` and `GADDI_PROJECT` when the adapter starts, or the unadvertised `_context: { chat, project }` argument on each call (Pi's `gaddi-context` extension fills it from the T3 thread). Without either, the project is the git repository the chat runs in.
+
+APPROVAL-CONTEXT: these words are display only. They are cleaned to one plain line (no control or direction characters, no address queries, at most 80, 60 and 160 characters) and frozen when the request is first held; a repeat of the same action keeps its card and first words. They are not in the action hash, the remote digest or any signed message, so they can explain a request but never change what an approval allows. Everything except the harness comes from the agent or its harness, and the cards present it as their words, not as a checked fact.
+
 The approval panel can show a page capture around a click or Enter target. This is context for your decision, not proof that the page is honest. A page can change between inspection and Chrome input. Page-version checks narrow that gap but are not atomic with trusted input.
 
 The status menu updates in place while open. An approval review closes after its queue clears; authentication, visible errors and disconnections keep it open. A manually opened settings panel stays available when an approval arrives and resolves. Closing that panel and receiving a new request starts a fresh review.
@@ -48,7 +54,7 @@ Implemented by `daemon/grants.ts:checkZone`, `daemon/policy.ts:setZone`, `daemon
 
 ## The review window
 
-The menu bar's "N actions are waiting for you" row opens the review window. A banner click opens it on everything waiting. Opened by the owner, it is a regular app window (with a Dock icon while open) that stays above other windows until closed; opened automatically, it still takes no focus. Requests are grouped by the agent that asked; a group of two or more has **Approve all** and **Deny all**, one Touch ID that signs each request separately and skips any that changed. Banners are one per agent and are replaced as its requests arrive.
+The menu bar's "N actions are waiting for you" row opens the review window. A banner click opens it on everything waiting. Opened by the owner, it is a regular app window (with a Dock icon while open) that stays above other windows until closed; opened automatically, it still takes no focus. Requests are grouped by the chat that asked (harness and chat title); a group of two or more has **Approve all** and **Deny all**, one Touch ID that signs each request separately and skips any that changed. Banners are one per chat and are replaced as its requests arrive: the title says who asked, the subtitle the action, the body why.
 
 ## Approvals from another device
 

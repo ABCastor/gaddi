@@ -49,7 +49,8 @@ export async function readBrowser(args: BrokerParams, rpc: BrokerRPC) {
   let target = args.tab, temporary: number | undefined;
   try {
     if (args.url !== undefined) {
-      const opened = await rpc('open', { url: args.url, foreground: false, ...(args.approval ? { approval: args.approval } : {}) });
+      const opened = await rpc('open', { url: args.url, foreground: false, ...(args.approval ? { approval: args.approval } : {}),
+        ...(args.why !== undefined ? { why: args.why } : {}) });
       // Cleanup targets this call's temporary tab. A held open creates none.
       if (!Number.isSafeInteger(opened?.id) || (opened.id ?? -1) < 0) throw new Error('open returned no usable tab ID');
       target = temporary = opened.id;

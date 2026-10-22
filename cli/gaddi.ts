@@ -17,7 +17,7 @@ const exit = async (code: number): Promise<never> => {
 const die = (message: string, code = 1): never => { throw Object.assign(new Error(message), { exitCode: code }); };
 async function main() {
 const socket = process.env.GADDI_SOCKET || path.join(os.homedir(), 'Library/Application Support/Gaddi/gaddi.sock');
-const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] <command>
+const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] [--why <purpose>] <command>
   tabs | bookmarks [query] | look [tab] [--visible] | read [tab|url] | html [tab] | screenshot [tab] [--full-page]
   open <url> [--foreground] [--group <task>] | goto [tab] <url> | back [tab]
   close <id> [id...] | show <id> | group <task> <id> [id...]
@@ -31,10 +31,11 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] <command>
   remote | remote off  (approving some holds from another device: show its state, or turn it off; turning it on needs Touch ID in the Gaddi app)
   extensions [list | reload|enable|disable|uninstall <id|self> | install <folder>]
   approve <id> (opens the app's Touch ID approval sheet)
-  The panel can remember sign-ins, eligible sends and uploads per site; Revoke removes a permission.`;
+  The panel can remember sign-ins, eligible sends and uploads per site; Revoke removes a permission.
+  --why, GADDI_CHAT and GADDI_PROJECT are shown on the approval card if the command is held.`;
 const argv = process.argv.slice(2), args: string[] = [];
 let json = false, fullPage = false, foreground = false, visible = false;
-let approval: string | undefined, tab: number | undefined, group: string | undefined, item: string | undefined;
+let approval: string | undefined, tab: number | undefined, group: string | undefined, item: string | undefined, why: string | undefined;
 let mode: 'replace' | 'append' | undefined;
 const wheel: { dx?: number; dy?: number } = {};
 for (let i = 0; i < argv.length; i++) {
@@ -53,9 +54,10 @@ for (let i = 0; i < argv.length; i++) {
     if (value !== 'replace' && value !== 'append') die('--mode must be replace or append', 2);
     mode = value === 'append' ? 'append' : 'replace';
   }
-  else if (['--tab', '--approval', '--group', '--item'].includes(arg)) {
+  else if (['--tab', '--approval', '--group', '--item', '--why'].includes(arg)) {
     if (!argv[i + 1]) die(`${arg} needs a value`, 2);
     if (arg === '--tab') tab = Number(argv[++i]);
+    else if (arg === '--why') why = argv[++i];
     else if (arg === '--group') group = argv[++i];
     else if (arg === '--item') item = argv[++i]; else approval = argv[++i];
   } else args.push(arg);
@@ -74,6 +76,8 @@ const params: BrokerParams = { caller: process.env.GADDI_CALLER || 'cli' };
 if (mode) params.mode = mode;
 if (process.env.GADDI_HARNESS) params.harness = process.env.GADDI_HARNESS;
 if (approval) params.approval = approval;
+if (why) params.why = why;
+if (process.env.GADDI_CHAT || process.env.GADDI_PROJECT) params.context = { chat: process.env.GADDI_CHAT, project: process.env.GADDI_PROJECT };
 const tabCommands = ['look', 'read', 'html', 'screenshot', 'goto', 'back', 'click', 'hover', 'type', 'press', 'scroll', 'select', 'upload', 'eval', 'emulate', 'wait', 'signin'];
 if (tabCommands.includes(cmd)) {
   // A lone numeric scroll argument is a distance; use --tab to remove ambiguity.

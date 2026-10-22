@@ -33,8 +33,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer /usr/bin/xcrun swiftc -
 "$APP" --headless-check > "$STATE/normal.log" 2>&1
 cat "$STATE/normal.log"
 for line in \
-  'NOTIFICATION Already pending wants to click “click Pay café”' \
-  'NOTIFICATION Café task wants to click “click Pay café”' \
+  'NOTIFICATION Already pending · Click “click Pay café”' \
+  'NOTIFICATION Café task · Click “click Pay café”' \
   'APPROVAL a1 kind=click tab=42 detail=click Pay café reason=checkout action' \
   'GRANTS g1' \
   'REMOTE enabled=false candidate=abcd ef01 2345 6789' \
@@ -73,7 +73,7 @@ cleanup
 start_fake snapshot-error
 GADDI_HEADLESS_CHECK_SECONDS=6 "$APP" --headless-check > "$STATE/snapshot-error.log" 2>&1
 grep -Fq 'RECONNECT transient snapshot failure' "$STATE/snapshot-error.log"
-grep -Fq 'NOTIFICATION Recovered task wants to' "$STATE/snapshot-error.log"
+grep -Fq 'NOTIFICATION Recovered task · Click' "$STATE/snapshot-error.log"
 grep -Fq 'PASS headless-check:' "$STATE/snapshot-error.log"
 echo 'PASS app snapshot: transient RPC failure recovers without another event'
 cleanup

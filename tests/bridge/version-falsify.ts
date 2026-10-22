@@ -22,7 +22,7 @@ const mutations = [
   ['ASSERT_VERSION_ORDER', content, "add(selectorFor(el)); add(el.tagName);", 'add(el.tagName);'],
   ['ASSERT_VERSION_ATTRIBUTES', content, "add(el.getAttribute('type'));", "add('');"],
   ['ASSERT_VERSION_DESCRIBE', content, "['describe', 'snapshot', 'pressCheck'", "['snapshot', 'pressCheck'"],
-  ['ASSERT_VERSION_MCP', 'mcp/server.ts', "{ tab, version, key: S, approval }", "{ tab, key: S, approval }"],
+  ["ASSERT_VERSION_MCP", "mcp/server.ts", "{ tab, version, key: S, approval, why }", "{ tab, key: S, approval, why }"],
   ['ASSERT_VERSION_DISPATCH', 'extension/bg.ts', 'args: [action, params]', "args: [action, action === 'hoverPoint' ? { ...params, version: undefined } : params]"],
   ['ASSERT_VERSION_CHANGED', 'extension/bg.ts', 'changed: before.signature !== after.signature', 'changed: (void before.signature, false)'],
   ['ASSERT_VERSION_AFTER', 'extension/bg.ts', '...(after.version ? { version: after.version } : {})', '...{}'],

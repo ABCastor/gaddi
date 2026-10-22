@@ -61,7 +61,7 @@ const table = {
   UNLABELED: ['Protocol.swift', 'label = (object["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }', 'label = object["label"] as? String ?? ""',
     'a grant without a label decodes without one'],
   EXPIRED: ['Protocol.swift', 'var expired: Bool { expiresAt <= Date() }', 'var expired: Bool { false }', 'an ended grant reads as expired'],
-  BANNER: ['Protocol.swift', 'return "\\(caller) wants to \\(words.verb) \\(words.object)"', 'return "\\(caller) wants to \\(words.verb)"',
+  BANNER: ['Protocol.swift', 'return "\\(verb) \\(words.object): \\(rules.prefix(2).joined(separator: ", "))\\(more)"', 'return "\\(verb) \\(words.object)"',
     'the banner says the same'],
   PLAIN: ['ApprovalCard.swift', 'return (rules, duration, label)', 'return (rules, duration, label ?? "")',
     'a grant without a description is read back without one'],

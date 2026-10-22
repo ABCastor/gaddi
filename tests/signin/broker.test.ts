@@ -175,7 +175,7 @@ try {
     mcp = new Client({ name: 'signin-test', version: '0' });
     await mcp.connect(new StdioClientTransport({ command: process.execPath, args: [path.join(repo, 'mcp/server.mjs')], env }));
     const tools = await mcp.listTools(); const tool = tools.tools.find(tool => tool.name === 'browser_signin'); assert.ok(tool);
-    assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ['approval', 'item', 'tab']);
+    assert.deepEqual(Object.keys(tool.inputSchema.properties!).sort(), ['approval', 'item', 'tab', 'why']);
     const read = await mcp.callTool({ name: 'browser_read', arguments: { tab: 7 } }); noSecrets(read); assert.ok(JSON.stringify(read).includes('[redacted]'));
     setItems([]); const mcpSignin = await mcp.callTool({ name: 'browser_signin', arguments: { tab: 7 } }); noSecrets(mcpSignin); assert.ok(JSON.stringify(mcpSignin).includes('no_login'));
     assert.equal((await cli(['signin', '7', '--item', item.title])).result.outcome, 'failed');

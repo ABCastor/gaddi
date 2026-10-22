@@ -8,8 +8,33 @@ import { signinSite } from './signin.ts';
 import { sendRule, uploadSite, UPLOAD_HOLD } from './policy.ts';
 import type { SendRule } from './policy.ts';
 import type { GrantScope, GrantSpec } from './grants.ts';
+import { durationText } from './grants.ts';
 
-export interface ApprovalRecord { id: string; kind: string; tab: number | null; caller: string; url: string; detail: string; reason: string; actionHash: string; status: string; createdAt: string; expiresAt: string; resolvedAt?: string; by?: string; decidedAt?: string; usedAt?: string; imagePath?: string; box?: ImageBox; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec }
+export interface ApprovalRecord { id: string; kind: string; tab: number | null; caller: string; url: string; detail: string; reason: string; actionHash: string; status: string; createdAt: string; expiresAt: string; resolvedAt?: string; by?: string; decidedAt?: string; usedAt?: string; imagePath?: string; box?: ImageBox; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; context?: ApprovalContext }
+// Who asked and why, as the owner reads it on every card: the agent harness, its chat's title, the project and the
+// agent's one-line purpose. Invariant: display only. It is not part of the action hash, the remote digest or any
+// signed message, so these words can explain a request but never change what an approval allows. Everything but
+// `agent` comes from the agent or its harness, so the cards present it as their words, not as a checked fact.
+export interface ApprovalContext { agent: string; chat?: string; project?: string; why?: string }
+const HARNESS_NAMES: Record<string, string> = { pi: 'Pi', 'claude-code': 'Claude Code', 'claude-desktop': 'Claude Desktop',
+  codex: 'Codex', opencode: 'OpenCode', antigravity: 'Antigravity', cli: 'Terminal', 'crossfeed-tools': 'Crossfeed', marcus: 'Marcus' };
+// One line of plain text: no control or direction-changing characters, no address queries, at most `limit` characters.
+export function contextText(value: unknown, limit: number) {
+  if (typeof value !== 'string') return undefined;
+  const text = value.replace(/(?:https?|file):\/\/[^\s"'<>]+/gi, cleanURL)
+    .replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]/gu, ' ').replace(/\s+/gu, ' ').trim();
+  const chars = [...text];
+  return chars.length === 0 ? undefined : chars.length > limit ? chars.slice(0, limit - 1).join('').trimEnd() + '\u2026' : text;
+}
+export function harnessName(caller: unknown) {
+  const raw = contextText(caller, 40) ?? 'unknown';
+  return HARNESS_NAMES[raw] ?? raw;
+}
+export function approvalContext(caller: unknown, params: { why?: unknown; context?: unknown }): ApprovalContext {
+  const given = isRecord(params.context) ? params.context : {};
+  const chat = contextText(given.chat, 80), project = contextText(given.project, 60), why = contextText(params.why, 160);
+  return { agent: harnessName(caller), ...(chat ? { chat } : {}), ...(project ? { project } : {}), ...(why ? { why } : {}) };
+}
 // What the broker saw when it held an action, for remote approval (remote.ts) to judge again every time it is
 // asked. Invariant: this is kept in memory only, beside the record and never in it, so it is not written to
 // state.json and cannot reach publicView. It holds the full page address because a query can make a page
@@ -46,7 +71,7 @@ export function cleanDetail(value: unknown) {
 // Invariant: a session grant request names its chat by session key. That key is the only thing
 // that ties the grant to one chat, so it never leaves the broker: not in lists, events or state.
 // The owner sees and signs the request's `detail` text, which carries everything he decides on.
-export function publicView({ actionHash, targetSelector, grant, ...record }: StoredApproval) {
+export function publicView({ actionHash, targetSelector, grant, ...record }: StoredApproval): StoredApproval & { site?: string } {
   const site = record.kind === 'signin' ? signinSite(record.url)
     : record.rememberable === true ? record.kind === 'upload' && record.reason === UPLOAD_HOLD
       ? uploadSite(record.url) : sendRule(record.url, record.kind, record.reason)?.site : undefined;
@@ -74,7 +99,15 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
   // Every record that leaves this module goes through here: what publicView shows, plus, while the owner's other
   // device may answer it, `remote: true` and the digest that device signs. Computed on every call from the live
   // state, never remembered, so turning the feature off removes the flag from the next list and event.
-  const view = (a: StoredApproval) => remote(a, facts.get(a)) ? { ...publicView(a), remote: true, epoch: remoteEpoch(), digest: remoteDigest(a) } : publicView(a);
+  // `allows` says in plain words what approving gives, so every surface (the Mac card, banners, the phone) says the same.
+  const allows = (a: StoredApproval) => a.kind === 'grant'
+    ? `Every action listed, without asking, for ${isRecord(a.grant) && typeof a.grant.minutes === 'number' ? durationText(a.grant.minutes) : 'the time shown'}, in this chat only.`
+    // "At most": approving late in a short wait leaves less, because approval never extends the request's deadline.
+    : `This one action, once, within ${ttlMinutes} minutes at most.`;
+  const view = (a: StoredApproval) => {
+    const shown = { ...publicView(a), allows: allows(a) };
+    return remote(a, facts.get(a)) ? { ...shown, remote: true, epoch: remoteEpoch(), digest: remoteDigest(a) } : shown;
+  };
   // Derive file names ourselves; a persisted path never authorizes deletion elsewhere.
   const imageFile = (id: unknown) => imageRoot && typeof id === 'string' && /^[a-f0-9]{16}$/.test(id)
     ? path.join(imageRoot, id + '.jpg') : undefined;
@@ -165,7 +198,7 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
     expire();
     return [...entries.values()].find(a => a.status === 'pending' && a.actionHash === actionHash(action) && a.targetSelector === targetSelector);
   }
-  function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false, grant, remoteFacts, extendedWait = false }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; remoteFacts?: RemoteFacts; extendedWait?: boolean }) {
+  function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false, grant, remoteFacts, extendedWait = false, context }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; remoteFacts?: RemoteFacts; extendedWait?: boolean; context?: ApprovalContext }) {
     expire();
     const hash = actionHash(action);
     const existing = pendingFor(action, targetSelector);
@@ -175,6 +208,8 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
     const now = Date.now();
     const a = { id: crypto.randomBytes(8).toString('hex'), kind, tab, caller, url: cleanURL(url),
       ...(rememberable ? { rememberable: true } : {}), ...(targetSelector ? { targetSelector } : {}), ...(grant ? { grant: Object.freeze({ ...grant, rules: Object.freeze(grant.rules.map(rule => Object.freeze({ ...rule }))) }) } : {}),
+      // Set once, from the request that created the record; a later identical request does not rewrite it.
+      context: Object.freeze({ ...(context ?? { agent: harnessName(caller) }) }),
       // A session grant's text is built by the broker from validated parts (no queries; its label is cleaned
       // first) and is exactly what the owner signs, so it is stored as built and never rewritten.
       detail: kind === 'grant' ? detail : cleanDetail(detail), reason: cleanDetail(reason), actionHash: hash, status: 'pending',

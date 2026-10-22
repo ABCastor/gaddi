@@ -238,6 +238,38 @@ try {
   const pending = body('approvals', await call('approvals')).pending;
   const action = pending.find(a => a.id === id);
   check(action && !JSON.stringify(action).includes('private-fixture'), 'MCP approval records redact URL query');
+  // The card says who asked and why: the agent's purpose (cleaned to one plain line, address queries dropped) and the
+  // chat and project its harness passed in the unadvertised _context argument. None of it is part of what is signed.
+  const why = 'Buy\u202e the test item, see https://fixture.example/a?token=private-fixture\nnow';
+  const contextReply = await call('goto', { url: 'https://fixture.example/checkout/context', why, _context: { chat: 'Shop chat\u0007', project: 'Fixture shop' } });
+  const contextID = heldID(contextReply);
+  const withContext = body('approvals', await call('approvals')).pending.find(a => a.id === contextID) as Record<string, unknown> | undefined;
+  check(contextID && isRecord(withContext?.context) && JSON.stringify(withContext.context) === JSON.stringify({ agent: 'mcp-fixture', chat: 'Shop chat', project: 'Fixture shop', why: 'Buy the test item, see https://fixture.example/a now' })
+    && withContext.allows === 'This one action, once, within 10 minutes at most.' && !JSON.stringify(withContext).includes('private-fixture'),
+  'MCP held action carries the agent, chat, project and one-line why to the owner, cleaned, with what approving allows');
+  check(isRecord(withContext) && withContext.detail === 'https://fixture.example/checkout/context', 'MCP context leaves the detail the owner signs unchanged');
+  const plainReply = await call('goto', { url: 'https://fixture.example/checkout/context', why: 'a different reason' });
+  check(heldID(plainReply) === contextID, 'MCP the same action from the same agent joins its waiting card; the reason does not create a second one');
+  await rpc('approval.cancel', { id: contextID });
+  // Two chats asking for the same held action get two cards, each with its own words, and neither can spend the
+  // other's approval. The chat is bound into the held action, never shown.
+  const sharedURL = 'https://fixture.example/checkout/two-chats';
+  const heldBy = async (session: string, extra: Record<string, unknown> = {}) => {
+    const error = await rpc('goto', { url: sharedURL, session, caller: 'mcp-fixture', ...extra }).then(() => undefined, (e: Error) => e.message);
+    return error?.match(/approve ([a-f0-9]{16})/)?.[1];
+  };
+  const idA = await heldBy('chat-a', { why: 'chat A reason' }), idB = await heldBy('chat-b', { why: 'chat B reason' });
+  const waiting = body('approvals', await call('approvals')).pending as Record<string, unknown>[];
+  const recordA = waiting.find(a => a.id === idA), recordB = waiting.find(a => a.id === idB);
+  check(idA && idB && idA !== idB && isRecord(recordA?.context) && recordA.context.why === 'chat A reason'
+    && isRecord(recordB?.context) && recordB.context.why === 'chat B reason', 'MCP the same held action from two chats makes two cards, each with its own why');
+  const tsA = Date.now(), digestA = crypto.createHash('sha256').update(String(recordA!.detail)).digest('hex');
+  await rpc('approval.grant', { id: idA, proof: { ts: tsA, sig: crypto.sign('sha256', Buffer.from(`grant|${idA}|${recordA!.kind}|${recordA!.tab ?? ''}|${digestA}|${tsA}`), privateKey).toString('base64') } });
+  const stolen = await rpc('goto', { url: sharedURL, session: 'chat-b', caller: 'mcp-fixture', approval: idA }).then(() => 'allowed', (e: Error) => e.message);
+  check(/different action/.test(stolen), 'MCP another chat cannot spend this chat\'s approval');
+  const own = await rpc('goto', { url: sharedURL, session: 'chat-a', caller: 'mcp-fixture', approval: idA }).then(() => 'allowed', (e: Error) => e.message);
+  check(own === 'allowed', 'MCP the chat that asked spends its own approval');
+  await rpc('approval.cancel', { id: idB });
   const ts = Date.now(), digest = crypto.createHash('sha256').update(action.detail).digest('hex');
   const message = `grant|${action.id}|${action.kind}|${action.tab ?? ''}|${digest}|${ts}`;
   await rpc('approval.grant', { id, proof: { ts, sig: crypto.sign('sha256', Buffer.from(message), privateKey).toString('base64') } });
@@ -371,6 +403,8 @@ try {
   const grantAction = body('approvals', await call('approvals')).pending.find(a => a.id === grantID);
   check(grantAction?.kind === 'grant' && grantAction.detail === 'post on fixture.example/shop\nupload on fixture.example/shop\nfor 1 hour\n“Update the shop page”',
     'MCP grant request is a pending record holding exactly the text the owner signs');
+  check(isRecord((grantAction as Record<string, unknown>).context) && ((grantAction as Record<string, unknown>).context as Record<string, unknown>).why === 'Update the shop page'
+    && /for 1 hour, in this chat only/.test(String((grantAction as Record<string, unknown>).allows)), 'MCP grant card shows its label as the why, and what approving allows');
   const grantTs = Date.now(), grantDigest = crypto.createHash('sha256').update(grantAction.detail).digest('hex');
   const grantMessage = `grant|${grantAction.id}|${grantAction.kind}|${grantAction.tab ?? ''}|${grantDigest}|${grantTs}`;
   await rpc('approval.grant', { id: grantID, proof: { ts: grantTs, sig: crypto.sign('sha256', Buffer.from(grantMessage), privateKey).toString('base64') } });

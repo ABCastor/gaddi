@@ -59,10 +59,30 @@ struct Approval: Equatable {
     let expiresAt: Date?
     let imagePath: String?
     let box: ApprovalBox?
+    /// Who asked and why, as the broker cleaned it (daemon/approvals.ts ApprovalContext). Display only: the
+    /// agent harness, its chat and project as the harness named them, and the agent's own one-line purpose.
+    /// None of it is in the signed message below.
+    let agent: String
+    let chat: String?
+    let project: String?
+    let why: String?
+    /// What approving gives, in the broker's words ("This one action, once. ...").
+    let allows: String?
     init?(_ object: JSONObject) {
         guard let id = string(object["id"]), let kind = object["kind"] as? String,
               let detail = object["detail"] as? String else { return nil }
         self.id = id; self.kind = kind; self.detail = detail
+        let context = object["context"] as? JSONObject ?? [:]
+        func text(_ value: Any?) -> String? {
+            guard let raw = value as? String else { return nil }
+            let line = displayLine(raw)
+            return line.isEmpty ? nil : line
+        }
+        agent = text(context["agent"]) ?? text(object["caller"]) ?? "unknown"
+        chat = text(context["chat"]); project = text(context["project"])
+        // A session grant's purpose is its signed label; a request from before context still shows it as the why.
+        why = text(context["why"]) ?? (kind == "grant" ? ApprovalWords.grantParts(detail).label.flatMap(text) : nil)
+        allows = text(object["allows"])
         tab = string(object["tab"]) ?? ""
         reason = object["reason"] as? String ?? "No reason supplied"
         caller = object["caller"] as? String ?? "unknown"
@@ -116,11 +136,19 @@ struct Approval: Equatable {
         return [site]
     }
     var expired: Bool { expiresAt.map { $0 <= Date() } ?? true }
-    /// What the banner says. Plain words, the same sentence the panel opens with;
-    /// the policy's own reason string never reaches a surface the user reads.
+    /// "Pi · Garmin cleanup": the harness and, when known, the chat. Banners and the review window group by it.
+    var who: String { chat.map { "\(agent) · \($0)" } ?? agent }
+
+    /// What the banner says under who asked: the card's heading and where, starting with the verb
+    /// ("Click “Delete test item” on example.com"). The policy's own reason string never reaches a surface the user reads.
     func notification() -> String {
         let words = ApprovalWords.title(self)
-        return "\(caller) wants to \(words.verb) \(words.object)"
+        let verb = words.verb.prefix(1).uppercased() + words.verb.dropFirst()
+        guard kind == "grant" else { return "\(verb) \(words.object) \(ApprovalWords.place(self))" }
+        // A session grant names what it would allow: its first two rules, then how many more.
+        let rules = ApprovalWords.grantParts(detail).rules
+        let more = rules.count > 2 ? " and \(rules.count - 2) more" : ""
+        return "\(verb) \(words.object): \(rules.prefix(2).joined(separator: ", "))\(more)"
     }
     func signingMessage(verb: String, timestamp: Int64, remember: Bool = false) throws -> String {
         guard ["grant", "deny"].contains(verb) else { throw AppError("Invalid approval decision") }
@@ -135,6 +163,16 @@ struct Approval: Equatable {
         }
         return kind == "signin" || kind == "upload" ? "\(message)|remember|\(site)" : "\(message)|remember|\(site)|\(reason)"
     }
+}
+
+/// One line of display text: control and direction-changing characters become spaces, runs of space collapse.
+func displayLine(_ raw: String) -> String {
+    let scalars = raw.unicodeScalars.map { scalar -> Character in
+        CharacterSet.controlCharacters.contains(scalar) || (0x200B...0x200F).contains(scalar.value)
+            || (0x2028...0x202E).contains(scalar.value) || (0x2066...0x2069).contains(scalar.value) || scalar.value == 0xFEFF
+            ? " " : Character(scalar)
+    }
+    return String(scalars).split(whereSeparator: { $0 == " " }).joined(separator: " ")
 }
 
 func signinRevokeMessage(site: String, timestamp: Int64) throws -> String {

@@ -10,7 +10,7 @@ import { spawn } from 'node:child_process';
 import { isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, waitParams } from '../../shared/protocol.ts';
 import type { BrokerParams, BrokerResult, Reply } from '../../shared/protocol.ts';
 import { loadPolicy, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from '../../daemon/policy.ts';
-import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail } from '../../daemon/approvals.ts';
+import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail, approvalContext } from '../../daemon/approvals.ts';
 import { createProofVerifier, approvalMessage } from '../../daemon/proof.ts';
 import { readUpload, UPLOAD_CHUNK } from '../../daemon/uploads.ts';
 import { signinSite, listLogins, chooseLogin, runSignin } from '../../daemon/signin.ts';
@@ -61,7 +61,7 @@ const context = vm.createContext({
     pid: 123, on: () => {}, exit: () => { throw new Error('Unexpected broker exit'); } },
   console: { error: () => {} }, setInterval: () => ({ unref: () => {} }), clearInterval: () => {},
   loadPolicy, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf,
-  createApprovals, GateError, approvalRef, cleanURL, cleanDetail, createProofVerifier, approvalMessage,
+  createApprovals, GateError, approvalRef, cleanURL, cleanDetail, approvalContext, createProofVerifier, approvalMessage,
   createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString, createRemote,
   readUpload, UPLOAD_CHUNK, signinSite, listLogins, chooseLogin, runSignin, createSigninSecrets,
   createBridge: () => bridge, isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, waitParams,

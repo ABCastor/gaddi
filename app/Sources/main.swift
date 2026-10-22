@@ -33,7 +33,7 @@ func headlessCheck() -> Never {
         fflush(stdout)
     }
     model.onPending = { approval in
-        print("NOTIFICATION \(approval.notification())")
+        print("NOTIFICATION \(approval.who) · \(approval.notification())")
         print("APPROVAL \(approval.id) kind=\(approval.kind) tab=\(approval.tab) detail=\(approval.detail) reason=\(approval.reason)")
         shownApproval = true; fflush(stdout)
     }

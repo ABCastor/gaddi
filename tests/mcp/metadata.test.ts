@@ -98,6 +98,17 @@ try {
   assert.doesNotMatch(instructions, /agents cannot grant permissions/, 'ASSERT_GRANT_GUIDANCE');
   assert.match(instructions, /ask for a session grant with browser_grant.*only the owner approves it in Gaddi/, 'ASSERT_GRANT_GUIDANCE');
   assert.match(instructions, /Payments, sends, sign-in, security stay held/, 'ASSERT_GRANT_GUIDANCE');
-  assert.deepEqual(Object.keys(schema('signin').properties).sort(), ['approval', 'item', 'tab']);
+  assert.deepEqual(Object.keys(schema('signin').properties).sort(), ['approval', 'item', 'tab', 'why']);
+  // Every tool whose call can be held takes the agent's one-line purpose, for the owner's card; no other tool does.
+  const holdable = ['read', 'open', 'goto', 'click', 'press', 'signin', 'upload', 'extensions'];
+  for (const tool of listed.tools) {
+    const why = isRecord(tool.inputSchema.properties) ? tool.inputSchema.properties.why : undefined;
+    if (holdable.includes(tool.name.slice(8))) assert.deepEqual(why, { type: 'string' }, `ASSERT_WHY_SCHEMA: ${tool.name}`);
+    else assert.equal(why, undefined, `ASSERT_WHY_SCHEMA: ${tool.name}`);
+    // The harness-only context argument is accepted but never advertised.
+    assert.ok(!JSON.stringify(tool.inputSchema).includes('_context'), `ASSERT_WHY_SCHEMA: ${tool.name}`);
+  }
+  assert.match(instructions, /Set why: plain purpose the owner reads if held/, 'ASSERT_WHY_SCHEMA');
+  console.log('PASS ASSERT_WHY_SCHEMA');
   console.log(`PASS metadata: exact 26 tools; ${words} instruction words; within token budget`);
 } finally { await client.close(); }
