@@ -117,12 +117,15 @@ export async function pageStateInput({ context, worker, daemon, url, pass }: Fix
   const timings: { action: string; expected: boolean; ms: number; settleMs: number }[] = [];
   await worker.evaluate(() => {
     const original = chrome.scripting.executeScript.bind(chrome.scripting);
-    const timings: { tab: number; ms: number }[] = [];
+    // Recorded when the injection starts: under load Gaddi stops waiting for it after its
+    // bound and replies first, so a list filled on completion can still be empty.
+    const timings: { tab: number; ms?: number }[] = [];
     chrome.scripting.executeScript = (async details => {
       if (!('args' in details) || details.args?.[0] !== 'settle') return original(details);
-      const started = performance.now();
+      const started = performance.now(), entry: { tab: number; ms?: number } = { tab: details.target.tabId! };
+      timings.push(entry);
       try { return await original(details); }
-      finally { timings.push({ tab: details.target.tabId!, ms: Math.round(performance.now() - started) }); }
+      finally { entry.ms = Math.round(performance.now() - started); }
     }) as typeof chrome.scripting.executeScript;
     Object.assign(globalThis, { pageStateSettleTimings: timings, restorePageStateSettleProbe: () => { chrome.scripting.executeScript = original; } });
   });
@@ -148,9 +151,9 @@ export async function pageStateInput({ context, worker, daemon, url, pass }: Fix
       const started = performance.now();
       const reply = await call(`chrome.${action}`, params);
       const ms = Math.round(performance.now() - started);
-      const settle = await worker.evaluate('globalThis.pageStateSettleTimings') as { tab: number; ms: number }[];
+      const settle = await worker.evaluate('globalThis.pageStateSettleTimings') as { tab: number; ms?: number }[];
       assert.equal(settle.filter(item => item.tab === tab).length, 1, 'exactly one after-input settle injection');
-      const settleMs = settle.find(item => item.tab === tab)!.ms;
+      const settleMs = settle.find(item => item.tab === tab)!.ms ?? -1;
       timings.push({ action, expected, ms, settleMs });
       const afterState = await page.evaluate(() => ({ y: scrollY, focus: document.activeElement?.id, text: document.querySelector('#status')!.textContent }));
       console.log(`PAGE_STATE_ACTION ${JSON.stringify({ action, expected, ms, settleMs, beforeState, afterState, reply })}`);
