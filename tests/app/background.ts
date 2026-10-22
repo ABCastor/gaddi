@@ -49,4 +49,16 @@ assert.match(body('private func showApprovals()', 'private func renderApprovals(
 assert.match(body('@objc private func openApprovals()', 'private func showApprovals()'), /visibility.opened\(snapshot.approvals\)/);
 assert.doesNotMatch(main, /existing.activate/);
 assert.ok(main.indexOf('if arguments == ["--headless-check"]') < main.indexOf('let application = NSApplication.shared'));
+const open = body('@objc private func openApprovals()', 'private func showApprovals()');
+assert.match(open, /approvalsPanel\?\.level = \.floating[\s\S]*reviewFloat\.opened\(\)/, 'an opened review floats and starts its float rule');
+assert.match(open, /NSEvent\.addGlobalMonitorForEvents\(matching: \[\.leftMouseDown, \.rightMouseDown, \.otherMouseDown\]\)[\s\S]*reviewFloat\.clickedInOtherApp\(\)[\s\S]*stopFloating\(\)/,
+  'ASSERT_REVIEW_YIELDS: a click in another app drops the floating review');
+assert.match(controller, /addObserver\(self, selector: #selector\(otherAppActivated\(_:\)\),\s*name: NSWorkspace\.didActivateApplicationNotification/,
+  'ASSERT_REVIEW_YIELDS: switching apps is observed');
+assert.match(body('@objc private func otherAppActivated(', 'private func stopFloating()'), /reviewFloat\.otherAppActivated\(\)[\s\S]*stopFloating\(\)/,
+  'ASSERT_REVIEW_YIELDS: an app switch after the handback grace drops the floating review');
+assert.match(body('private func stopFloating()', 'func windowWillClose('), /approvalsPanel\?\.level = \.normal[\s\S]*NSEvent\.removeMonitor/,
+  'ASSERT_REVIEW_YIELDS: dropping returns the window to a normal level and stops watching clicks');
+assert.match(body('func windowWillClose(', 'func applicationShouldHandleReopen('), /reviewFloat\.closed\(\); stopFloating\(\)/);
+assert.equal((controller.match(/\.level = \.floating/g) || []).length, 1, 'only an explicit open floats the review');
 console.log('PASS app background: automatic pending snapshots show a nonactivating panel without making it key; explicit opens still activate');

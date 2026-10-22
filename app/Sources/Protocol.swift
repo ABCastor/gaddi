@@ -288,6 +288,26 @@ struct PendingApprovalVisibility {
     }
 }
 
+/// The review window the owner opens floats above other apps only until he moves on. Right
+/// after a banner opens it macOS may hand activation back to the previous app, which must not
+/// bury it; a click in another app, or switching apps after that moment, is his choice.
+struct ReviewWindowFloat {
+    static let handbackGrace: TimeInterval = 1.5
+    private(set) var floating = false
+    private var openedAt = Date.distantPast
+    mutating func opened(at now: Date = Date()) { floating = true; openedAt = now }
+    /// True when the window must drop to a normal level now.
+    mutating func otherAppActivated(at now: Date = Date()) -> Bool {
+        release(floating && now.timeIntervalSince(openedAt) >= Self.handbackGrace)
+    }
+    mutating func clickedInOtherApp() -> Bool { release(floating) }
+    mutating func closed() { floating = false }
+    private mutating func release(_ due: Bool) -> Bool {
+        if due { floating = false }
+        return due
+    }
+}
+
 /// One serial work queue orders snapshots, events and user calls. Reconnects replace
 /// the whole snapshot so an approval event lost during downtime cannot linger.
 final class BrowserModel {

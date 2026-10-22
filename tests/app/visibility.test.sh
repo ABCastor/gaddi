@@ -45,3 +45,17 @@ if "$STATE/no-dismissal" > "$STATE/dismissal-mutation.log" 2>&1; then
 fi
 grep -Fq 'FAIL the last approval closes its finished review' "$STATE/dismissal-mutation.log"
 echo 'FALSIFIED stale review: retaining the last resolved approval window fails the queue lifecycle check'
+python3 - "$REPO/app/Sources/Protocol.swift" "$STATE/Protocol-float.swift" <<'PY'
+from pathlib import Path
+import sys
+source = Path(sys.argv[1]).read_text()
+old = 'release(floating && now.timeIntervalSince(openedAt) >= Self.handbackGrace)'
+assert source.count(old) == 1
+Path(sys.argv[2]).write_text(source.replace(old, 'release(floating)'))
+PY
+compile "$STATE/Protocol-float.swift" "$STATE/no-handback"
+if "$STATE/no-handback" > "$STATE/float-mutation.log" 2>&1; then
+  echo 'FAIL review handback mutation passed'; exit 1
+fi
+grep -Fq 'FAIL the activation macOS hands back right after a banner does not bury the review' "$STATE/float-mutation.log"
+echo 'FALSIFIED review float: dropping the review on the first activation elsewhere buries it after a banner opens it'

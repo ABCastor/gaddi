@@ -51,6 +51,16 @@ import Foundation
         review.opened([])
         review.opened([first], preservingCurrentMode: false)
         check(review.shouldDismiss([], connected: true, busy: false, hasError: false), "closing settings then opening a new automatic review does not retain the settings mode")
+        var float = ReviewWindowFloat()
+        float.opened(at: now)
+        check(float.floating, "an opened review floats above other apps")
+        check(!float.otherAppActivated(at: now.addingTimeInterval(0.3)) && float.floating, "the activation macOS hands back right after a banner does not bury the review")
+        check(float.otherAppActivated(at: now.addingTimeInterval(2)) && !float.floating, "switching to another app later lets that app come to the front")
+        check(!float.otherAppActivated(at: now.addingTimeInterval(3)), "a dropped review is not dropped twice")
+        float.opened(at: now)
+        check(float.clickedInOtherApp() && !float.floating, "a click in another app at once lets that app come to the front")
+        float.opened(at: now); float.closed()
+        check(!float.floating && !float.clickedInOtherApp(), "a closed review no longer floats")
         print("== app approval visibility: \(passed) passed, 0 failed")
     }
 }

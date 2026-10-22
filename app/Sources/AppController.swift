@@ -64,6 +64,8 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     }
     private var panelState: ApprovalPanelState?
     private var approvalsPanel: NSPanel?
+    private var reviewFloat = ReviewWindowFloat()
+    private var otherAppClicks: Any?
     private var timer: Timer?
     private var requestedID: String?
     private var launchRequestID: String?
@@ -88,6 +90,8 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         Typeface.register(Bundle.main.resourceURL?.appendingPathComponent("Fonts"))
         DistributedNotificationCenter.default().addObserver(self, selector: #selector(requestedApproval(_:)),
             name: Self.approvalNotification, object: nil)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(otherAppActivated(_:)),
+            name: NSWorkspace.didActivateApplicationNotification, object: nil)
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         statusItem.button?.image = StatusMark.image()
         statusItem.button?.imagePosition = .imageLeading
@@ -208,9 +212,24 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         NSApp.setActivationPolicy(.regular)
         approvalsPanel?.level = .floating
         approvalsPanel?.makeKeyAndOrderFront(nil); NSApp.activate()
+        reviewFloat.opened()
+        // Global monitors see only other apps' events: a click there means he chose that app.
+        otherAppClicks = otherAppClicks ?? NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown, .otherMouseDown]) { [weak self] _ in
+            guard let self, self.reviewFloat.clickedInOtherApp() else { return }
+            self.stopFloating()
+        }
+    }
+    @objc private func otherAppActivated(_ notification: Notification) {
+        let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+        guard app?.processIdentifier != ProcessInfo.processInfo.processIdentifier, reviewFloat.otherAppActivated() else { return }
+        stopFloating()
+    }
+    private func stopFloating() {
+        approvalsPanel?.level = .normal
+        if let monitor = otherAppClicks { NSEvent.removeMonitor(monitor); otherAppClicks = nil }
     }
     func windowWillClose(_ notification: Notification) {
-        approvalsPanel?.level = .normal
+        reviewFloat.closed(); stopFloating()
         NSApp.setActivationPolicy(.accessory)
     }
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
