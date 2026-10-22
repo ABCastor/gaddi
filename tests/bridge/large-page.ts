@@ -122,8 +122,11 @@ export async function largePage({ context, worker, daemon, url, pass }: {
         return { costs, signatures: page.result!.signatures, stages: page.result!.stages, firstFrameMs: page.result!.frameAt - probe.enabledAt };
       }, tab);
       console.log(`LARGE_PAGE ${JSON.stringify({ action, selector, ms, reply, initial, timing })}`);
-      assert.equal(reply.changed, changed, `ASSERT_LARGE_CHANGED_${selector.slice(1).toUpperCase()}`);
-      attempts.push(ms);
+      // Without a page version the 300 ms after-input check went unanswered and Gaddi
+      // reports changed: true by design; only a confirmed answer is evidence either way.
+      const confirmed = typeof reply.version === 'string';
+      if (confirmed) assert.equal(reply.changed, changed, `ASSERT_LARGE_CHANGED_${selector.slice(1).toUpperCase()}`);
+      attempts.push(confirmed ? ms : Number.POSITIVE_INFINITY);
       assert.equal(await page.evaluate(() => document.hidden), true);
       assert.equal((await call('chrome.active')).id, foreground.id);
       if (action === 'hover') assert.equal(await page.locator(selector).evaluate(el => el.matches(':hover')), true);
@@ -134,7 +137,7 @@ export async function largePage({ context, worker, daemon, url, pass }: {
       }
       await call('chrome.close', { tabs: [tab] });
       }
-      assert.ok(attempts.some(ms => ms < 600), `ASSERT_LARGE_LATENCY: ${selector} took ${attempts.join(', ')}ms`);
+      assert.ok(attempts.some(ms => ms < 600), `ASSERT_LARGE_LATENCY: ${selector} took ${attempts.map(ms => ms === Number.POSITIVE_INFINITY ? 'unconfirmed' : `${ms}ms`).join(', ')}`);
     }
   } finally { await worker.evaluate('globalThis.restoreLargeProbe()'); }
   pass('native large-page hover/no-op offscreen click are unchanged, aria toggle changes, all under 600 ms');
@@ -178,11 +181,18 @@ export async function largePage({ context, worker, daemon, url, pass }: {
   const beforeStyle = await snapshot();
   await page.evaluate(() => { document.querySelector<HTMLElement>('#heading')!.style.visibility = 'hidden'; });
   assert.equal(await snapshot(), beforeStyle, 'CSS-only visibility is outside the textContent signature');
-  await page.evaluate(() => scrollTo(0, 0));
-  const typed = await call('chrome.type', { tab, selector: '#same-value', text: 'unchanged' });
+  // A busy page can leave the after-input check unanswered (no version, changed: true by
+  // design); ask again, up to three times, until Gaddi confirms the outcome.
+  const confirmedOutcome = async (act: () => Promise<{ changed?: boolean; version?: string }>) => {
+    for (let attempt = 0; ; attempt++) {
+      await page.evaluate(() => scrollTo(0, 0));
+      const reply = await act();
+      if (typeof reply.version === 'string' || attempt === 2) return reply;
+    }
+  };
+  const typed = await confirmedOutcome(() => call('chrome.type', { tab, selector: '#same-value', text: 'unchanged' }));
   assert.equal(typed.changed, false, 'ASSERT_TYPE_PREPARATION: own scroll/focus and identical replacement do not count as a change');
-  await page.evaluate(() => scrollTo(0, 0));
-  assert.equal((await call('chrome.hover', { tab, selector: '#noop' })).changed, false, 'ASSERT_HOVER_PREPARATION: own offscreen scroll does not count as a change');
+  assert.equal((await confirmedOutcome(() => call('chrome.hover', { tab, selector: '#noop' }))).changed, false, 'ASSERT_HOVER_PREPARATION: own offscreen scroll does not count as a change');
   await call('chrome.close', { tabs: [tab] });
   pass('signature covers tail text, nested open-shadow text/control/aria state and ignores own type/hover preparation');
 }
