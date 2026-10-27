@@ -415,7 +415,13 @@ async function aimIntoFrame(tab: number, frameId: number, measured: PageResults[
     check();
     const box = await frameBox(tab, frameId, check);
     if (!box) throw new Error('That embedded document is off the page or nested too deep; look again and click it by point');
-    const aimed = await resolvePoint(tab, { x: measured.x + box.x, y: measured.y + box.y }, check);
+    const point = { x: measured.x + box.x, y: measured.y + box.y };
+    // A control can be visible inside its document while the document itself is off the tab's
+    // screen; input aimed there would land on nothing, and a caller could not tell.
+    const view = await onPage(tab, 'viewport', {}, check);
+    if (point.x < 0 || point.y < 0 || point.x > view.width || point.y > view.height)
+      throw new Error('That control is outside the visible part of the tab; scroll the page to it and try again');
+    const aimed = await resolvePoint(tab, point, check);
     // The point may land on the control itself or on a part of it, such as an icon inside a button.
     if (!aimed.blind && aimed.frameId === frameId && aimed.target.chain.includes(measured.selector)) return { x: box.x, y: box.y };
     if (attempt >= 2) throw new Error('That control inside the embedded document moved while it was measured; scroll the page to it and try again');
@@ -1256,15 +1262,9 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
       const measured = await onPage(tab, action === 'hover' ? 'hoverPoint' : 'clickPoint', params, check);
       // Trusted input goes to the tab's own viewport, so a point measured inside an embedded
       // document is moved by that document's place in the page first.
+      // Aiming inside a document also holds the point to the visible part of the tab.
       const offset = params.frameId === undefined ? ZERO : await aimIntoFrame(tab, params.frameId, measured, send, check);
       const point = { x: measured.x + offset.x, y: measured.y + offset.y };
-      if (params.frameId !== undefined) {
-        // A control inside a frame can be visible in its own document while the frame itself is
-        // off the tab's screen; trusted input would land on nothing at all.
-        const view = await onPage(tab, 'viewport', {}, check);
-        if (point.x < 0 || point.y < 0 || point.x > view.width || point.y > view.height)
-          throw new Error('That control is outside the visible part of the tab; scroll the page to it and try again');
-      }
       await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
       if (action === 'click') {
         // Pointer movement can run handlers that change the gated name or href.

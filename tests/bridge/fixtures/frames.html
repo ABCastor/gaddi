@@ -21,6 +21,7 @@
 <button id="ghosted"><span>Ghost action</span></button>
 <div id="ghost"></div>
 <input id="outer-field" aria-label="Outer field">
+<div style="position: absolute; left: 0; top: 720px; width: 10px; height: 1600px"></div>
 <iframe id="inner" title="Inner app" src="about:blank"></iframe>
 <script>
   document.querySelector('#inner').src = new URLSearchParams(location.search).get('inner');

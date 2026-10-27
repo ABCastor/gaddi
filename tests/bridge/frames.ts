@@ -185,6 +185,14 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
   const again = await call('chrome.press', { tab, frameId: target.frameId, key: 'Enter' });
   assert.equal(again.pressed, true, 'ASSERT_FRAME_PRESS_FOCUS: once the frame holds the focus, its keys go through');
 
+  // The page may be scrolled away from the embed when the click is asked for: the control is
+  // brought into view and aimed again, and the click still lands where it belongs.
+  await page.evaluate(() => scrollTo(0, 1200));
+  await call('chrome.click', { tab, frameId: target.frameId, selector: '#inner-button' });
+  assert.equal((await clicksOn(innerFrame, 'inner-button')).length, 4,
+    'ASSERT_FRAME_SCROLLED_PAGE: a page scrolled away from the embed is aimed again and the click lands');
+  await page.evaluate(() => scrollTo(0, 0));
+
   // A frame that is not on the page is refused rather than silently acting on the tab's document,
   // and a point outside the viewport is refused rather than clamped onto something else.
   const missing = await daemon.request('chrome.read', { tab, frameId: 9999 });
