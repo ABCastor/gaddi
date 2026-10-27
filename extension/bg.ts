@@ -1,4 +1,4 @@
-import type { ChromeParams, ChromeRequest, Reply, BrokerResults, TabInfo, PageResult, PageResults } from '../shared/protocol.ts';
+import type { ChromeParams, ChromeRequest, Reply, BrokerResults, TabInfo, PageResult, PageResults, FrameInfo } from '../shared/protocol.ts';
 import type { Protocol } from '../node_modules/playwright-core/types/protocol.d.ts';
 
 function actionErrorMessage(error: unknown): string {
@@ -272,7 +272,10 @@ async function onPage<A extends keyof PageResults>(tab: number, action: A, param
   // Version guards run before in-page effects. Trusted CDP input follows this
   // promise asynchronously, so this is a preflight check, not atomic native input.
   check();
-  const [injection] = await chrome.scripting.executeScript({ target: { tabId: tab }, injectImmediately: true, world: 'ISOLATED', func: pageTask, args: [action, params] });
+  // Invariant: a frame-targeted action runs only inside that document, so its
+  // selectors, checks and version guard describe the page the input will reach.
+  const target: chrome.scripting.InjectionTarget = params.frameId === undefined ? { tabId: tab } : { tabId: tab, frameIds: [params.frameId] };
+  const [injection] = await chrome.scripting.executeScript({ target, injectImmediately: true, world: 'ISOLATED', func: pageTask, args: [action, params] });
   const response = injection as (chrome.scripting.InjectionResult<PageResult> & { error?: { message?: string } }) | undefined;
   // Invariant: a late injection result cannot authorize follow-up input after expiry.
   check();
@@ -282,6 +285,55 @@ async function onPage<A extends keyof PageResults>(tab: number, action: A, param
     response.result.__gaddiCode === 'stale' ? { code: 'stale' } : {});
   // pageTask checks each producer against the same action-specific contract.
   return response.result as PageResults[A];
+}
+// Every document in the tab that the extension may act on. A cross-origin embed is
+// unreachable from the page's own script but not from the extension, which holds
+// host permissions; frameId 0 is the tab itself and is left out of the list.
+async function tabFrames(tab: number): Promise<FrameInfo[]> {
+  const results = await chrome.scripting.executeScript({ target: { tabId: tab, allFrames: true }, injectImmediately: true,
+    world: 'ISOLATED', func: () => location.href });
+  return results.filter(result => result.frameId !== 0 && typeof result.result === 'string')
+    .map(result => ({ frameId: result.frameId, url: result.result as string }));
+}
+// The place an embedded document occupies in the tab's viewport. Trusted input is
+// delivered in the tab's own coordinates, so a point measured inside a frame must be
+// moved by this offset or it lands somewhere else entirely. A child frame cannot read
+// where it sits in another origin's page; the page that owns it can measure the element
+// the child posts from, and comparing contentWindow with the message source is allowed
+// across origins. Only a frame directly in the tab is translated: a deeper frame is
+// refused rather than clicked at a guessed point.
+async function frameOffset(tab: number, frameId: number, check: Check): Promise<{ x: number; y: number }> {
+  const token = `${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}`;
+  // Installed in the tab's own document, which owns the target frame: it compares the
+  // message source with each iframe's contentWindow, which works across origins, and
+  // measures that element's content box in its own viewport.
+  const measure = (token: string) => new Promise<{ x: number; y: number } | null>(resolve => {
+    const timer = setTimeout(() => resolve(null), 1500);
+    addEventListener('message', event => {
+      if (!event.data || event.data.gaddi !== token) return;
+      for (const element of document.querySelectorAll<HTMLIFrameElement>('iframe, frame')) {
+        if (element.contentWindow !== event.source) continue;
+        clearTimeout(timer);
+        const rect = element.getBoundingClientRect(), style = getComputedStyle(element);
+        resolve({ x: rect.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft),
+          y: rect.top + parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop) });
+        return;
+      }
+    });
+  });
+  const answer = chrome.scripting.executeScript({ target: { tabId: tab }, injectImmediately: true, world: 'ISOLATED',
+    func: measure, args: [token] });
+  let found: { x: number; y: number } | null = null;
+  for (let attempt = 0; attempt < 5 && !found; attempt++) {
+    check();
+    await chrome.scripting.executeScript({ target: { tabId: tab, frameIds: [frameId] }, injectImmediately: true, world: 'ISOLATED',
+      func: (token: string) => { parent.postMessage({ gaddi: token }, '*'); }, args: [token] });
+    check();
+    found = await Promise.race([answer.then(([reply]) => reply?.result ?? null),
+      new Promise<null>(resolve => setTimeout(() => resolve(null), 300))]);
+  }
+  if (!found) throw new Error('Frame is nested inside another frame, or gone; click inside it by point instead');
+  return found;
 }
 async function waitOnTab(tab: number, params: ChromeParams, scope: Deadline) {
   const args = waitParams(params), start = Date.now(), end = start + args.timeout!;
@@ -927,8 +979,12 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
       });
     }
     if (action === 'wait') return emulatedFocus(() => waitOnTab(tab, params, scope));
-    if (action === 'describe' || action === 'read' || action === 'html') return { ...result,
-      ...await (background ? rendered(() => onPage(tab, action, params, check)) : onPage(tab, action, params, check)) };
+    if (action === 'describe' || action === 'read' || action === 'html') {
+      const page = { ...result, ...await (background ? rendered(() => onPage(tab, action, params, check)) : onPage(tab, action, params, check)) };
+      // A read of the tab also names the documents inside it, so the agent can act on
+      // one; a read of a frame stays that frame's own page.
+      return action === 'read' && params.frameId === undefined ? { ...page, frames: await tabFrames(tab) } : page;
+    }
     if (action === 'goto') return rendered(async send => tabInfo(await navigate(tab, send, navigationURL(params.url))));
     if (action === 'back') return rendered(async send => {
       const history = await send('Page.getNavigationHistory');
@@ -1034,14 +1090,19 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
     // Set when a click's press and release both reached Chrome before a session ended.
     let handed = false;
     if (action === 'click' || action === 'hover') return trusted(async send => {
-      const before = await onPage(tab, action === 'hover' ? 'hoverPoint' : 'clickPoint', params, check);
-      const point = { x: before.x, y: before.y };
+      const measured = params.at ? undefined : await onPage(tab, action === 'hover' ? 'hoverPoint' : 'clickPoint', params, check);
+      const before = measured ?? await onPage(tab, 'snapshot', params, check);
+      // Trusted input goes to the tab's own viewport, so a point measured inside an
+      // embedded document is moved by that frame's place in the page first.
+      const offset = params.frameId === undefined ? { x: 0, y: 0 } : await frameOffset(tab, params.frameId, check);
+      const point = params.at ? { x: params.at.x + offset.x, y: params.at.y + offset.y }
+        : { x: measured!.x + offset.x, y: measured!.y + offset.y };
       await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
       if (action === 'click') {
         // Pointer movement can run handlers that change the gated name or href.
         if (params.checkedDescription || params.version) {
           const { x, y } = await onPage(tab, 'clickCheck', params, check);
-          Object.assign(point, { x, y });
+          Object.assign(point, { x: x + offset.x, y: y + offset.y });
         }
         // Both halves go to Chrome at once, so a menu that opens on the press (a password
         // manager under a field) cannot end the session between them.
@@ -1062,7 +1123,10 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
     if (action === 'type') {
       if (typeof params.text !== 'string') throw new Error('text must be a string');
       if (params.mode !== undefined && params.mode !== 'replace' && params.mode !== 'append') throw new Error('mode must be replace or append');
-      const target = { ...await onPage(tab, 'typeFocus', params, check), mode: params.mode };
+      // Every follow-up runs in the same document the focus was checked in: the field's
+      // reference belongs to that frame's element map.
+      const frame = params.frameId === undefined ? {} : { frameId: params.frameId };
+      const target = { ...await onPage(tab, 'typeFocus', params, check), mode: params.mode, ...frame };
       return trusted(async send => {
         try {
           await onPage(tab, 'typeCheck', { ...target, version: params.version }, check);
@@ -1077,13 +1141,13 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
           await send('Input.insertText', { text: params.text! });
         } finally {
           // Restore layout even when input fails or its deadline has expired.
-          if (target.appendCleanup) await onPage(tab, 'typeCleanup', { appendCleanup: target.appendCleanup }, () => {}).catch(() => {});
+          if (target.appendCleanup) await onPage(tab, 'typeCleanup', { ...frame, appendCleanup: target.appendCleanup }, () => {}).catch(() => {});
         }
         return { ...result, typed: true, ...await afterInput(tab, target, result.url, scope, target.combobox) };
       }, true, false).catch(async error => {
         // A menu that opens on the typed text can end the session while the insert is in
         // flight. The field then shows whether it landed; text is never inserted twice.
-        if (!isForeignFrameError(error) || !(await onPage(tab, 'typeLanded', { selector: target.selector, text: target.expectedText ?? params.text }, check)).landed) throw error;
+        if (!isForeignFrameError(error) || !(await onPage(tab, 'typeLanded', { ...frame, selector: target.selector, text: target.expectedText ?? params.text }, check)).landed) throw error;
         return { ...result, typed: true, ...await afterInput(tab, target, result.url, scope, target.combobox) };
       });
     }

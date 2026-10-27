@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Frames fixture</title>
+<style>
+  body { margin: 0; font: 16px sans-serif; }
+  /* A banner across the middle of the button: the centre is obscured, the top and
+     bottom of the face stay reachable, which is the real cookie-banner case. */
+  #covered { position: absolute; left: 0; top: 20px; width: 300px; height: 80px; }
+  #banner { position: absolute; left: 0; top: 50px; width: 300px; height: 40px; background: #eee; }
+  #inner { position: absolute; left: 0; top: 160px; width: 400px; height: 240px; border: 3px solid #333; }
+</style>
+<button id="covered">Covered action</button>
+<div id="banner">Cookie banner</div>
+<iframe id="inner" title="Inner app" src="about:blank"></iframe>
+<script>
+  document.querySelector('#inner').src = new URLSearchParams(location.search).get('inner');
+  Object.assign(window, { clicks: [] });
+  document.addEventListener('click', event => window.clicks.push({ target: event.target.id, trusted: event.isTrusted }), true);
+</script>
+</html>

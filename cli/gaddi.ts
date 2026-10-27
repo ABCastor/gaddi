@@ -21,8 +21,10 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] [--why <purp
   tabs | bookmarks [query] | look [tab] [--visible] | read [tab|url] | html [tab] | screenshot [tab] [--full-page]
   open <url> [--foreground] [--group <task>] | goto [tab] <url> | back [tab]
   close <id> [id...] | show <id> | group <task> <id> [id...]
-  click|hover [tab] <selector> | type [tab] <selector> <text> [--mode replace|append]
+  click [tab] <selector> | click [tab] --at x,y  (a point in the window; goes through banners and into frames)
+  type [tab] <selector> <text> [--mode replace|append]
   press [tab] <key> | select [tab] <selector> <value> | upload [tab] <selector> <path>
+  --frame <id> with look, click, type, press or hover works inside a frame id that look listed
   scroll [tab] <dy|selector> [--dx N] [--dy N]  (wheel pixels; with a selector the wheel goes over that element)
   wait [tab] <JSON options>
   signin [tab] [--item <title-or-id>]
@@ -37,6 +39,7 @@ const argv = process.argv.slice(2), args: string[] = [];
 let json = false, fullPage = false, foreground = false, visible = false;
 let approval: string | undefined, tab: number | undefined, group: string | undefined, item: string | undefined, why: string | undefined;
 let mode: 'replace' | 'append' | undefined;
+let at: { x: number; y: number } | undefined, frame: number | undefined;
 const wheel: { dx?: number; dy?: number } = {};
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i];
@@ -47,6 +50,17 @@ for (let i = 0; i < argv.length; i++) {
     wheel[arg.slice(2) as 'dx' | 'dy'] = Number(value);
   }
   else if (arg === '--full-page') fullPage = true;
+  else if (arg === '--at') {
+    const value = argv[++i] || '';
+    const parts = value.split(',').map(part => Number(part.trim()));
+    if (parts.length !== 2 || parts.some(part => !Number.isFinite(part) || part < 0)) die('--at needs viewport coordinates as x,y', 2);
+    at = { x: parts[0], y: parts[1] };
+  }
+  else if (arg === '--frame') {
+    const value = argv[++i] || '';
+    if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1) die('--frame needs a frame id from look', 2);
+    frame = Number(value);
+  }
   else if (arg === '--visible') visible = true;
   else if (arg === '--foreground') foreground = true;
   else if (arg === '--mode') {
@@ -64,6 +78,8 @@ for (let i = 0; i < argv.length; i++) {
 }
 const cmd = args.shift() ?? '';
 if (mode && cmd !== 'type') die('--mode is only supported for type', 2);
+if (at && cmd !== 'click') die('--at applies only to click', 2);
+if (frame !== undefined && !['look', 'click', 'type', 'press', 'hover'].includes(cmd)) die('--frame applies only to look, click, type, press or hover', 2);
 if ((wheel.dx !== undefined || wheel.dy !== undefined) && cmd !== 'scroll') die('--dx and --dy are only supported for scroll', 2);
 if (cmd === 'approve') {
   if (args.length !== 1 || !/^[a-f0-9]+$/i.test(args[0])) die('gaddi approve <id>', 2);
@@ -74,6 +90,8 @@ if (cmd === 'approve') {
 }
 const params: BrokerParams = { caller: process.env.GADDI_CALLER || 'cli' };
 if (mode) params.mode = mode;
+if (at) params.at = at;
+if (frame !== undefined) params.frameId = frame;
 if (process.env.GADDI_HARNESS) params.harness = process.env.GADDI_HARNESS;
 if (approval) params.approval = approval;
 if (why) params.why = why;
@@ -108,7 +126,8 @@ switch (cmd) {
   case 'screenshot': params.fullPage = fullPage; break;
   case 'open': params.url = take('URL'); params.foreground = foreground; if (group !== undefined) params.group = group; break;
   case 'goto': params.url = take('URL'); break;
-  case 'click': case 'hover': params.selector = take('selector'); break;
+  case 'click': if (at) { if (args.length) die('click: --at takes no selector', 2); } else params.selector = take('selector'); break;
+  case 'hover': params.selector = take('selector'); break;
   case 'type': params.selector = take('selector'); params.text = take('text'); params.text += args.length ? ' ' + args.splice(0).join(' ') : ''; break;
   case 'press': params.key = take('key'); break;
   case 'scroll': {

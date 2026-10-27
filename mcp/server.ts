@@ -55,6 +55,8 @@ const approval = S;
 // The agent's one-line purpose, shown to the owner if the action is held. Only on tools that can be held.
 const why = S;
 const wheel = { type: 'number', minimum: -WHEEL_LIMIT, maximum: WHEEL_LIMIT };
+// A document inside the tab, as look lists it: actions then resolve inside that page.
+const frameId = { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: 'Frame id from look, for a cross-origin iframe.' };
 const obj = (properties: Record<string, Field>, required: string[] = []): ToolDefinition['inputSchema'] => ({ type: 'object', properties, required, additionalProperties: false });
 const tool = <M extends string>(name: string, description: string, properties: Record<string, Field> = {}, required: string[] = [], method: M = name as M, format: (result: BrokerResult<M>) => CallToolResult | Promise<CallToolResult> = plainResult): ToolDefinition => ({
   name: 'browser_' + name, description, inputSchema: obj(properties, required),
@@ -71,7 +73,7 @@ const TOOLS: ToolDefinition[] = [
     return pageResult('Chrome bookmarks', lines.length > 20000 ? lines.slice(0, 20000 - note.length) + note : lines);
   }),
   tool('wait', 'Wait for one of text, visible selector/ref, or URL substring; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 } }, [], 'wait', pageJSON),
-  tool('look', 'Read text and refs, including floating menus/suggestions; click their refs. visible:true is viewport only.', { tab, visible: B }, [], 'look',
+  tool('look', 'Read text and refs, including floating menus/suggestions; click their refs. visible:true is viewport only. Lists the frames in the tab.', { tab, visible: B, frameId }, [], 'look',
     result => result?.note ? plainResult(result.note) : pageJSON(result)),
   {
     name: 'browser_read', description: 'Extract readable markdown from a tab or a URL in a temporary tab.',
@@ -81,11 +83,11 @@ const TOOLS: ToolDefinition[] = [
   tool('open', 'Open a background URL in Gaddi\'s window; foreground:true selects it.', { url: S, group: S, foreground: B, approval, why }, ['url'], 'open', pageJSON),
   tool('goto', 'Navigate a tab to a URL.', { tab, url: S, approval, why }, ['url'], 'goto', pageJSON),
   tool('back', 'Go back in a tab.', { tab }, [], 'back', pageJSON),
-  tool('click', 'Click a CSS selector; one-way actions may be held. Reports changed:true/false.', { tab, version, selector: S, approval, why }, ['selector']),
-  tool('type', 'Replace text by default; mode:append adds at the end, preserving chips/mentions. Passwords denied.', { tab, version, selector: S, text: S, mode: { ...S, enum: ['replace', 'append'] } }, ['selector', 'text']),
+  tool('click', 'Click a CSS selector, or viewport coordinates with at:{x,y} (through a banner, or inside a frame). One-way actions may be held. Reports changed:true/false.', { tab, version, selector: S, at: { type: 'object', description: 'Viewport point: {x,y} in CSS pixels.' }, frameId, approval, why }),
+  tool('type', 'Replace text by default; mode:append adds at the end, preserving chips/mentions. Passwords denied.', { tab, version, selector: S, text: S, mode: { ...S, enum: ['replace', 'append'] }, frameId }, ['selector', 'text']),
   tool('signin', 'Sign in with 1Password; secrets stay hidden. Default needs_you holds for Touch ID.', { tab, item: S, approval, why }),
-  tool('press', 'Press a key in a tab. Reports changed:true/false.', { tab, version, key: S, approval, why }, ['key']),
-  tool('hover', 'Hover over a CSS selector. Reports changed:true/false.', { tab, version, selector: S }, ['selector']),
+  tool('press', 'Press a key in a tab, or inside a frame named by frameId. Reports changed:true/false.', { tab, version, key: S, frameId, approval, why }, ['key']),
+  tool('hover', 'Hover over a CSS selector. Reports changed:true/false.', { tab, version, selector: S, frameId }, ['selector']),
   tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector. Reports changed:true/false.', { tab, version, dx: wheel, dy: wheel, selector: S }),
   tool('select', 'Select an option by value. Reports changed:true/false.', { tab, version, selector: S, value: S }, ['selector', 'value']),
   tool('upload', 'Attach a local file (path) to a file field, its label or a drop zone; held for approval.', { tab, version, selector: S, path: S, approval, why }, ['selector', 'path']),

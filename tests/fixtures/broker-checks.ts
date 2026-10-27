@@ -162,7 +162,8 @@ async function fakeBridge() {
         case 'chrome.bookmarks': result = { bookmarks: [{ path: 'Design/Reference', title: 'Example', url: 'https://example.test/design' }] }; break;
         case 'chrome.active': result = { ...tab }; if (control.switchActive) { tabs[0].active = false; tabs[1].active = true; } break;
         case 'chrome.describe': {
-          const s = msg.params.selector; assert.ok(typeof s === 'string');
+          // A click by point has no selector: the fake page says what that point lands on.
+          const s = msg.params.at ? '#pay' : msg.params.selector; assert.ok(typeof s === 'string');
           const names: Record<string, string> = { '#pay': 'Procedi al pagamento', '#confirm': 'Confirm order', '#del': 'Delete', '#send': 'Send', '#plain': 'Read more' };
           const description: ElementDescription = { name: control.describeName ?? (names[s] || (s.startsWith('a[href=') ? 'Pay' : 'Read more')),
             tag: ['#password', '#current', '#sensitive'].includes(s) ? 'input' : 'button',
@@ -284,6 +285,21 @@ async function clickVerbs(c: Client, b: Bridge) {
   assert.equal(b.calls.filter(m => m.method === 'chrome.click').length, 1); pass('ordinary-click-forwarded');
   for (const selector of ['#pay', '#confirm', '#del', '#checkout-link']) await rejected(c, 'click', { selector }, 'held');
   assert.equal(b.calls.filter(m => m.method === 'chrome.click').length, 1); pass('verbs-and-link-destinations-held-before-forward');
+  // A click by point is gated on the element the point lands on: the fake page puts the
+  // payment button there, so the point is held exactly as its selector would be.
+  const pointClick = await rejected(c, 'click', { at: { x: 120, y: 240 } }, 'held');
+  assert.ok(pointClick, 'a held point click names its approval');
+  assert.deepEqual(b.calls.findLast(m => m.method === 'chrome.describe')?.params.at, { x: 120, y: 240 });
+  assert.equal(b.calls.filter(m => m.method === 'chrome.click').length, 1, 'a held point click never reaches Chrome');
+  pass('point-click-gated-on-what-it-lands-on');
+  for (const at of [{ x: -1, y: 0 }, { x: 0, y: 'top' }, { x: 0 }, {}]) {
+    // The tab lookup may run first; what must never happen is a describe or a click.
+    const marker = b.calls.length;
+    assert.match((await c.call('click', { at })).error!.message, /at must be/, `ASSERT_POINT_SHAPE: ${JSON.stringify(at)}`);
+    assert.ok(!b.calls.slice(marker).some(call => ['chrome.describe', 'chrome.click'].includes(call.method)),
+      `ASSERT_POINT_SHAPE: ${JSON.stringify(at)} never reaches the page`);
+  }
+  pass('point-click-shape-refused-before-any-chrome-call');
   await rejected(c, 'click', { tab: 8, selector: '#send' }, 'denied');
   for (const key of ['Meta+Enter', 'Control+Enter', 'Meta+Return']) await rejected(c, 'press', { tab: 8, key }, 'held');
   b.control.focusSubmit = 'Pay now';

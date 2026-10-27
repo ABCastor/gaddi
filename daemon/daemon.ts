@@ -3,7 +3,7 @@ import { waitParams, wheelParams } from '../shared/protocol.ts';
 // Thin user-level broker: the extension operates the user's Chrome; this process gates and audits calls.
 import net from 'node:net';
 import type { Socket } from 'node:net';
-import { isRecord, parseJSON, errorMessage, hasErrorCode, versionParam } from '../shared/protocol.ts';
+import { isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, pointParam } from '../shared/protocol.ts';
 import type { IncomingParams, ChromeParams, WireError, BrokerResults, SigninResult } from '../shared/protocol.ts';
 import type { PolicyCheck } from './policy.ts';
 import type { ApprovalAction, StoredApprovalRef, StoredApproval, RemoteFacts, ApprovalContext } from './approvals.ts';
@@ -327,6 +327,16 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     return zoned;
   };
   const args: ChromeParams = { tab: resolvedTab };
+  // A document inside the tab, named by what `look` listed. Every action on it then
+  // resolves selectors and checks inside that document instead of the tab's own page.
+  if (params.frameId !== undefined) {
+    if (!['look', 'html', 'click', 'type', 'press', 'hover', 'select', 'scroll', 'wait', 'upload'].includes(method))
+      throw new Error('frameId applies only to an action inside a tab');
+    // Frames are numbered by Chrome; 0 is the tab itself, which needs no frameId.
+    if (typeof params.frameId !== 'number' || !Number.isSafeInteger(params.frameId) || params.frameId < 1)
+      throw new Error('frameId must be a positive integer from look');
+    args.frameId = params.frameId;
+  }
   if (method === 'signin') {
     let site = '';
     const finish = (result: SigninResult) => { meta.signin = result; return result; };
@@ -366,19 +376,25 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   }
   let targetSelector: string | undefined;
   let check: PolicyCheck = { outcome: 'allow' }, detail = method;
-  if (['click', 'type', 'hover', 'select', 'upload'].includes(method)) args.selector = requiredString(params.selector, 'selector');
+  // A click by point: the same gates, judged on the element the point lands on. It is
+  // the owner's own click, so it is held, granted, zoned and audited like any other.
+  const point = method === 'click' && params.at !== undefined ? pointParam(params.at) : undefined;
+  if (point) args.at = point;
+  if (['click', 'type', 'hover', 'select', 'upload'].includes(method) && !point) args.selector = requiredString(params.selector, 'selector');
   if (method === 'click' || method === 'type') {
     const info = await request('describe', { ...args, ...(method === 'type' ? { denySelectors: policy.deny.type_into || [] } : {}) });
     if (!isRecord(info) || typeof info.name !== 'string' || typeof info.tag !== 'string') throw new Error('bridge returned invalid element description');
     if (method === 'click') {
       if (typeof info.href !== 'string') throw new Error('chrome.describe must return href');
-      targetSelector = typeof info.selector === 'string' ? info.selector : args.selector;
+      // A point click keeps its point: substituting the element's reference would click
+      // its centre, which is exactly what the point exists to avoid.
+      targetSelector = point ? undefined : typeof info.selector === 'string' ? info.selector : args.selector;
       check = checkClick(policy, hostOf(pageURL), info.name);
       if (check.outcome === 'allow' && info.href) check = checkNavigation(policy, navigationURL(new URL(info.href, pageURL).href));
       const destination = info.href ? new URL(info.href, pageURL).href : '';
       check = checkRememberedSend(policy, pageURL, method, check, info.name, destination);
       check = grantCheck(check, { kind: 'click', name: info.name, destination });
-      detail = `${cleanDetail(info.name)}${info.href ? ' -> ' + cleanURL(new URL(info.href, pageURL).href) : ''}`;
+      detail = `${cleanDetail(info.name)}${point ? ` at ${point.x},${point.y}` : ''}${info.href ? ' -> ' + cleanURL(new URL(info.href, pageURL).href) : ''}`;
       // Bind the resolved accessible name and destination too, so a changed button requires new approval.
       args._description = { name: info.name, href: info.href };
     } else {
@@ -488,6 +504,9 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       ...(isRecord(result.offscreen) && typeof result.offscreen.above === 'number' && Number.isSafeInteger(result.offscreen.above) && result.offscreen.above >= 0
         && typeof result.offscreen.below === 'number' && Number.isSafeInteger(result.offscreen.below) && result.offscreen.below >= 0
         ? { offscreen: { above: result.offscreen.above, below: result.offscreen.below } } : {}),
+      ...(Array.isArray(result.frames) ? { frames: result.frames.filter((frame): frame is { frameId: number; url: string } =>
+        isRecord(frame) && typeof frame.frameId === 'number' && Number.isSafeInteger(frame.frameId) && frame.frameId > 0
+        && typeof frame.url === 'string').map(frame => ({ frameId: frame.frameId, url: frame.url })) } : {}),
       text: wrap(pageURL, text), outline: wrap(pageURL, outline), length: text.length,
       truncated: result.truncated === true || result.text.length > TEXT_LIMIT || String(result.outline || '').length > TEXT_LIMIT } satisfies BrokerResults['look'];
   }

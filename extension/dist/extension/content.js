@@ -252,6 +252,15 @@ export async function pageTask(action, params = {}) {
                 hit = hit.shadowRoot.elementFromPoint(x, y);
             return hit && (hit === el || el.contains(hit)) ? { x, y } : null;
         }
+        // The element at a point the owner can see, looked through open shadows.
+        function pointElement(at) {
+            if (!Number.isFinite(at.x) || !Number.isFinite(at.y) || at.x < 0 || at.y < 0 || at.x > innerWidth || at.y > innerHeight)
+                return null;
+            let hit = document.elementFromPoint(at.x, at.y);
+            while (hit?.shadowRoot?.elementFromPoint(at.x, at.y) && hit.shadowRoot.elementFromPoint(at.x, at.y) !== hit)
+                hit = hit.shadowRoot.elementFromPoint(at.x, at.y);
+            return hit;
+        }
         // The nearest element, from el upwards, that a wheel on this axis can really scroll; else the page.
         // overflow:hidden is skipped on purpose: the wheel chains past it, so it is not where the scroll lands.
         function scrollerFor(el, axis) {
@@ -775,6 +784,30 @@ export async function pageTask(action, params = {}) {
             if (params.checkedDescription)
                 checkDescription(el || document.body, true);
             return { signature: signature() };
+        }
+        if (action === 'describe' && params.at) {
+            // A point click is gated on what the owner would be clicking: the element under
+            // that point. An embedded document is named by its title and its own address, so
+            // the gate sees a cross-origin frame as the destination it is.
+            const hit = pointElement(params.at);
+            if (!hit)
+                throw new Error('Nothing is at that point');
+            const described = describe(hit);
+            const frame = ['IFRAME', 'FRAME'].includes(hit.tagName) ? hit.src : '';
+            return { ...described, href: frame || described.href, matched: [] };
+        }
+        if (params.at && (action === 'clickPoint' || action === 'clickCheck' || action === 'hoverPoint')) {
+            // Invariant: a click by point still re-checks the element the gate named, so a
+            // page cannot swap what sits under that point between the check and the press.
+            const hit = pointElement(params.at);
+            if (!hit)
+                throw new Error('Nothing is at that point');
+            const before = action === 'clickCheck' ? '' : signature();
+            if (action !== 'hoverPoint')
+                checkDescription(hit);
+            if (action === 'clickCheck')
+                return { x: params.at.x, y: params.at.y };
+            return { x: params.at.x, y: params.at.y, signature: before };
         }
         const el = resolve(params.selector);
         // Whether a type whose session Chrome cut mid-insert left the field holding the text.

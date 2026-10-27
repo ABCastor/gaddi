@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Inner app</title>
+<style>body { margin: 0; font: 14px sans-serif; }</style>
+<h1 id="inner-heading">Inner heading</h1>
+<button id="inner-button">Inner action</button>
+<input id="inner-field" aria-label="Inner field">
+<p id="inner-state"></p>
+<script>
+  Object.assign(window, { events: [] });
+  const record = type => event => window.events.push({ type, target: event.target.id, key: event.key, trusted: event.isTrusted });
+  document.addEventListener('click', record('click'), true);
+  document.addEventListener('keydown', record('keydown'), true);
+  document.addEventListener('input', record('input'), true);
+</script>
+</html>

@@ -14,6 +14,12 @@ export interface ChromeParams {
   _description?: { name?: string; href?: string; submitName?: string };
   checkedDescription?: { name?: string; href?: string; submitName?: string };
   visible?: boolean; settleMs?: number; gone?: boolean; timeout?: number;
+  // A point in the viewport, for a click where a selector cannot be trusted to land
+  // (a banner over the middle) or cannot be written (inside another origin's page).
+  at?: { x: number; y: number };
+  // The document inside a tab to act on: 0 is the tab itself, any other id comes from
+  // `look`, which lists every document the extension can reach.
+  frameId?: number;
   version?: string;
   // Internal ownership of temporary rich-editor layout during trusted append.
   appendCleanup?: string;
@@ -69,6 +75,7 @@ export interface ElementDescription {
   href?: string; submitName?: string; matched?: string[]; selector?: string;
 }
 // Results of the extension's serialized page function, keyed by the requested action.
+export interface FrameInfo { frameId: number; url: string }
 export interface ScrollOffset { left: number; top: number }
 export interface ImageBox { x: number; y: number; width: number; height: number }
 export interface ApprovalCapture { data: string; mimeType: string; width: number; height: number; box: ImageBox }
@@ -85,7 +92,7 @@ export interface PageResults {
   captureBox: { box: ImageBox; clip: ImageBox; pixelRatio: number; selector: string; beyondViewport: boolean };
   animationSpeed: { animationSpeed: number | undefined };
   describe: Required<ElementDescription> & { role: string; password: boolean; disabled: boolean };
-  read: { text: string; outline: string; version?: string; offscreen?: { above: number; below: number }; scroll: { y: number; height: number } };
+  read: { text: string; outline: string; version?: string; offscreen?: { above: number; below: number }; scroll: { y: number; height: number }; frames?: FrameInfo[] };
   html: { html: string; truncated: boolean };
   evalCheck: Record<string, never>;
   snapshot: { signature: string };
@@ -129,7 +136,7 @@ export function isTabInfo(value: unknown): value is TabInfo {
 }
 
 export interface HTMLPage { tab: number; url: string; html: string; truncated?: boolean }
-export interface TextPage { tab: number; url: string; text: string; version?: string; note?: string; outline?: string; offscreen?: { above: number; below: number }; title?: unknown; untrusted?: boolean; length?: number; truncated?: boolean; scroll?: { y: number; height: number } }
+export interface TextPage { tab: number; url: string; text: string; version?: string; note?: string; outline?: string; offscreen?: { above: number; below: number }; title?: unknown; untrusted?: boolean; length?: number; truncated?: boolean; scroll?: { y: number; height: number }; frames?: FrameInfo[] }
 interface InputResult { tab: number; url: string; changed: boolean; version?: string; navigating?: boolean; note?: string }
 export interface CloseResult { closed: number[]; failed: { tab: number; reason: string }[] }
 interface BookmarkInfo { path: string; title: string; url: string }
@@ -183,6 +190,15 @@ export function versionParam(value: unknown): string | undefined {
   if (value === undefined || value === '') return undefined;
   if (typeof value !== 'string' || !/^[A-Za-z0-9_.:-]{1,128}$/.test(value)) throw new Error('version must be a short opaque string');
   return value;
+}
+// A viewport point, in CSS pixels: the place an owner would click. Bounded so a
+// caller cannot name a point no viewport has.
+export const POINT_LIMIT = 100000;
+export function pointParam(value: unknown): { x: number; y: number } {
+  if (!isRecord(value) || typeof value.x !== 'number' || typeof value.y !== 'number'
+    || !Number.isFinite(value.x) || !Number.isFinite(value.y) || value.x < 0 || value.y < 0
+    || value.x > POINT_LIMIT || value.y > POINT_LIMIT) throw new Error('at must be { x, y } in viewport pixels');
+  return { x: value.x, y: value.y };
 }
 
 // Wheel distances in CSS pixels. Shared by broker and extension, including clients that bypass MCP schemas.

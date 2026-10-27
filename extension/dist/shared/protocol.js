@@ -64,6 +64,16 @@ export function versionParam(value) {
         throw new Error('version must be a short opaque string');
     return value;
 }
+// A viewport point, in CSS pixels: the place an owner would click. Bounded so a
+// caller cannot name a point no viewport has.
+export const POINT_LIMIT = 100000;
+export function pointParam(value) {
+    if (!isRecord(value) || typeof value.x !== 'number' || typeof value.y !== 'number'
+        || !Number.isFinite(value.x) || !Number.isFinite(value.y) || value.x < 0 || value.y < 0
+        || value.x > POINT_LIMIT || value.y > POINT_LIMIT)
+        throw new Error('at must be { x, y } in viewport pixels');
+    return { x: value.x, y: value.y };
+}
 // Wheel distances in CSS pixels. Shared by broker and extension, including clients that bypass MCP schemas.
 export const WHEEL_LIMIT = 100000;
 export function wheelParams(params) {

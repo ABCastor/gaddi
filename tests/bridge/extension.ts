@@ -37,6 +37,7 @@ import { foreignFrame, writeForeignExtension } from './foreign-frame.ts';
 import { autonomousSetup } from './autonomy-browser.ts';
 import { uploadChecks } from './upload.ts';
 import { hscrollChecks } from './hscroll.ts';
+import { frameChecks } from './frames.ts';
 
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 const root = path.join(repo, 'tests/.state-bridge');
@@ -48,7 +49,7 @@ const sock = path.join(os.tmpdir(), `gaddi-bridge-extension-${process.pid}.sock`
 const hostName = 'com.abcastor.gaddi.bridge.test';
 const daemon = new FakeDaemon(sock);
 const call = callsFor(daemon);
-let backgroundGuard: ReturnType<typeof watchHeadless> | undefined, context: BrowserContext | undefined, singleClientChrome: ChildProcess | undefined, singleClientExit: Promise<unknown> | undefined, server: http.Server | undefined, passed = 0, stalled = 0, blocked = 0;
+let backgroundGuard: ReturnType<typeof watchHeadless> | undefined, context: BrowserContext | undefined, singleClientChrome: ChildProcess | undefined, singleClientExit: Promise<unknown> | undefined, server: http.Server | undefined, innerServer: http.Server | undefined, passed = 0, stalled = 0, blocked = 0;
 const fixtureTimers = new Set<ReturnType<typeof setTimeout>>();
 const pass = (label: string) => { passed++; console.log(`PASS ${label}`); };
 const restartOnly = process.env.GADDI_BRIDGE_RESTART_ONLY === '1';
@@ -223,13 +224,22 @@ try {
       fixtureTimers.add(timer);
       return;
     }
-    const filename = req.url?.split(/[?#]/)[0] === '/autonomy.html' ? 'autonomy.html' : req.url?.split(/[?#]/)[0] === '/foreign.html' ? 'foreign.html' : req.url === '/upload.html' ? 'upload.html' : req.url === '/version.html' ? 'version.html' : req.url === '/approval.html' ? 'approval.html' : req.url === '/state.html' ? 'state.html' : req.url === '/actions.html' ? 'actions.html' : req.url === '/hscroll.html' ? 'hscroll.html' : req.url === '/input.html' ? 'input.html' : req.url === '/busy.html' ? 'busy.html' : req.url === '/bands.html' ? 'bands.html' : req.url?.split('?')[0] === '/next.html' ? 'next.html' : req.url === '/' ? 'index.html' : null;
+    const filename = req.url?.split(/[?#]/)[0] === '/autonomy.html' ? 'autonomy.html' : req.url?.split(/[?#]/)[0] === '/foreign.html' ? 'foreign.html' : req.url === '/upload.html' ? 'upload.html' : req.url === '/version.html' ? 'version.html' : req.url === '/approval.html' ? 'approval.html' : req.url === '/state.html' ? 'state.html' : req.url === '/actions.html' ? 'actions.html' : req.url === '/hscroll.html' ? 'hscroll.html' : req.url?.split(/[?#]/)[0] === '/frames.html' ? 'frames.html' : req.url === '/input.html' ? 'input.html' : req.url === '/busy.html' ? 'busy.html' : req.url === '/bands.html' ? 'bands.html' : req.url?.split('?')[0] === '/next.html' ? 'next.html' : req.url === '/' ? 'index.html' : null;
     if (!filename) { res.writeHead(404); res.end(); return; }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(fs.readFileSync(path.join(fixtures, filename)));
   });
   await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
+  // The embedded document comes from a second origin (localhost against 127.0.0.1),
+  // so the frame is cross-origin exactly as a third-party embed is.
+  innerServer = http.createServer((req, res) => {
+    if (req.url?.split(/[?#]/)[0] !== '/iframe.html') { res.writeHead(404); res.end(); return; }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(fs.readFileSync(path.join(fixtures, 'iframe.html')));
+  });
+  await new Promise<void>(resolve => innerServer!.listen(0, '127.0.0.1', resolve));
+  const inner = `http://localhost:${(innerServer.address() as AddressInfo).port}/iframe.html`;
   const launchOptions = {
     executablePath, headless: true, chromiumSandbox: true,
     viewport: { width: 1000, height: 760 },
@@ -681,6 +691,8 @@ try {
     worker = await waitFor(() => context!.serviceWorkers().find(w => w.url().startsWith(`chrome-extension://${id}/`)), 'native-visibility worker');
     if (process.env.GADDI_GUARDED_BENCHMARK_ONLY === '1') {
       await guardedBenchmark({ context, daemon, url });
+    } else if (process.env.GADDI_FRAMES_ONLY === '1') {
+      await frameChecks({ context, daemon, url, inner, pass });
     } else {
     await approvalPicture({ context, daemon, url, pass, captureDirectory: path.join(repo, 'tests/.state/context-captures-native') });
     await typeReplacement({ context, daemon, url, pass });
@@ -695,6 +707,7 @@ try {
     await foreignFrame({ context, worker, daemon, url, pass });
     await uploadChecks({ context, daemon, url, pass });
     await hscrollChecks({ context, daemon, url, pass });
+    await frameChecks({ context, daemon, url, inner, pass });
     }
     await browser.close();
     context = undefined;
@@ -722,6 +735,7 @@ try {
   await daemon.stop();
   for (const timer of fixtureTimers) clearTimeout(timer);
   if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())); }
+  if (innerServer) { innerServer.closeAllConnections(); await new Promise<void>(resolve => innerServer!.close(() => resolve())); }
   fs.rmSync(state, { recursive: true, force: true }); // Disposable profile and test host registration only.
   try { fs.rmdirSync(root); } catch { /* Another test owns a sibling run. */ }
 }
