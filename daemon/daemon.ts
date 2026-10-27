@@ -10,6 +10,9 @@ import type { ApprovalAction, StoredApprovalRef, StoredApproval, RemoteFacts, Ap
 // `decision` and `remoteKey` exist only to be written to the audit: who answered from another device and what,
 // never the signature or the nonce.
 interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: unknown; url: string }[]; upload?: { name: string; bytes?: number }; signin?: SigninResult; grantId?: string; zone?: string; reason?: string;
+  // The viewport point a click was aimed at, and the embedded document it fell inside. Structured,
+  // already cleaned, and the only record of where a point click landed.
+  point?: { x: number; y: number; frame?: string };
   decision?: { approval: string; kind?: string; verb?: string }; remoteKey?: string;
   // Shown on the card if this call is held (approvals.ts ApprovalContext); never audited, never part of the action.
   context?: ApprovalContext;
@@ -185,6 +188,23 @@ async function gate({ kind, meta, detail, action, check, approval, capture, targ
 }
 const browserMethods = new Set(['tabs', 'bookmarks', 'look', 'wait', 'html', 'screenshot', 'open', 'goto', 'back', 'click', 'type', 'press', 'hover', 'scroll', 'select', 'upload', 'eval', 'emulate', 'close', 'show', 'group', 'signin']);
 const requiredString = (value: unknown, name: string) => { if (typeof value !== 'string' || !value) throw new Error(`${name} required`); return value; };
+const HOLD = (reason: string): PolicyCheck => ({ outcome: 'hold', reason });
+// Two checks of one action at two addresses: the stricter outcome wins, so neither the tab's own
+// rules nor the acting document's can be escaped by acting through the other.
+function strictest(first: PolicyCheck, second: PolicyCheck): PolicyCheck {
+  const rank = { allow: 0, hold: 1, deny: 2 } as const;
+  return rank[second.outcome] > rank[first.outcome] ? second : first;
+}
+// The address whose rules judge an action: an embedded document's own address when the action
+// happens inside one, and only when it is an ordinary web page (an about:, blob: or data: frame
+// has no site of its own, so the tab's address stands).
+function actingURL(value: unknown, pageURL: string) {
+  if (typeof value !== 'string' || !value) return pageURL;
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password ? url.href : pageURL;
+  } catch { return pageURL; }
+}
 function groupTitle(task: unknown, caller: string) {
   if (task !== undefined && typeof task !== 'string') throw new Error('group must be a string');
   const normalize = (value: string) => value.trim().replace(/\s+/gu, ' ');
@@ -310,19 +330,20 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   if (typeof resolvedTab !== 'number' || !Number.isSafeInteger(resolvedTab) || typeof tab?.url !== 'string') throw new Error('chrome tab not found or missing URL');
   let pageURL = tab.url;
   meta.tab = resolvedTab; meta.url = pageURL;
-  // Invariant: a hold becomes an allow here only through the calling chat's own unexpired session
-  // grant (grants.ts). A CLI call has no session, so grantSession is undefined and it gets none.
+  // The chat's session grant is the one place a hold becomes an allow. A click or a key that
+  // happens inside an embedded document is judged on THAT document's address: the site that
+  // acts is the one a grant, a zone, a refused host or a protected address must name.
   let grantId: string | undefined, zone: string | undefined;
   // What remote approval will judge again if this call becomes a hold: the page as it is now, with its query
   // (a query can make a page protected), and the same raw name and destination the grant scan reads.
   let remoteScope: Omit<RemoteFacts, 'reason'> | undefined;
-  const grantCheck = (held: PolicyCheck, scope: GrantScope) => {
-    const decision = checkGrant(grants.active(grantSession(params)), policy, pageURL, held, scope);
+  const grantCheck = (held: PolicyCheck, scope: GrantScope, scopeURL = pageURL) => {
+    const decision = checkGrant(grants.active(grantSession(params)), policy, scopeURL, held, scope);
     grantId = decision.grant;
-    remoteScope = { pageURL, scope };
+    remoteScope = { pageURL: scopeURL, scope };
     if (decision.outcome !== 'hold') return decision;
     // TEST-ZONE: the owner's standing choice for a whole site, for every caller (a CLI call included).
-    const zoned = checkZone(policy, pageURL, held, scope);
+    const zoned = checkZone(policy, scopeURL, held, scope);
     zone = zoned.zone;
     return zoned;
   };
@@ -336,6 +357,14 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     if (typeof params.frameId !== 'number' || !Number.isSafeInteger(params.frameId) || params.frameId < 1)
       throw new Error('frameId must be a positive integer from look');
     args.frameId = params.frameId;
+  }
+  // A point in the tab's own viewport, as a screenshot shows it: the place the owner would
+  // click. It is never combined with frameId, because the extension follows it into whichever
+  // document it falls in; naming a frame as well could only disagree with that.
+  const at = method === 'click' && params.at !== undefined ? pointParam(params.at) : undefined;
+  if (at) {
+    if (args.frameId !== undefined) throw new Error('at is a point in the tab, so it takes no frameId: give at, or frameId with a selector');
+    args.at = at;
   }
   if (method === 'signin') {
     let site = '';
@@ -376,25 +405,32 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   }
   let targetSelector: string | undefined;
   let check: PolicyCheck = { outcome: 'allow' }, detail = method;
-  // A click by point: the same gates, judged on the element the point lands on. It is
-  // the owner's own click, so it is held, granted, zoned and audited like any other.
-  const point = method === 'click' && params.at !== undefined ? pointParam(params.at) : undefined;
-  if (point) args.at = point;
-  if (['click', 'type', 'hover', 'select', 'upload'].includes(method) && !point) args.selector = requiredString(params.selector, 'selector');
+  if (['click', 'type', 'hover', 'select', 'upload'].includes(method) && !at) args.selector = requiredString(params.selector, 'selector');
   if (method === 'click' || method === 'type') {
     const info = await request('describe', { ...args, ...(method === 'type' ? { denySelectors: policy.deny.type_into || [] } : {}) });
     if (!isRecord(info) || typeof info.name !== 'string' || typeof info.tag !== 'string') throw new Error('bridge returned invalid element description');
+    // The document that would act: the frame when the action happens inside an embedded page.
+    const scopeURL = actingURL(info.frameUrl, pageURL);
     if (method === 'click') {
       if (typeof info.href !== 'string') throw new Error('chrome.describe must return href');
       // A point click keeps its point: substituting the element's reference would click
       // its centre, which is exactly what the point exists to avoid.
-      targetSelector = point ? undefined : typeof info.selector === 'string' ? info.selector : args.selector;
-      check = checkClick(policy, hostOf(pageURL), info.name);
-      if (check.outcome === 'allow' && info.href) check = checkNavigation(policy, navigationURL(new URL(info.href, pageURL).href));
-      const destination = info.href ? new URL(info.href, pageURL).href : '';
-      check = checkRememberedSend(policy, pageURL, method, check, info.name, destination);
-      check = grantCheck(check, { kind: 'click', name: info.name, destination });
-      detail = `${cleanDetail(info.name)}${point ? ` at ${point.x},${point.y}` : ''}${info.href ? ' -> ' + cleanURL(new URL(info.href, pageURL).href) : ''}`;
+      targetSelector = at ? undefined : typeof info.selector === 'string' ? info.selector : args.selector;
+      const control = { choice: info.choice === true };
+      // A point over a document the extension cannot inspect has no name to judge, so the
+      // owner decides: the point is still the click they were shown.
+      check = info.blind === true ? HOLD('click inside an embedded document Gaddi cannot inspect')
+        : checkClick(policy, hostOf(scopeURL), info.name, control);
+      // Neither the tab's own rules nor the acting document's can be escaped: the stricter wins.
+      if (info.blind !== true && scopeURL !== pageURL) check = strictest(check, checkClick(policy, hostOf(pageURL), info.name, control));
+      const destination = info.href ? new URL(info.href, scopeURL).href : '';
+      if (check.outcome === 'allow' && info.href) check = checkNavigation(policy, navigationURL(destination));
+      if (check.outcome === 'allow' && scopeURL !== pageURL) check = checkNavigation(policy, navigationURL(scopeURL));
+      check = checkRememberedSend(policy, scopeURL, method, check, info.name, destination);
+      check = grantCheck(check, { kind: 'click', name: info.name, destination }, scopeURL);
+      detail = `${cleanDetail(info.name)}${at ? ` at ${at.x},${at.y}` : ''}${scopeURL !== pageURL ? ` in ${cleanURL(scopeURL)}` : ''}`
+        + `${info.href ? ' -> ' + cleanURL(destination) : ''}`;
+      if (at) meta.point = { x: at.x, y: at.y, ...(scopeURL !== pageURL ? { frame: cleanURL(scopeURL) } : {}) };
       // Bind the resolved accessible name and destination too, so a changed button requires new approval.
       args._description = { name: info.name, href: info.href };
     } else {
@@ -410,18 +446,25 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     }
   } else if (method === 'press') {
     args.key = requiredString(params.key, 'key');
-    let submitName = '';
+    let submitName = '', scopeURL = pageURL;
     if (/^(enter|return)$/i.test(args.key)) {
       const info = await request('describe', { ...args, selector: ':focus' });
       if (!isRecord(info) || typeof info.submitName !== 'string') throw new Error('chrome.describe must return submitName');
       submitName = info.submitName;
       targetSelector = typeof info.selector === 'string' ? info.selector : ':focus';
-      const denied = checkClick(policy, hostOf(pageURL), submitName);
+      // Enter inside an embedded document submits that document's form, on its own site.
+      scopeURL = actingURL(info.frameUrl, pageURL);
+      const denied = strictest(checkClick(policy, hostOf(pageURL), submitName), checkClick(policy, hostOf(scopeURL), submitName));
       if (denied.outcome === 'deny') check = denied;
     }
-    if (check.outcome === 'allow') check = checkPress(policy, hostOf(pageURL), args.key, submitName);
-    check = checkRememberedSend(policy, pageURL, method, check, submitName);
-    check = grantCheck(check, { kind: 'press', name: submitName });
+    // A key's own rules apply on the tab and on the document that acts; neither can be escaped.
+    check = strictest(check, checkPress(policy, hostOf(pageURL), args.key, submitName));
+    if (scopeURL !== pageURL) {
+      check = strictest(check, checkPress(policy, hostOf(scopeURL), args.key, submitName));
+      check = strictest(check, checkNavigation(policy, navigationURL(scopeURL)));
+    }
+    check = checkRememberedSend(policy, scopeURL, method, check, submitName);
+    check = grantCheck(check, { kind: 'press', name: submitName }, scopeURL);
     detail = args.key; args._description = { submitName };
   } else if (method === 'goto') {
     args.url = navigationURL(params.url); detail = args.url; check = zoneNavigation(checkNavigation(policy, args.url), args.url, meta);
@@ -504,9 +547,10 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       ...(isRecord(result.offscreen) && typeof result.offscreen.above === 'number' && Number.isSafeInteger(result.offscreen.above) && result.offscreen.above >= 0
         && typeof result.offscreen.below === 'number' && Number.isSafeInteger(result.offscreen.below) && result.offscreen.below >= 0
         ? { offscreen: { above: result.offscreen.above, below: result.offscreen.below } } : {}),
-      ...(Array.isArray(result.frames) ? { frames: result.frames.filter((frame): frame is { frameId: number; url: string } =>
+      ...(Array.isArray(result.frames) ? { frames: result.frames.filter((frame): frame is { frameId: number; url: string; challenge?: boolean } =>
         isRecord(frame) && typeof frame.frameId === 'number' && Number.isSafeInteger(frame.frameId) && frame.frameId > 0
-        && typeof frame.url === 'string').map(frame => ({ frameId: frame.frameId, url: frame.url })) } : {}),
+        && typeof frame.url === 'string').map(frame => ({ frameId: frame.frameId, url: frame.url,
+          ...(frame.challenge === true ? { challenge: true } : {}) })) } : {}),
       text: wrap(pageURL, text), outline: wrap(pageURL, outline), length: text.length,
       truncated: result.truncated === true || result.text.length > TEXT_LIMIT || String(result.outline || '').length > TEXT_LIMIT } satisfies BrokerResults['look'];
   }
@@ -926,6 +970,7 @@ async function handle(input: unknown, conn: Socket) {
       url: cleanURL(meta.url), ...(meta.tabs ? { tabs: meta.tabs } : {}), ...(meta.upload ? { upload: meta.upload } : {}),
       ...(meta.grantId ? { grant: meta.grantId } : {}),
       ...(meta.zone ? { zone: meta.zone } : {}),
+      ...(meta.point ? { point: meta.point } : {}),
       ...(meta.reason ? { reason: meta.reason } : {}),
       // A decision from another device names who, which request and what was decided: never its signature or nonce.
       ...(meta.decision ? { approver: 'remote', kind: meta.decision.kind, verb: meta.decision.verb } : {}),

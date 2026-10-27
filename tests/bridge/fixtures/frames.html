@@ -4,18 +4,29 @@
 <title>Frames fixture</title>
 <style>
   body { margin: 0; font: 16px sans-serif; }
-  /* A banner across the middle of the button: the centre is obscured, the top and
-     bottom of the face stay reachable, which is the real cookie-banner case. */
+  /* A banner across the middle of the button and in front of it: its centre is obscured, the
+     top and bottom of the face stay reachable. This is the everyday cookie-banner case, and the
+     reason a click by point exists. */
   #covered { position: absolute; left: 0; top: 20px; width: 300px; height: 80px; }
   #banner { position: absolute; left: 0; top: 50px; width: 300px; height: 40px; background: #eee; }
-  #inner { position: absolute; left: 0; top: 160px; width: 400px; height: 240px; border: 3px solid #333; }
+  #ghosted { position: absolute; left: 0; top: 120px; width: 300px; height: 60px; }
+  /* A marker that takes no pointer events, laid over the middle of the button: a person clicks
+     straight through it, so nothing here is obscured at all. */
+  #ghost { position: absolute; left: 0; top: 135px; width: 300px; height: 30px; background: rgba(0, 0, 0, .08); pointer-events: none; }
+  #outer-field { position: absolute; left: 320px; top: 20px; width: 200px; }
+  #inner { position: absolute; left: 0; top: 200px; width: 700px; height: 500px; border: 3px solid #333; }
 </style>
-<button id="covered">Covered action</button>
+<button id="covered"><span>Covered action</span></button>
 <div id="banner">Cookie banner</div>
+<button id="ghosted"><span>Ghost action</span></button>
+<div id="ghost"></div>
+<input id="outer-field" aria-label="Outer field">
 <iframe id="inner" title="Inner app" src="about:blank"></iframe>
 <script>
   document.querySelector('#inner').src = new URLSearchParams(location.search).get('inner');
   Object.assign(window, { clicks: [] });
-  document.addEventListener('click', event => window.clicks.push({ target: event.target.id, trusted: event.isTrusted }), true);
+  // A click lands on the innermost element; the id of the control it belongs to is what matters.
+  const owner = event => (event.target.closest && event.target.closest('[id]') || event.target).id;
+  document.addEventListener('click', event => window.clicks.push({ target: owner(event), trusted: event.isTrusted }), true);
 </script>
 </html>

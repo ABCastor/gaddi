@@ -2,16 +2,27 @@
 <html lang="en">
 <meta charset="utf-8">
 <title>Inner app</title>
-<style>body { margin: 0; font: 14px sans-serif; }</style>
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  iframe { display: block; margin: 10px 0 0 20px; border: 2px solid #888; }
+</style>
 <h1 id="inner-heading">Inner heading</h1>
-<button id="inner-button">Inner action</button>
+<button id="inner-button"><span>Inner action</span></button>
 <input id="inner-field" aria-label="Inner field">
+<label id="quiz-label"><input type="radio" name="quiz" id="quiz-radio"> The windshield centre post reduces blind spots</label>
 <p id="inner-state"></p>
+<iframe id="challenge" width="420" height="140" title="Human check" src="about:blank"></iframe>
+<iframe id="nested" width="320" height="150" title="Nested app" src="about:blank"></iframe>
 <script>
   Object.assign(window, { events: [] });
-  const record = type => event => window.events.push({ type, target: event.target.id, key: event.key, trusted: event.isTrusted });
+  const params = new URLSearchParams(location.search);
+  // A click lands on the innermost element; the id of the control it belongs to is what matters.
+  const owner = event => (event.target.closest && event.target.closest('[id]') || event.target).id;
+  const record = type => event => window.events.push({ type, target: owner(event), key: event.key, trusted: event.isTrusted });
   document.addEventListener('click', record('click'), true);
   document.addEventListener('keydown', record('keydown'), true);
   document.addEventListener('input', record('input'), true);
+  document.querySelector('#challenge').src = params.get('challenge');
+  document.querySelector('#nested').src = params.get('nested');
 </script>
 </html>

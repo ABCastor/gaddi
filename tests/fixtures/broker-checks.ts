@@ -110,6 +110,17 @@ async function cli<M extends string>(method: M, ...args: string[]): Promise<Test
 const PNG = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=';
 const JPEG = fs.readFileSync(path.join(repo, 'tests/mcp/fixtures/pixel.jpg')).toString('base64');
 const pictureBox = { x: 1, y: 2, width: 4, height: 3 };
+// What a point lands on, one distinguishable case each. `choice` is what a radio's own words are;
+// `frameUrl` is the address of the embedded document that would act; `blind` is a document the
+// extension could not look inside.
+const POINTS: Record<string, { selector: string; name?: string; role?: string; tag?: string; choice?: boolean; blind?: boolean; frameUrl?: string }> = {
+  '120,240': { selector: '#pay' },
+  '10,10': { selector: '#quiz', name: 'The windshield centre post reduces blind spots', role: 'radio', tag: 'input', choice: true },
+  '11,11': { selector: '#del-choice', name: 'Delete', role: 'checkbox', tag: 'input', choice: true },
+  '12,12': { selector: '#frame-plain', name: 'Continue', frameUrl: 'https://pay.example/checkout' },
+  '13,13': { selector: '#blind', name: 'Embedded app', blind: true, frameUrl: 'https://blind.example/app' },
+  '14,14': { selector: '#frame-mail', name: 'Send', frameUrl: 'https://mail.google.com/mail/u/0' },
+};
 // Independent expected broker policy: callers cannot override the owner's choice.
 const defaultBrowser = { window: scenario === 'sessions' && mode !== 'own' ? 'shared' : 'own', show: 'attention' } as const;
 async function fakeBridge() {
@@ -163,13 +174,18 @@ async function fakeBridge() {
         case 'chrome.active': result = { ...tab }; if (control.switchActive) { tabs[0].active = false; tabs[1].active = true; } break;
         case 'chrome.describe': {
           // A click by point has no selector: the fake page says what that point lands on.
-          const s = msg.params.at ? '#pay' : msg.params.selector; assert.ok(typeof s === 'string');
+          const at = isRecord(msg.params.at) && typeof msg.params.at.x === 'number' && typeof msg.params.at.y === 'number'
+            ? POINTS[`${msg.params.at.x},${msg.params.at.y}`] : undefined;
+          const s: unknown = at ? at.selector : msg.params.selector; assert.ok(typeof s === 'string');
           const names: Record<string, string> = { '#pay': 'Procedi al pagamento', '#confirm': 'Confirm order', '#del': 'Delete', '#send': 'Send', '#plain': 'Read more' };
-          const description: ElementDescription = { name: control.describeName ?? (names[s] || (s.startsWith('a[href=') ? 'Pay' : 'Read more')),
-            tag: ['#password', '#current', '#sensitive'].includes(s) ? 'input' : 'button',
+          const description: ElementDescription & { role: string; password: boolean; disabled: boolean; choice: boolean;
+            frameId?: number; frameUrl?: string; blind?: boolean } = {
+            name: at?.name ?? control.describeName ?? (names[s] || (s.startsWith('a[href=') ? 'Pay' : 'Read more')),
+            tag: ['#password', '#current', '#sensitive'].includes(s) ? 'input' : at?.tag ?? 'button',
             type: s === '#password' ? 'password' : 'text', autocomplete: s === '#current' ? 'current-password' : '',
             href: control.describeHref ?? (s === '#checkout-link' ? '/checkout?token=PRIVATE_LINK_QUERY' : s === '#read-link' ? '/article?token=PRIVATE_LINK_QUERY' : ''), submitName: control.focusSubmit,
-            matched: s === '#sensitive' ? ['.sensitive'] : [] };
+            matched: s === '#sensitive' ? ['.sensitive'] : [], role: at?.role ?? 'button', password: false, disabled: false, choice: at?.choice === true,
+            ...(at?.frameUrl ? { frameId: 42, frameUrl: at.frameUrl } : {}), ...(at?.blind ? { blind: true } : {}) };
           if (control.omitHref) delete description.href;
           if (control.omitSubmit) delete description.submitName;
           if (control.omitMatched) delete description.matched;
@@ -300,6 +316,30 @@ async function clickVerbs(c: Client, b: Bridge) {
       `ASSERT_POINT_SHAPE: ${JSON.stringify(at)} never reaches the page`);
   }
   pass('point-click-shape-refused-before-any-chrome-call');
+  // What a point lands on decides the gate. A quiz radio's own words are prose about the answer:
+  // the word "post" inside that sentence is not an action, and a held card there is a false alarm.
+  await result(c, 'click', { tab: 7, at: { x: 10, y: 10 } });
+  const quizCall = b.calls.findLast(call => call.method === 'chrome.click');
+  assert.deepEqual(quizCall?.params.at, { x: 10, y: 10 }, 'the point is forwarded unchanged');
+  assert.equal(quizCall?.params.checkedDescription?.name, 'The windshield centre post reduces blind spots');
+  const audited = JSON.parse(fs.readFileSync(path.join(home, 'audit.jsonl'), 'utf8').trim().split('\n').at(-1)!);
+  assert.deepEqual(audited.point, { x: 10, y: 10 }, 'ASSERT_POINT_AUDIT: the audit records the point it clicked');
+  assert.equal(audited.method, 'click');
+  pass('choice-prose-is-not-an-action-and-the-point-is-audited');
+  // A choice whose name IS the action still asks: "Delete" on a checkbox is a deletion.
+  await rejected(c, 'click', { tab: 7, at: { x: 11, y: 11 } }, 'held');
+  pass('a-choice-named-as-an-action-is-still-held');
+  // An embedded document judges its own address: a harmless name inside a checkout page is held.
+  const frameful = await rejected(c, 'click', { tab: 7, at: { x: 12, y: 12 } }, 'held');
+  assert.match(frameful.message, /checkout/, 'the hold names the embedded address the owner is judging');
+  pass('a-click-inside-an-embedded-page-is-judged-on-that-page');
+  // A document the extension cannot look inside has no name to judge, so the owner decides.
+  const blind = await rejected(c, 'click', { tab: 7, at: { x: 13, y: 13 } }, 'held');
+  assert.match(blind.message, /cannot inspect/, 'a blind click says why it needs the owner');
+  pass('a-document-the-extension-cannot-inspect-needs-the-owner');
+  // And a refused host wins even when the click happens inside an embed: Gmail still refuses Send.
+  await rejected(c, 'click', { tab: 7, at: { x: 14, y: 14 } }, 'denied');
+  pass('a-refused-host-inside-an-embedded-page-still-denies');
   await rejected(c, 'click', { tab: 8, selector: '#send' }, 'denied');
   for (const key of ['Meta+Enter', 'Control+Enter', 'Meta+Return']) await rejected(c, 'press', { tab: 8, key }, 'held');
   b.control.focusSubmit = 'Pay now';

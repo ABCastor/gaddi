@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Nested app</title>
+<style>body { margin: 0; font: 13px sans-serif; }</style>
+<h2 id="nested-heading">Nested heading</h2>
+<button id="nested-button">Nested action</button>
+<input id="nested-field" aria-label="Nested field">
+<script>
+  Object.assign(window, { events: [] });
+  const record = type => event => window.events.push({ type, target: event.target.id, trusted: event.isTrusted });
+  document.addEventListener('click', record('click'), true);
+  document.addEventListener('input', record('input'), true);
+</script>
+</html>

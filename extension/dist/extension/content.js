@@ -110,9 +110,11 @@ export async function pageTask(action, params = {}) {
             }
             if (el.tagName === 'TEXTAREA' || el.tagName === 'SELECT' || el.isContentEditable)
                 return clean(el.getAttribute('title') || el.getAttribute('placeholder'));
-            // Include descendant image alternatives, but never read a form value as a name.
+            // Include descendant image alternatives, but never read a form value as a name. A form control
+            // inside the element carries this element's own text in its labels, so counting it again would
+            // say a label's words twice (and a gate would read the same prose twice).
             const content = [...el.childNodes].map(node => node.nodeType === Node.TEXT_NODE ? node.textContent
-                : node.nodeType === Node.ELEMENT_NODE && !node.matches('script, style, [aria-hidden="true"]') ? nameOf(node, seen) : '').join(' ');
+                : node.nodeType === Node.ELEMENT_NODE && !node.matches('script, style, [aria-hidden="true"], input, select, textarea') ? nameOf(node, seen) : '').join(' ');
             return clean(content || el.getAttribute('title'));
         }
         function roleOf(el) {
@@ -234,7 +236,20 @@ export async function pageTask(action, params = {}) {
             return { selector: selectorFor(el), tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || (typeof el.type === 'string' ? el.type : ''),
                 autocomplete: el.getAttribute('autocomplete') || '', role: roleOf(el), name: accessibleName(interactive),
                 href: interactive.closest('a[href]')?.href || '', submitName: activationTarget ? nameOf(activationTarget) : '',
-                password: isPassword(el), disabled: el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true' };
+                password: isPassword(el), disabled: el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true',
+                choice: isChoice(el, interactive) };
+        }
+        // A click that toggles a choice performs nothing: the words of a checkbox, a radio, an
+        // option or the label of one describe what is being chosen, not what the page will do.
+        // A gate that reads an action verb out of that prose asks the owner about an answer.
+        function isChoice(el, interactive) {
+            for (const node of [interactive, el]) {
+                const label = (node.tagName === 'LABEL' ? node : node.closest('label'));
+                const control = label?.control;
+                if (control && control.tagName === 'INPUT' && ['checkbox', 'radio'].includes((control.type || '').toLowerCase()))
+                    return true;
+            }
+            return ['checkbox', 'radio', 'option', 'switch'].includes(roleOf(interactive));
         }
         function activeElement() {
             let el = document.activeElement;
@@ -778,36 +793,56 @@ export async function pageTask(action, params = {}) {
             // A top-frame script cannot validate the actual keyboard target inside an
             // embedded document. Refuse instead of sending unchecked text to that frame.
             if (el && ['IFRAME', 'FRAME', 'OBJECT', 'EMBED'].includes(el.tagName))
-                throw new Error('Refusing keyboard input into an uninspected embedded document');
+                throw new Error('Refusing keyboard input into an uninspected embedded document: '
+                    + 'look lists every document with its frame id, then press with frameId (--frame <id>) so that document itself is checked');
             if (el && isPassword(el))
                 throw new Error('Refusing keyboard input into a password field');
             if (params.checkedDescription)
                 checkDescription(el || document.body, true);
             return { signature: signature() };
         }
-        if (action === 'describe' && params.at) {
-            // A point click is gated on what the owner would be clicking: the element under
-            // that point. An embedded document is named by its title and its own address, so
-            // the gate sees a cross-origin frame as the destination it is.
-            const hit = pointElement(params.at);
+        // Whether this document handed its focus to an embedded one. Keys follow the focus, so a
+        // press aimed inside a frame is delivered there only while that frame holds it.
+        if (action === 'pressFocus') {
+            const el = activeElement();
+            return { embedded: !!el && ['IFRAME', 'FRAME', 'OBJECT', 'EMBED'].includes(el.tagName) };
+        }
+        // The visible part of this document, so a point measured elsewhere can be held to it.
+        if (action === 'viewport')
+            return { width: innerWidth, height: innerHeight };
+        if (action === 'pointTarget') {
+            // What the owner would be clicking at that point, in this document. When it is an
+            // embedded document, its content box lets bg.ts follow the same point into it, so the
+            // gate judges the control inside rather than the frame around it.
+            const at = params.at;
+            if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.y))
+                throw new Error('A point is required');
+            const hit = pointElement(at);
             if (!hit)
                 throw new Error('Nothing is at that point');
             const described = describe(hit);
-            const frame = ['IFRAME', 'FRAME'].includes(hit.tagName) ? hit.src : '';
-            return { ...described, href: frame || described.href, matched: [] };
-        }
-        if (params.at && (action === 'clickPoint' || action === 'clickCheck' || action === 'hoverPoint')) {
-            // Invariant: a click by point still re-checks the element the gate named, so a
-            // page cannot swap what sits under that point between the check and the press.
-            const hit = pointElement(params.at);
-            if (!hit)
-                throw new Error('Nothing is at that point');
-            const before = action === 'clickCheck' ? '' : signature();
-            if (action !== 'hoverPoint')
-                checkDescription(hit);
-            if (action === 'clickCheck')
-                return { x: params.at.x, y: params.at.y };
-            return { x: params.at.x, y: params.at.y, signature: before };
+            const frame = ['IFRAME', 'FRAME'].includes(hit.tagName);
+            const source = frame ? hit.src : '';
+            let frameUrl = '';
+            try {
+                frameUrl = source ? new URL(source, location.href).href : '';
+            }
+            catch { /* A frame with no readable address is named by its box alone. */ }
+            const rect = hit.getBoundingClientRect(), style = getComputedStyle(hit);
+            const left = (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.paddingLeft) || 0);
+            const top = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.paddingTop) || 0);
+            // The hit and its ancestors, so a caller can tell "the control I measured" from "something
+            // else now sitting at that point"; document references keep this check inside one document.
+            const chain = [];
+            for (let node = hit; node && chain.length < 80; node = node.parentElement || node.getRootNode().host || null) {
+                chain.push(selectorFor(node));
+            }
+            return { selector: described.selector, name: described.name, tag: described.tag, role: described.role,
+                choice: described.choice === true, href: described.href, type: described.type, autocomplete: described.autocomplete,
+                submitName: described.submitName, secret: described.password, disabled: described.disabled,
+                signature: signature(), chain, frame, frameUrl, x: rect.left + left, y: rect.top + top,
+                width: Math.max(0, rect.width - left - (parseFloat(style.borderRightWidth) || 0) - (parseFloat(style.paddingRight) || 0)),
+                height: Math.max(0, rect.height - top - (parseFloat(style.borderBottomWidth) || 0) - (parseFloat(style.paddingBottom) || 0)) };
         }
         const el = resolve(params.selector);
         // Whether a type whose session Chrome cut mid-insert left the field holding the text.
@@ -897,7 +932,7 @@ export async function pageTask(action, params = {}) {
                 throw new Error('Element centre is obscured');
             // Baseline after any preparatory scroll, so only the wheel counts as change.
             const scroller = scrollerFor(el, params.dx ? 'x' : 'y');
-            return { ...point, signature: signature(), scroller: selectorFor(scroller),
+            return { ...point, signature: signature(), selector: selectorFor(el), scroller: selectorFor(scroller),
                 left: scroller.scrollLeft, top: scroller.scrollTop };
         }
         if (action === 'upload') {
@@ -1048,7 +1083,9 @@ export async function pageTask(action, params = {}) {
         if (action === 'clickPoint' || action === 'clickCheck' || action === 'hoverPoint') {
             if (!visible(el) || action !== 'hoverPoint' && (el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true'))
                 throw new Error('Element is not interactable');
-            el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });
+            // Inside an embedded document, scroll only when the control is really out of view: scrolling
+            // also moves the page around the frame, which would shift the point measured for the tab.
+            el.scrollIntoView({ block: params.frameId === undefined ? 'center' : 'nearest', inline: 'center', behavior: 'instant' });
             const before = action === 'clickCheck' ? '' : signature();
             const point = centrePoint(el);
             if (!point)
@@ -1058,7 +1095,7 @@ export async function pageTask(action, params = {}) {
                 checkDescription(el);
             if (action === 'clickCheck')
                 return { x, y };
-            return { x, y, signature: before };
+            return { x, y, selector: selectorFor(el), signature: before };
         }
         throw new Error('Unknown page operation');
     }

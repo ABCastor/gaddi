@@ -49,7 +49,7 @@ const sock = path.join(os.tmpdir(), `gaddi-bridge-extension-${process.pid}.sock`
 const hostName = 'com.abcastor.gaddi.bridge.test';
 const daemon = new FakeDaemon(sock);
 const call = callsFor(daemon);
-let backgroundGuard: ReturnType<typeof watchHeadless> | undefined, context: BrowserContext | undefined, singleClientChrome: ChildProcess | undefined, singleClientExit: Promise<unknown> | undefined, server: http.Server | undefined, innerServer: http.Server | undefined, passed = 0, stalled = 0, blocked = 0;
+let backgroundGuard: ReturnType<typeof watchHeadless> | undefined, context: BrowserContext | undefined, singleClientChrome: ChildProcess | undefined, singleClientExit: Promise<unknown> | undefined, server: http.Server | undefined, innerServer: http.Server | undefined, farServer: http.Server | undefined, passed = 0, stalled = 0, blocked = 0;
 const fixtureTimers = new Set<ReturnType<typeof setTimeout>>();
 const pass = (label: string) => { passed++; console.log(`PASS ${label}`); };
 const restartOnly = process.env.GADDI_BRIDGE_RESTART_ONLY === '1';
@@ -99,12 +99,18 @@ try {
     assert.ok(source.includes('/* WAIT_CHECK_TEST_POINT */'));
     fs.writeFileSync(contentFile, source.replace('/* WAIT_CHECK_TEST_POINT */', 'return false;'));
   }
+  if (process.env.GADDI_BRIDGE_BREAK_CHOICE === '1') {
+    const source = fs.readFileSync(contentFile, 'utf8');
+    const marker = 'function isChoice(el, interactive) {';
+    assert.ok(source.includes(marker), 'choice mutation point exists');
+    fs.writeFileSync(contentFile, source.replace(marker, `${marker} return false;`));
+  }
   if (process.env.GADDI_BRIDGE_BREAK_PRE_SCROLL_SIGNATURE === '1') {
     const source = fs.readFileSync(contentFile, 'utf8');
-    const order = "el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });\n            const before = action === 'clickCheck' ? '' : signature();";
+    const order = "            el.scrollIntoView({ block: params.frameId === undefined ? 'center' : 'nearest', inline: 'center', behavior: 'instant' });\n            const before = action === 'clickCheck' ? '' : signature();";
     assert.ok(source.includes(order), 'pre-scroll mutation point exists');
     fs.writeFileSync(contentFile, source.replace(order,
-      "const before = action === 'clickCheck' ? '' : signature();\n            el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' });"));
+      "            const before = action === 'clickCheck' ? '' : signature();\n            el.scrollIntoView({ block: params.frameId === undefined ? 'center' : 'nearest', inline: 'center', behavior: 'instant' });"));
   }
   const bg = path.join(extension, 'dist/extension/bg.js');
   fs.writeFileSync(bg, fs.readFileSync(bg, 'utf8').replace("const NATIVE_HOST = 'com.abcastor.gaddi.bridge';", `const NATIVE_HOST = '${hostName}';`));
@@ -224,22 +230,37 @@ try {
       fixtureTimers.add(timer);
       return;
     }
-    const filename = req.url?.split(/[?#]/)[0] === '/autonomy.html' ? 'autonomy.html' : req.url?.split(/[?#]/)[0] === '/foreign.html' ? 'foreign.html' : req.url === '/upload.html' ? 'upload.html' : req.url === '/version.html' ? 'version.html' : req.url === '/approval.html' ? 'approval.html' : req.url === '/state.html' ? 'state.html' : req.url === '/actions.html' ? 'actions.html' : req.url === '/hscroll.html' ? 'hscroll.html' : req.url?.split(/[?#]/)[0] === '/frames.html' ? 'frames.html' : req.url === '/input.html' ? 'input.html' : req.url === '/busy.html' ? 'busy.html' : req.url === '/bands.html' ? 'bands.html' : req.url?.split('?')[0] === '/next.html' ? 'next.html' : req.url === '/' ? 'index.html' : null;
+    const file = (req.url?.split(/[?#]/)[0] || '').replace(/^\//, '');
+    const filename = ['autonomy.html', 'foreign.html', 'upload.html', 'version.html', 'approval.html', 'state.html', 'actions.html', 'hscroll.html', 'frames.html', 'input.html', 'busy.html', 'bands.html', 'next.html'].includes(file)
+      ? file : req.url === '/' ? 'index.html' : null;
     if (!filename) { res.writeHead(404); res.end(); return; }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(fs.readFileSync(path.join(fixtures, filename)));
   });
   await new Promise<void>(resolve => server!.listen(0, '127.0.0.1', resolve));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
-  // The embedded document comes from a second origin (localhost against 127.0.0.1),
-  // so the frame is cross-origin exactly as a third-party embed is.
+  // Embedded documents come from two further origins (localhost, and a second port on
+  // 127.0.0.1), so each frame is cross-origin exactly as a third-party embed is.
   innerServer = http.createServer((req, res) => {
     if (req.url?.split(/[?#]/)[0] !== '/iframe.html') { res.writeHead(404); res.end(); return; }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(fs.readFileSync(path.join(fixtures, 'iframe.html')));
   });
   await new Promise<void>(resolve => innerServer!.listen(0, '127.0.0.1', resolve));
-  const inner = `http://localhost:${(innerServer.address() as AddressInfo).port}/iframe.html`;
+  const innerBase = `http://localhost:${(innerServer.address() as AddressInfo).port}`;
+  // A verification widget lives on its own origin under a provider-shaped path, and the
+  // nested document too, so the point has to cross two documents to reach either.
+  farServer = http.createServer((req, res) => {
+    const route = req.url?.split(/[?#]/)[0];
+    const name = route === '/vendor/recaptcha/anchor' ? 'recaptcha.html' : route === '/nested.html' ? 'nested.html' : null;
+    if (!name) { res.writeHead(404); res.end(); return; }
+    res.setHeader('Content-Type', 'text/html; charset=utf-8');
+    res.end(fs.readFileSync(path.join(fixtures, name)));
+  });
+  await new Promise<void>(resolve => farServer!.listen(0, '127.0.0.1', resolve));
+  const farBase = `http://127.0.0.1:${(farServer.address() as AddressInfo).port}`;
+  const inner = `${innerBase}/iframe.html?challenge=${encodeURIComponent(`${farBase}/vendor/recaptcha/anchor`)}`
+    + `&nested=${encodeURIComponent(`${farBase}/nested.html`)}`;
   const launchOptions = {
     executablePath, headless: true, chromiumSandbox: true,
     viewport: { width: 1000, height: 760 },
@@ -735,7 +756,9 @@ try {
   await daemon.stop();
   for (const timer of fixtureTimers) clearTimeout(timer);
   if (server) { server.closeAllConnections(); await new Promise<void>(resolve => server!.close(() => resolve())); }
-  if (innerServer) { innerServer.closeAllConnections(); await new Promise<void>(resolve => innerServer!.close(() => resolve())); }
+  for (const closing of [innerServer, farServer]) if (closing) {
+    closing.closeAllConnections(); await new Promise<void>(resolve => closing!.close(() => resolve()));
+  }
   fs.rmSync(state, { recursive: true, force: true }); // Disposable profile and test host registration only.
   try { fs.rmdirSync(root); } catch { /* Another test owns a sibling run. */ }
 }

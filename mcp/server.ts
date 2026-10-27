@@ -1,5 +1,5 @@
 import type { BrokerParams, BrokerResult, BrokerRequest } from '../shared/protocol.ts';
-import { errorMessage, isRecord, versionParam, WHEEL_LIMIT } from '../shared/protocol.ts';
+import { errorMessage, isRecord, versionParam, WHEEL_LIMIT, POINT_LIMIT } from '../shared/protocol.ts';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 // Stdio adapter for the tab broker. All authorization stays in the broker and approval app.
 import net from 'node:net';
@@ -41,7 +41,7 @@ let currentContext = DEFAULT_CONTEXT;
 function rpc<M extends string>(method: M, params: BrokerParams = {}): Promise<BrokerResult<M>> {
   return socketRequest(SOCK, { id: crypto.randomUUID(), method, params: { context: currentContext, ...params, caller: HARNESS, session: SESSION } }, RPC_TIMEOUT_MS);
 }
-interface Field { type: string; description?: string; minimum?: number; maximum?: number; exclusiveMinimum?: number; enum?: string[]; items?: Field; minItems?: number; maxItems?: number; maxLength?: number; pattern?: string }
+interface Field { type: string; description?: string; minimum?: number; maximum?: number; exclusiveMinimum?: number; enum?: string[]; items?: Field; minItems?: number; maxItems?: number; maxLength?: number; pattern?: string; properties?: Record<string, Field>; required?: string[] }
 interface ToolDefinition extends Tool {
   inputSchema: { type: 'object'; properties: Record<string, Field>; required: string[]; additionalProperties: false };
   run: (args: BrokerParams) => Promise<CallToolResult>;
@@ -56,7 +56,10 @@ const approval = S;
 const why = S;
 const wheel = { type: 'number', minimum: -WHEEL_LIMIT, maximum: WHEEL_LIMIT };
 // A document inside the tab, as look lists it: actions then resolve inside that page.
-const frameId = { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: 'Frame id from look, for a cross-origin iframe.' };
+const frameId = { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: 'Frame id from look: act inside that document.' };
+// A point the agent saw, in the tab's own viewport: what a screenshot shows.
+const at: Field = { type: 'object', description: 'Point x,y in the tab viewport.',
+  properties: { x: { type: 'number', minimum: 0, maximum: POINT_LIMIT }, y: { type: 'number', minimum: 0, maximum: POINT_LIMIT } }, required: ['x', 'y'] };
 const obj = (properties: Record<string, Field>, required: string[] = []): ToolDefinition['inputSchema'] => ({ type: 'object', properties, required, additionalProperties: false });
 const tool = <M extends string>(name: string, description: string, properties: Record<string, Field> = {}, required: string[] = [], method: M = name as M, format: (result: BrokerResult<M>) => CallToolResult | Promise<CallToolResult> = plainResult): ToolDefinition => ({
   name: 'browser_' + name, description, inputSchema: obj(properties, required),
@@ -73,7 +76,7 @@ const TOOLS: ToolDefinition[] = [
     return pageResult('Chrome bookmarks', lines.length > 20000 ? lines.slice(0, 20000 - note.length) + note : lines);
   }),
   tool('wait', 'Wait for one of text, visible selector/ref, or URL substring; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 } }, [], 'wait', pageJSON),
-  tool('look', 'Read text and refs, including floating menus/suggestions; click their refs. visible:true is viewport only. Lists the frames in the tab.', { tab, visible: B, frameId }, [], 'look',
+  tool('look', 'Read text and refs, incl floating menus/suggestions; click refs. visible:true is viewport only. Lists frames.', { tab, visible: B, frameId }, [], 'look',
     result => result?.note ? plainResult(result.note) : pageJSON(result)),
   {
     name: 'browser_read', description: 'Extract readable markdown from a tab or a URL in a temporary tab.',
@@ -83,10 +86,10 @@ const TOOLS: ToolDefinition[] = [
   tool('open', 'Open a background URL in Gaddi\'s window; foreground:true selects it.', { url: S, group: S, foreground: B, approval, why }, ['url'], 'open', pageJSON),
   tool('goto', 'Navigate a tab to a URL.', { tab, url: S, approval, why }, ['url'], 'goto', pageJSON),
   tool('back', 'Go back in a tab.', { tab }, [], 'back', pageJSON),
-  tool('click', 'Click a CSS selector, or viewport coordinates with at:{x,y} (through a banner, or inside a frame). One-way actions may be held. Reports changed:true/false.', { tab, version, selector: S, at: { type: 'object', description: 'Viewport point: {x,y} in CSS pixels.' }, frameId, approval, why }),
+  tool('click', 'Click a selector, or at:{x,y} in the tab (a covered button, an embedded page). One-way actions may be held.', { tab, version, selector: S, at, frameId, approval, why }),
   tool('type', 'Replace text by default; mode:append adds at the end, preserving chips/mentions. Passwords denied.', { tab, version, selector: S, text: S, mode: { ...S, enum: ['replace', 'append'] }, frameId }, ['selector', 'text']),
   tool('signin', 'Sign in with 1Password; secrets stay hidden. Default needs_you holds for Touch ID.', { tab, item: S, approval, why }),
-  tool('press', 'Press a key in a tab, or inside a frame named by frameId. Reports changed:true/false.', { tab, version, key: S, frameId, approval, why }, ['key']),
+  tool('press', 'Press a key; with frameId, inside that document once it holds the focus. Reports changed:true/false.', { tab, version, key: S, frameId, approval, why }, ['key']),
   tool('hover', 'Hover over a CSS selector. Reports changed:true/false.', { tab, version, selector: S, frameId }, ['selector']),
   tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector. Reports changed:true/false.', { tab, version, dx: wheel, dy: wheel, selector: S }),
   tool('select', 'Select an option by value. Reports changed:true/false.', { tab, version, selector: S, value: S }, ['selector', 'value']),

@@ -18,7 +18,7 @@ export interface ChromeResults {
   'chrome.close': { closed: number[]; failed: { tab: number; reason: string }[] };
   'chrome.bookmarks': { bookmarks: { path: string; title: string; url: string }[] };
   'chrome.describe': Required<ElementDescription> & { role: string; password: boolean; disabled: boolean };
-  'chrome.read': { tab: number; url: string; text: string; outline: string; version?: string; scroll: { y: number; height: number }; note?: string; frames?: { frameId: number; url: string }[] };
+  'chrome.read': { tab: number; url: string; text: string; outline: string; version?: string; scroll: { y: number; height: number }; note?: string; frames?: { frameId: number; url: string; challenge?: boolean }[] };
   'chrome.html': { html: string; truncated: boolean };
   'chrome.screenshot': { data: string; mimeType: string };
   'chrome.eval': { value: unknown };

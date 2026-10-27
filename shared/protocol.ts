@@ -14,8 +14,10 @@ export interface ChromeParams {
   _description?: { name?: string; href?: string; submitName?: string };
   checkedDescription?: { name?: string; href?: string; submitName?: string };
   visible?: boolean; settleMs?: number; gone?: boolean; timeout?: number;
-  // A point in the viewport, for a click where a selector cannot be trusted to land
-  // (a banner over the middle) or cannot be written (inside another origin's page).
+  // A point in the tab's own viewport, as a screenshot shows it: the place a person
+  // would click. Used where a selector cannot be trusted to land (a banner over the
+  // middle) or cannot be written (inside another origin's page). It is never translated
+  // into a frame's coordinates; the extension resolves which document it falls in.
   at?: { x: number; y: number };
   // The document inside a tab to act on: 0 is the tab itself, any other id comes from
   // `look`, which lists every document the extension can reach.
@@ -73,9 +75,27 @@ export interface TabInfo { id?: number; tabId?: number; tab?: number; url?: stri
 export interface ElementDescription {
   name?: string; tag?: string; type?: string; autocomplete?: string;
   href?: string; submitName?: string; matched?: string[]; selector?: string;
+  // True when the click toggles a choice (a checkbox, a radio, an option, or the label of
+  // one) instead of performing an action. A choice's words describe what is being chosen,
+  // so a gate must not read an action verb out of that prose (policy.ts:checkClick).
+  choice?: boolean;
+}
+// What a point lands on, measured inside one document. `frame`/`x`/`y`/`width`/`height`
+// describe an embedded document's content box, which is how the point is followed into it.
+export interface PointTarget {
+  selector: string; name: string; tag: string; role: string; choice: boolean; href: string;
+  type: string; autocomplete: string; submitName: string; secret: boolean; disabled: boolean;
+  signature: string;
+  // The point's element and its ancestors, as document references: a caller can tell whether the
+  // point is the control it measured or sits inside it (an icon inside a button).
+  chain: string[];
+  frame: boolean; frameUrl: string; x: number; y: number; width: number; height: number;
 }
 // Results of the extension's serialized page function, keyed by the requested action.
-export interface FrameInfo { frameId: number; url: string }
+// A document listed by `look`, so an agent can act inside it by name. `challenge` marks a
+// human-verification widget's own frame: never a hint to solve it, only the place to press
+// as a person would, or the moment to hand the page back to the owner.
+export interface FrameInfo { frameId: number; url: string; challenge?: boolean }
 export interface ScrollOffset { left: number; top: number }
 export interface ImageBox { x: number; y: number; width: number; height: number }
 export interface ApprovalCapture { data: string; mimeType: string; width: number; height: number; box: ImageBox }
@@ -91,7 +111,11 @@ export interface PageResults {
   wait: { met: boolean };
   captureBox: { box: ImageBox; clip: ImageBox; pixelRatio: number; selector: string; beyondViewport: boolean };
   animationSpeed: { animationSpeed: number | undefined };
-  describe: Required<ElementDescription> & { role: string; password: boolean; disabled: boolean };
+  describe: Required<ElementDescription> & { role: string; password: boolean; disabled: boolean;
+    frameId?: number; frameUrl?: string; blind?: boolean };
+  // What a point lands on inside one document: the gate's facts, plus the embedded
+  // document's content box when the point falls on a frame (bg.ts follows it inwards).
+  pointTarget: PointTarget;
   read: { text: string; outline: string; version?: string; offscreen?: { above: number; below: number }; scroll: { y: number; height: number }; frames?: FrameInfo[] };
   html: { html: string; truncated: boolean };
   evalCheck: Record<string, never>;
@@ -105,9 +129,15 @@ export interface PageResults {
   typeCheck: PageResults['typeFocus'];
   typeCleanup: Record<string, never>;
   typeLanded: { landed: boolean };
-  clickPoint: PageResults['snapshot'] & { x: number; y: number };
+  // The point a trusted click would use and the document reference it was measured from, so a
+  // frame-targeted click can prove the composed point still holds that very element.
+  clickPoint: PageResults['snapshot'] & { x: number; y: number; selector: string };
+  // Whether the tab's own document handed the focus to an embedded one.
+  pressFocus: { embedded: boolean };
+  // The visible part of a document, in CSS pixels.
+  viewport: { width: number; height: number };
   // The scroller is a page reference to the nearest element that can take the wheel on the requested axis.
-  scrollPoint: PageResults['clickPoint'] & { scroller: string } & ScrollOffset;
+  scrollPoint: PageResults['snapshot'] & { x: number; y: number; selector: string; scroller: string } & ScrollOffset;
   scrollPosition: ScrollOffset;
   clickCheck: { x: number; y: number };
   upload: PageResults['snapshot'] & { via: 'input' | 'drop' };
@@ -117,7 +147,8 @@ export interface PageResults {
 export type PageResult = { __gaddiError?: string; __gaddiCode?: string } & Partial<PageResults['animationSpeed']
   & Omit<PageResults['describe'], 'password'> & PageResults['read'] & PageResults['html']
   & PageResults['wait'] & PageResults['captureBox'] & PageResults['scroll'] & PageResults['select'] & PageResults['clickPoint'] & PageResults['scrollPoint'] & PageResults['typeFocus'] & PageResults['settle']
-  & PageResults['closeForeignFrames'] & PageResults['typeLanded'] & PageResults['upload'] & Omit<SigninProbe, 'password'> & { password: boolean | string }>;
+  & PageResults['closeForeignFrames'] & PageResults['typeLanded'] & PageResults['upload'] & PageResults['pointTarget'] & PageResults['pressFocus'] & PageResults['viewport']
+  & Omit<SigninProbe, 'password'> & { password: boolean | string }>;
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -137,6 +168,11 @@ export function isTabInfo(value: unknown): value is TabInfo {
 
 export interface HTMLPage { tab: number; url: string; html: string; truncated?: boolean }
 export interface TextPage { tab: number; url: string; text: string; version?: string; note?: string; outline?: string; offscreen?: { above: number; below: number }; title?: unknown; untrusted?: boolean; length?: number; truncated?: boolean; scroll?: { y: number; height: number }; frames?: FrameInfo[] }
+// Where a click by point landed and what the gates judge: the deepest element under the
+// point, and the embedded document holding it when there is one.
+export interface PointDescription extends Required<ElementDescription> {
+  role: string; password: boolean; disabled: boolean; frameId?: number; frameUrl?: string; blind?: boolean;
+}
 interface InputResult { tab: number; url: string; changed: boolean; version?: string; navigating?: boolean; note?: string }
 export interface CloseResult { closed: number[]; failed: { tab: number; reason: string }[] }
 interface BookmarkInfo { path: string; title: string; url: string }

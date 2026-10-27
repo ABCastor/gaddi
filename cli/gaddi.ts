@@ -21,10 +21,12 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] [--why <purp
   tabs | bookmarks [query] | look [tab] [--visible] | read [tab|url] | html [tab] | screenshot [tab] [--full-page]
   open <url> [--foreground] [--group <task>] | goto [tab] <url> | back [tab]
   close <id> [id...] | show <id> | group <task> <id> [id...]
-  click [tab] <selector> | click [tab] --at x,y  (a point in the window; goes through banners and into frames)
+  click [tab] <selector> | click [tab] --at x,y  (the point a screenshot shows, in the tab's own viewport;
+      trusted input on what is really there, through a banner and inside an embedded page)
   type [tab] <selector> <text> [--mode replace|append]
   press [tab] <key> | select [tab] <selector> <value> | upload [tab] <selector> <path>
-  --frame <id> with look, click, type, press or hover works inside a frame id that look listed
+  --frame <id> with look, click, type, press or hover acts inside a document look listed; keys there need
+      that document to hold the focus. --at and --frame are alternatives, never both.
   scroll [tab] <dy|selector> [--dx N] [--dy N]  (wheel pixels; with a selector the wheel goes over that element)
   wait [tab] <JSON options>
   signin [tab] [--item <title-or-id>]
@@ -79,6 +81,7 @@ for (let i = 0; i < argv.length; i++) {
 const cmd = args.shift() ?? '';
 if (mode && cmd !== 'type') die('--mode is only supported for type', 2);
 if (at && cmd !== 'click') die('--at applies only to click', 2);
+if (at && frame !== undefined) die('--at is a point in the tab, so it takes no --frame', 2);
 if (frame !== undefined && !['look', 'click', 'type', 'press', 'hover'].includes(cmd)) die('--frame applies only to look, click, type, press or hover', 2);
 if ((wheel.dx !== undefined || wheel.dy !== undefined) && cmd !== 'scroll') die('--dx and --dy are only supported for scroll', 2);
 if (cmd === 'approve') {

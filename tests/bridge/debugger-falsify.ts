@@ -24,7 +24,7 @@ const mutations = [
   // Another extension's frame: each guard of its removal and retry, broken alone.
   ['ASSERT_FOREIGN_NO_REPLAY', 'throw foreignFrameError(delivered);', 'throw foreignFrameError(false);'],
   ['ASSERT_FOREIGN_RETRY_UNSENT', 'return withDebugger(tab, fn, scope.check, retryInput, route); });', 'throw error; });'],
-  ['ASSERT_FOREIGN_TYPE_LANDED', "{ selector: target.selector, text: target.expectedText ?? params.text }, check)).landed) throw error;", "{ selector: target.selector, text: target.expectedText ?? params.text }, check)).landed || true) throw error;"],
+  ['ASSERT_FOREIGN_TYPE_LANDED', "{ ...frame, selector: target.selector, text: target.expectedText ?? params.text }, check)).landed) throw error;", "{ ...frame, selector: target.selector, text: target.expectedText ?? params.text }, check)).landed || true) throw error;"],
   ['ASSERT_FOREIGN_CLICK_HANDED', 'if (!handed || !isForeignFrameError(error)) throw error;', 'throw error;'],
   ['ASSERT_FOREIGN_TYPE_RETRY_NO_FOCUS', '}, true, false).catch(async error => {\n        // A menu that opens on the typed text', '}, true, true).catch(async error => {\n        // A menu that opens on the typed text'],
   ['ASSERT_FOREIGN_MOVE_RETRY', "&& !(method === 'Input.dispatchMouseEvent' && (params as { type?: string } | undefined)?.type === 'mouseMoved')", ''],

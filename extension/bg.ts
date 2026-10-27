@@ -288,52 +288,167 @@ async function onPage<A extends keyof PageResults>(tab: number, action: A, param
 }
 // Every document in the tab that the extension may act on. A cross-origin embed is
 // unreachable from the page's own script but not from the extension, which holds
-// host permissions; frameId 0 is the tab itself and is left out of the list.
+// host permissions; frameId 0 is the tab itself and is left out of the list. A frame that
+// shows a human-verification widget is named as one: pressing its checkbox is a person's
+// own click, and nothing here answers a challenge. (The sign-in probe has its own, separate
+// text scan for the same widgets: content.ts:signinChallenge.)
+const VERIFICATION = /(?:recaptcha|hcaptcha|turnstile|arkoselabs|funcaptcha|geetest|datadome|perimeterx)/i;
+// Only the address of the document itself counts: a query string that merely mentions a widget
+// must not make an ordinary page look like a challenge.
+function verificationFrame(url: string) {
+  try { const parsed = new URL(url); return VERIFICATION.test(parsed.hostname + parsed.pathname); } catch { return false; }
+}
 async function tabFrames(tab: number): Promise<FrameInfo[]> {
   const results = await chrome.scripting.executeScript({ target: { tabId: tab, allFrames: true }, injectImmediately: true,
-    world: 'ISOLATED', func: () => location.href });
+    world: 'ISOLATED', func: () => location.href, args: [] });
   return results.filter(result => result.frameId !== 0 && typeof result.result === 'string')
-    .map(result => ({ frameId: result.frameId, url: result.result as string }));
+    .map(result => ({ frameId: result.frameId, ...(verificationFrame(result.result as string) ? { challenge: true } : {}),
+      url: result.result as string }));
 }
-// The place an embedded document occupies in the tab's viewport. Trusted input is
-// delivered in the tab's own coordinates, so a point measured inside a frame must be
-// moved by this offset or it lands somewhere else entirely. A child frame cannot read
-// where it sits in another origin's page; the page that owns it can measure the element
-// the child posts from, and comparing contentWindow with the message source is allowed
-// across origins. Only a frame directly in the tab is translated: a deeper frame is
-// refused rather than clicked at a guessed point.
-async function frameOffset(tab: number, frameId: number, check: Check): Promise<{ x: number; y: number }> {
-  const token = `${Date.now().toString(36)}.${Math.random().toString(36).slice(2)}`;
-  // Installed in the tab's own document, which owns the target frame: it compares the
-  // message source with each iframe's contentWindow, which works across origins, and
-  // measures that element's content box in its own viewport.
-  const measure = (token: string) => new Promise<{ x: number; y: number } | null>(resolve => {
-    const timer = setTimeout(() => resolve(null), 1500);
-    addEventListener('message', event => {
-      if (!event.data || event.data.gaddi !== token) return;
-      for (const element of document.querySelectorAll<HTMLIFrameElement>('iframe, frame')) {
-        if (element.contentWindow !== event.source) continue;
-        clearTimeout(timer);
-        const rect = element.getBoundingClientRect(), style = getComputedStyle(element);
-        resolve({ x: rect.left + parseFloat(style.borderLeftWidth) + parseFloat(style.paddingLeft),
-          y: rect.top + parseFloat(style.borderTopWidth) + parseFloat(style.paddingTop) });
-        return;
-      }
-    });
+// ---------------------------------------------------------------- documents inside a tab
+// Trusted input is delivered in the tab's own coordinates, and a selector inside an embedded
+// document is measured in that document's coordinates. A cross-origin child cannot read where
+// it sits inside another origin's page, and the page that owns it cannot read which Chrome frame
+// id the child is. So the parent measures the box, hands the child a random nonce, and the child
+// hands the nonce back from its own isolated world: the two halves meet without either side
+// guessing. A frame that never answers (another extension's page, a sandboxed document, one still
+// loading, one nested deeper than FRAME_DEPTH_LIMIT) is reported as present but unreadable, never
+// clicked at a guessed point.
+const ZERO = { x: 0, y: 0 };
+const FRAME_DEPTH_LIMIT = 4, FRAME_COUNT_LIMIT = 40, FRAME_PROBE_TRIES = 8;
+interface FrameBox { frameId: number; url: string; x: number; y: number; width: number; height: number }
+const frameToken = () => `${Date.now().toString(36)}.${[...crypto.getRandomValues(new Uint8Array(8))]
+  .map(byte => byte.toString(16).padStart(2, '0')).join('')}`;
+// Installed idempotently in every frame the extension can reach. It records only the nonce a
+// parent handed it: it performs no action, reads no page content, and a page script cannot use it
+// to reach anything, because the nonce is random per request and only names a frame back to us.
+function frameProbeInstall() {
+  const scope = globalThis as unknown as { __gaddiProbeReady?: boolean; __gaddiProbeToken?: string };
+  if (scope.__gaddiProbeReady) return true;
+  scope.__gaddiProbeReady = true;
+  addEventListener('message', event => {
+    const value = (event.data as { gaddiFrameProbe?: unknown } | null)?.gaddiFrameProbe;
+    if (typeof value === 'string' && value.length <= 80) scope.__gaddiProbeToken = value;
   });
-  const answer = chrome.scripting.executeScript({ target: { tabId: tab }, injectImmediately: true, world: 'ISOLATED',
-    func: measure, args: [token] });
-  let found: { x: number; y: number } | null = null;
-  for (let attempt = 0; attempt < 5 && !found; attempt++) {
-    check();
-    await chrome.scripting.executeScript({ target: { tabId: tab, frameIds: [frameId] }, injectImmediately: true, world: 'ISOLATED',
-      func: (token: string) => { parent.postMessage({ gaddi: token }, '*'); }, args: [token] });
-    check();
-    found = await Promise.race([answer.then(([reply]) => reply?.result ?? null),
-      new Promise<null>(resolve => setTimeout(() => resolve(null), 300))]);
+  return true;
+}
+// Measures this document's child frames in its own viewport and hands each one its nonce.
+function frameProbeChildren(token: string) {
+  const boxes: { token: string; x: number; y: number; width: number; height: number; url: string }[] = [];
+  let index = 0;
+  for (const element of Array.from(document.querySelectorAll<HTMLIFrameElement>('iframe, frame'))) {
+    const rect = element.getBoundingClientRect(), style = getComputedStyle(element);
+    const left = (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.paddingLeft) || 0);
+    const top = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.paddingTop) || 0);
+    const childToken = `${token}.${index++}`;
+    try { element.contentWindow?.postMessage({ gaddiFrameProbe: childToken }, '*'); } catch { /* A frame that is gone answers nothing. */ }
+    let url = '';
+    try { url = element.src ? new URL(element.src, location.href).href : ''; } catch { /* Named by its box alone. */ }
+    boxes.push({ token: childToken, x: rect.left + left, y: rect.top + top,
+      width: Math.max(0, rect.width - left - (parseFloat(style.borderRightWidth) || 0) - (parseFloat(style.paddingRight) || 0)),
+      height: Math.max(0, rect.height - top - (parseFloat(style.borderBottomWidth) || 0) - (parseFloat(style.paddingBottom) || 0)), url });
   }
-  if (!found) throw new Error('Frame is nested inside another frame, or gone; click inside it by point instead');
+  return boxes;
+}
+function frameProbeRead() {
+  return { token: (globalThis as unknown as { __gaddiProbeToken?: string }).__gaddiProbeToken || '', url: location.href };
+}
+async function installFrameProbes(tab: number, check: Check) {
+  check();
+  // A frame that refuses injection is simply not in the answer; it never fails the walk.
+  await chrome.scripting.executeScript({ target: { tabId: tab, allFrames: true }, injectImmediately: true, world: 'ISOLATED',
+    func: frameProbeInstall, args: [] }).catch(() => []);
+  check();
+}
+// The child frames of one document, in that document's own viewport coordinates.
+async function probeDocument(tab: number, owner: number | undefined, check: Check): Promise<FrameBox[]> {
+  const token = frameToken();
+  const target: chrome.scripting.InjectionTarget = owner === undefined ? { tabId: tab } : { tabId: tab, frameIds: [owner] };
+  const [probe] = await chrome.scripting.executeScript({ target, injectImmediately: true, world: 'ISOLATED', func: frameProbeChildren, args: [token] });
+  const boxes = Array.isArray(probe?.result) ? probe.result : [];
+  if (!boxes.length) return [];
+  const owners = new Map<string, number>();
+  for (let attempt = 0; attempt < FRAME_PROBE_TRIES && owners.size < boxes.length; attempt++) {
+    check();
+    const results = await chrome.scripting.executeScript({ target: { tabId: tab, allFrames: true }, injectImmediately: true,
+      world: 'ISOLATED', func: frameProbeRead, args: [] }).catch(() => []);
+    for (const entry of results) {
+      const answer = entry.result;
+      if (entry.frameId && answer && typeof answer.token === 'string' && answer.token.startsWith(`${token}.`)) owners.set(answer.token, entry.frameId);
+    }
+    if (owners.size < boxes.length) await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  const found: FrameBox[] = [];
+  for (const box of boxes) {
+    const frameId = owners.get(box.token);
+    if (frameId === undefined || frameId === 0) continue;
+    found.push({ frameId, url: box.url, x: box.x, y: box.y, width: box.width, height: box.height });
+  }
   return found;
+}
+// One frame's content box in the tab's viewport, walking down from the tab's own document.
+async function frameBox(tab: number, wanted: number, check: Check): Promise<FrameBox | undefined> {
+  await installFrameProbes(tab, check);
+  let level: { frameId: number | undefined; x: number; y: number }[] = [{ frameId: undefined, ...ZERO }];
+  let seen = 0;
+  for (let depth = 0; depth <= FRAME_DEPTH_LIMIT && level.length; depth++) {
+    const next: typeof level = [];
+    for (const owner of level) {
+      for (const box of await probeDocument(tab, owner.frameId, check)) {
+        if (box.frameId === wanted) return { ...box, x: owner.x + box.x, y: owner.y + box.y };
+        next.push({ frameId: box.frameId, x: owner.x + box.x, y: owner.y + box.y });
+        if (++seen >= FRAME_COUNT_LIMIT) return undefined;
+      }
+    }
+    level = next;
+  }
+  return undefined;
+}
+// The tab's own coordinates for a control measured inside a document. Scrolling inside a frame
+// can also scroll the page around it, so wait for that layout to settle, aim, and look the point
+// up from the tab's side: the press goes only where the very control that was checked sits. A
+// point that no longer holds it is re-measured, and a page that keeps moving is refused.
+async function aimIntoFrame(tab: number, frameId: number, measured: PageResults['clickPoint'], send: CDPSend, check: Check) {
+  for (let attempt = 0; ; attempt++) {
+    await send('Runtime.evaluate', { expression: 'new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(() => resolve(true))))',
+      awaitPromise: true, returnByValue: true, timeout: 1000 });
+    check();
+    const box = await frameBox(tab, frameId, check);
+    if (!box) throw new Error('That embedded document is off the page or nested too deep; look again and click it by point');
+    const aimed = await resolvePoint(tab, { x: measured.x + box.x, y: measured.y + box.y }, check);
+    // The point may land on the control itself or on a part of it, such as an icon inside a button.
+    if (!aimed.blind && aimed.frameId === frameId && aimed.target.chain.includes(measured.selector)) return { x: box.x, y: box.y };
+    if (attempt >= 2) throw new Error('That control inside the embedded document moved while it was measured; scroll the page to it and try again');
+  }
+}
+// Where a point really lands, following it into embedded documents: the deepest element is
+// what the gates judge, and `frameId` names the document that holds it. `blind` means the point
+// is over a document this extension cannot inspect, so no name can be checked for it.
+async function resolvePoint(tab: number, at: { x: number; y: number }, check: Check): Promise<{
+  target: PageResults['pointTarget']; frameId?: number; frameUrl?: string; blind?: boolean }> {
+  await installFrameProbes(tab, check);
+  let frameId: number | undefined, frameUrl: string | undefined, point = { ...at };
+  let last: PageResults['pointTarget'] | undefined;
+  for (let depth = 0; depth <= FRAME_DEPTH_LIMIT; depth++) {
+    let target: PageResults['pointTarget'];
+    try { target = await onPage(tab, 'pointTarget', { ...(frameId === undefined ? {} : { frameId }), at: point }, check); }
+    catch (error) {
+      // The document below is real but out of reach: describe what is visible and say so.
+      if (!last) throw error;
+      return { target: last, frameId, frameUrl, blind: true as const };
+    }
+    last = target;
+    const here = { target, ...(frameId === undefined ? {} : { frameId }), ...(frameUrl ? { frameUrl } : {}) };
+    if (!target.frame) return here;
+    const children = await probeDocument(tab, frameId, check);
+    const child = children.find(box => point.x >= box.x && point.x < box.x + box.width
+      && point.y >= box.y && point.y < box.y + box.height);
+    if (!child) return { ...here, blind: true as const };
+    point = { x: point.x - child.x, y: point.y - child.y };
+    frameId = child.frameId;
+    frameUrl = child.url || here.frameUrl;
+  }
+  throw new Error('That point is inside more than four nested documents; click it with a selector inside the frame instead');
 }
 async function waitOnTab(tab: number, params: ChromeParams, scope: Deadline) {
   const args = waitParams(params), start = Date.now(), end = start + args.timeout!;
@@ -380,7 +495,7 @@ async function waitOnTab(tab: number, params: ChromeParams, scope: Deadline) {
     return { met: false, ms: Date.now() - start, url: (await getTab(tab)).url || '' };
   } finally { chrome.tabs.onUpdated.removeListener(updated); }
 }
-async function afterInput(tab: number, before: PageResults['snapshot'], url: string, scope: Deadline, combobox = false) {
+async function afterInput(tab: number, before: PageResults['snapshot'], url: string, scope: Deadline, combobox = false, frameId?: number) {
   // Observation cannot reject an input already sent. Bound even a lost injection
   // reply (navigation or a busy renderer); do not leave agents waiting to replay it.
   const maxWait = combobox ? 450 : 300;
@@ -391,8 +506,9 @@ async function afterInput(tab: number, before: PageResults['snapshot'], url: str
     return await Promise.race([
       (async () => {
         try {
-          const after = await onPage(tab, 'settle', { settleMs: combobox ? 200 : 50 }, scope.check);
-          return { changed: before.signature !== after.signature, url: after.url,
+          const after = await onPage(tab, 'settle', { settleMs: combobox ? 200 : 50, ...(frameId === undefined ? {} : { frameId }) }, scope.check);
+          // An embedded document's address is not the tab's, so only its change is used.
+          return { changed: before.signature !== after.signature, url: frameId === undefined ? after.url : url,
             ...(after.version ? { version: after.version } : {}) };
         } catch {
           const current = await getTab(tab).catch(() => null);
@@ -980,6 +1096,17 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
     }
     if (action === 'wait') return emulatedFocus(() => waitOnTab(tab, params, scope));
     if (action === 'describe' || action === 'read' || action === 'html') {
+      // A describe by point follows the point into embedded documents, so the gates judge the
+      // control the owner would press, not the frame element that surrounds it.
+      if (action === 'describe' && params.at) {
+        const resolved = await (background ? rendered(() => resolvePoint(tab, params.at!, check)) : resolvePoint(tab, params.at!, check));
+        const target = resolved.target;
+        return { ...result, selector: target.selector, name: target.name, tag: target.tag, type: target.type,
+          autocomplete: target.autocomplete, href: target.href, submitName: target.submitName, matched: [], role: target.role,
+          password: target.secret, disabled: target.disabled, choice: target.choice,
+          ...(resolved.frameId !== undefined ? { frameId: resolved.frameId } : {}),
+          ...(resolved.frameUrl ? { frameUrl: resolved.frameUrl } : {}), ...(resolved.blind ? { blind: true } : {}) };
+      }
       const page = { ...result, ...await (background ? rendered(() => onPage(tab, action, params, check)) : onPage(tab, action, params, check)) };
       // A read of the tab also names the documents inside it, so the agent can act on
       // one; a read of a frame stays that frame's own page.
@@ -1044,7 +1171,10 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
       // The wheel goes to whatever is under the pointer, so move the pointer onto the element first.
       return trusted(async send => {
         const target = await onPage(tab, 'scrollPoint', params, check);
-        const point = { x: target.x, y: target.y }, before = { left: target.left, top: target.top };
+        // Inside an embedded document the wheel's point needs that document's place, aimed and
+        // checked the same way a click's is: a wheel at a stale point scrolls something else.
+        const offset = params.frameId === undefined ? ZERO : await aimIntoFrame(tab, params.frameId, target, send, check);
+        const point = { x: target.x + offset.x, y: target.y + offset.y }, before = { left: target.left, top: target.top };
         await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
         await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: dx ?? 0, deltaY: dy ?? 0 });
         const observed = await afterInput(tab, target, result.url, scope);
@@ -1089,14 +1219,52 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
     });
     // Set when a click's press and release both reached Chrome before a session ended.
     let handed = false;
+    // A click is delivered as a person's own: pointer move, press, release, in one breath.
+    const press = async (send: CDPSend, point: { x: number; y: number }) => {
+      const halves = await Promise.allSettled((['mousePressed', 'mouseReleased'] as const)
+        .map(type => send('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 })));
+      const failed = halves.find(half => half.status === 'rejected');
+      if (!failed) return;
+      handed = halves.every(half => half.status === 'fulfilled' || !unsent(half.reason));
+      throw failed.reason;
+    };
+    const handedNote = <T>(value: T) => (error: unknown) => {
+      if (!handed || !isForeignFrameError(error)) throw error;
+      route.note = "Another extension's frame opened as the click went in and Chrome stopped Gaddi's debugger after both press and release were sent; look to confirm the result";
+      return { ...(value as object), clicked: true, changed: true } as T;
+    };
+    // A click at a point the owner saw: the point goes to Chrome as it is, and the element the
+    // gates judged is read again from that same point immediately before the press.
+    if (action === 'click' && params.at) return trusted(async send => {
+      const at = params.at!, checked = params.checkedDescription;
+      const target = await resolvePoint(tab, at, check);
+      // Invariant: the point still holds the control the gate named, or nothing is pressed.
+      if (checked && (target.blind || target.target.name !== checked.name
+        || checked.href !== undefined && target.target.href !== checked.href))
+        throw new Error('What sits at that point changed since it was checked; look again');
+      const before = await onPage(tab, 'snapshot', params, check);
+      await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at });
+      await press(send, at);
+      const observed = await afterInput(tab, before, result.url, scope);
+      // A point inside an embedded document changes that document, not the tab's own page.
+      const nestedBefore = target.frameId === undefined ? undefined : target.target.signature;
+      const nestedAfter = nestedBefore === undefined ? undefined
+        : await onPage(tab, 'snapshot', { frameId: target.frameId }, check).then(after => after.signature).catch(() => undefined);
+      return { ...result, clicked: true, ...observed, ...(nestedAfter !== undefined && nestedAfter !== nestedBefore ? { changed: true } : {}) };
+    }).catch(handedNote({ ...result }));
     if (action === 'click' || action === 'hover') return trusted(async send => {
-      const measured = params.at ? undefined : await onPage(tab, action === 'hover' ? 'hoverPoint' : 'clickPoint', params, check);
-      const before = measured ?? await onPage(tab, 'snapshot', params, check);
-      // Trusted input goes to the tab's own viewport, so a point measured inside an
-      // embedded document is moved by that frame's place in the page first.
-      const offset = params.frameId === undefined ? { x: 0, y: 0 } : await frameOffset(tab, params.frameId, check);
-      const point = params.at ? { x: params.at.x + offset.x, y: params.at.y + offset.y }
-        : { x: measured!.x + offset.x, y: measured!.y + offset.y };
+      const measured = await onPage(tab, action === 'hover' ? 'hoverPoint' : 'clickPoint', params, check);
+      // Trusted input goes to the tab's own viewport, so a point measured inside an embedded
+      // document is moved by that document's place in the page first.
+      const offset = params.frameId === undefined ? ZERO : await aimIntoFrame(tab, params.frameId, measured, send, check);
+      const point = { x: measured.x + offset.x, y: measured.y + offset.y };
+      if (params.frameId !== undefined) {
+        // A control inside a frame can be visible in its own document while the frame itself is
+        // off the tab's screen; trusted input would land on nothing at all.
+        const view = await onPage(tab, 'viewport', {}, check);
+        if (point.x < 0 || point.y < 0 || point.x > view.width || point.y > view.height)
+          throw new Error('That control is outside the visible part of the tab; scroll the page to it and try again');
+      }
       await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
       if (action === 'click') {
         // Pointer movement can run handlers that change the gated name or href.
@@ -1104,22 +1272,11 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
           const { x, y } = await onPage(tab, 'clickCheck', params, check);
           Object.assign(point, { x: x + offset.x, y: y + offset.y });
         }
-        // Both halves go to Chrome at once, so a menu that opens on the press (a password
-        // manager under a field) cannot end the session between them.
-        const halves = await Promise.allSettled((['mousePressed', 'mouseReleased'] as const)
-          .map(type => send('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 })));
-        const failed = halves.find(half => half.status === 'rejected');
-        if (failed) {
-          handed = halves.every(half => half.status === 'fulfilled' || !unsent(half.reason));
-          throw failed.reason;
-        }
+        await press(send, point);
       }
-      return { ...result, [action === 'click' ? 'clicked' : 'hovered']: true, ...await afterInput(tab, before, result.url, scope) };
-    }).catch(error => {
-      if (!handed || !isForeignFrameError(error)) throw error;
-      route.note = "Another extension's frame opened as the click went in and Chrome stopped Gaddi's debugger after both press and release were sent; look to confirm the result";
-      return { ...result, clicked: true, changed: true };
-    });
+      return { ...result, [action === 'click' ? 'clicked' : 'hovered']: true,
+        ...await afterInput(tab, measured, result.url, scope, false, params.frameId) };
+    }).catch(handedNote({ ...result }));
     if (action === 'type') {
       if (typeof params.text !== 'string') throw new Error('text must be a string');
       if (params.mode !== undefined && params.mode !== 'replace' && params.mode !== 'append') throw new Error('mode must be replace or append');
@@ -1143,22 +1300,26 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
           // Restore layout even when input fails or its deadline has expired.
           if (target.appendCleanup) await onPage(tab, 'typeCleanup', { ...frame, appendCleanup: target.appendCleanup }, () => {}).catch(() => {});
         }
-        return { ...result, typed: true, ...await afterInput(tab, target, result.url, scope, target.combobox) };
+        return { ...result, typed: true, ...await afterInput(tab, target, result.url, scope, target.combobox, params.frameId) };
       }, true, false).catch(async error => {
         // A menu that opens on the typed text can end the session while the insert is in
         // flight. The field then shows whether it landed; text is never inserted twice.
         if (!isForeignFrameError(error) || !(await onPage(tab, 'typeLanded', { ...frame, selector: target.selector, text: target.expectedText ?? params.text }, check)).landed) throw error;
-        return { ...result, typed: true, ...await afterInput(tab, target, result.url, scope, target.combobox) };
+        return { ...result, typed: true, ...await afterInput(tab, target, result.url, scope, target.combobox, params.frameId) };
       });
     }
     if (action === 'press') {
       const event = keyEvent(params.key);
       return trusted(async send => {
+        // Invariant: keys reach the document that holds the focus. A press aimed inside an
+        // embedded document is sent only while the tab's own page has handed it the focus.
+        if (params.frameId !== undefined && !(await onPage(tab, 'pressFocus', {}, check)).embedded)
+          throw new Error('That embedded document does not hold the focus; type into it or click inside it first, then press');
         const before = await onPage(tab, 'pressCheck', params, check);
         await send('Input.dispatchKeyEvent', { type: 'keyDown', ...event });
         const { text, unmodifiedText, ...up } = event;
         await send('Input.dispatchKeyEvent', { type: 'keyUp', ...up });
-        return { ...result, pressed: true, ...await afterInput(tab, before, result.url, scope) };
+        return { ...result, pressed: true, ...await afterInput(tab, before, result.url, scope, false, params.frameId) };
       });
     }
   });

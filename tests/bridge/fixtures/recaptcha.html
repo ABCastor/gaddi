@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Human check</title>
+<style>
+  body { margin: 0; font: 13px sans-serif; padding: 12px; }
+  #robot-label { display: flex; gap: 10px; align-items: center; }
+  #robot { width: 24px; height: 24px; }
+</style>
+<div id="scroller" style="width: 240px; height: 60px; overflow: auto"><div style="height: 400px">Tall list of challenges</div></div>
+<label id="robot-label"><input type="checkbox" id="robot"><span>I'm not a robot</span></label>
+<p id="result"></p>
+<script>
+  // A human-verification widget of the same shape as the real ones: it believes only a person's
+  // own click, and undoes anything a script synthesised. That is exactly why Gaddi sends trusted
+  // input, and why nothing here can be answered without one.
+  Object.assign(window, { events: [] });
+  const box = document.querySelector('#robot');
+  box.addEventListener('click', event => {
+    window.events.push({ trusted: event.isTrusted });
+    if (!event.isTrusted) { box.checked = false; document.querySelector('#result').textContent = 'untrusted'; }
+    else document.querySelector('#result').textContent = 'checked';
+  });
+</script>
+</html>

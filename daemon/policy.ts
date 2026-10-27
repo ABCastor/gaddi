@@ -308,6 +308,25 @@ function matchVerb(name: unknown, verbs: string[]) {
   for (const v of verbs || []) if (phraseIn(name, v) && (!best || fold(v).length > fold(best).length)) best = v;
   return best;
 }
+// How many words a choice's name may have and still be read as an action label. "Delete all my
+// files" is a label; "post the letter to the right address" is a sentence, and a quiz answer.
+const CHOICE_WORDS = 6;
+// A verb that LEADS a short name, as a whole word: the name is a label for an action. Used for
+// choices, where a verb anywhere in the prose is an accident of the sentence, not the intent.
+export function leadingVerb(name: unknown, verbs: string[]): string | null {
+  const text = fold(name);
+  if (!text || text.split(' ').length > CHOICE_WORDS) return null;
+  let best: string | null = null;
+  for (const v of verbs || []) {
+    const verb = fold(v);
+    if (!verb || !text.startsWith(verb)) continue;
+    // Whole word only: "poster" does not begin with the verb "post".
+    if (text.length > verb.length && !/^[^a-z0-9]/.test(text.slice(verb.length))) continue;
+    if (!best || verb.length > fold(best).length) best = v;
+  }
+  return best;
+}
+export interface ClickControl { choice?: boolean }
 export function rx(pattern: string) { try { return new RegExp(pattern, 'i'); } catch { return null; } }
 // Action URL holds apply on every host.
 export function checkNavigation(policy: Policy, url: string) {
@@ -319,16 +338,20 @@ export function checkNavigation(policy: Policy, url: string) {
   return ALLOW();
 }
 
-export function checkClick(policy: Policy, host: string, accessibleName: string) {
+export function checkClick(policy: Policy, host: string, accessibleName: string, control: ClickControl = {}) {
   if (policy.off) return ALLOW('policy-off');
   const name = accessibleName || '';
+  // A choice (a checkbox, a radio, an option, or the label of one) is gated on what it names
+  // only when the verb leads its name. Its words are the answer being chosen: "the windshield
+  // centre post reduces blind spots" is a quiz answer, not a request to publish anything.
+  const verbIn = (verbs: string[]) => control.choice ? leadingVerb(name, verbs) : matchVerb(name, verbs);
   for (const rule of (policy.deny.verbs_on_hosts || [])) {
     const r = rx(rule.host);
     if (!r || !r.test(host || '')) continue;
-    const v = matchVerb(name, rule.verbs);
+    const v = verbIn(rule.verbs);
     if (v) return DENY(`verb:${v} on ${host}`);
   }
-  const v = matchVerb(name, policy.hold.verbs);
+  const v = verbIn(policy.hold.verbs);
   if (v) return HOLD(`verb:${v}`);
   return ALLOW();
 }
