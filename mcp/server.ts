@@ -1,5 +1,5 @@
 import type { BrokerParams, BrokerResult, BrokerRequest } from '../shared/protocol.ts';
-import { errorMessage, isRecord, versionParam, WHEEL_LIMIT, POINT_LIMIT } from '../shared/protocol.ts';
+import { errorMessage, isRecord, versionParam, WHEEL_LIMIT } from '../shared/protocol.ts';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 // Stdio adapter for the tab broker. All authorization stays in the broker and approval app.
 import net from 'node:net';
@@ -49,17 +49,18 @@ interface ToolDefinition extends Tool {
 const S = { type: 'string' }, B = { type: 'boolean' };
 const tab = { type: 'integer', minimum: 0, maximum: Number.MAX_SAFE_INTEGER };
 const tabs = { type: 'array', items: tab, minItems: 1, maxItems: 100 };
-const version = { ...S, maxLength: 128, pattern: '^[A-Za-z0-9_.:-]*$', description: 'Version from look/action; refuses stale.' };
+// Version guards: the broker validates the shape (protocol.ts:versionParam) and refuses a stale one,
+// so the schema carries the field without repeating those rules on eight tools.
+const version = { ...S, maxLength: 128, pattern: '^[A-Za-z0-9_.:-]*$' };
 // The HELD id to retry with; the instructions and every HELD reply say so, which keeps tools/list in budget.
 const approval = S;
 // The agent's one-line purpose, shown to the owner if the action is held. Only on tools that can be held.
 const why = S;
 const wheel = { type: 'number', minimum: -WHEEL_LIMIT, maximum: WHEEL_LIMIT };
 // A document inside the tab, as look lists it: actions then resolve inside that page.
-const frameId = { type: 'integer', minimum: 1, maximum: Number.MAX_SAFE_INTEGER, description: 'Frame id from look: act inside that document.' };
-// A point the agent saw, in the tab's own viewport: what a screenshot shows.
-const at: Field = { type: 'object', description: 'Point x,y in the tab viewport.',
-  properties: { x: { type: 'number', minimum: 0, maximum: POINT_LIMIT }, y: { type: 'number', minimum: 0, maximum: POINT_LIMIT } }, required: ['x', 'y'] };
+const frameId = { type: 'integer', description: 'Frame id from look.' };
+// A point the agent saw, in the tab's own viewport: what a screenshot shows. The broker bounds it.
+const at = { type: 'object' };
 const obj = (properties: Record<string, Field>, required: string[] = []): ToolDefinition['inputSchema'] => ({ type: 'object', properties, required, additionalProperties: false });
 const tool = <M extends string>(name: string, description: string, properties: Record<string, Field> = {}, required: string[] = [], method: M = name as M, format: (result: BrokerResult<M>) => CallToolResult | Promise<CallToolResult> = plainResult): ToolDefinition => ({
   name: 'browser_' + name, description, inputSchema: obj(properties, required),
@@ -70,32 +71,32 @@ const line = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim()
 const TOOLS: ToolDefinition[] = [
   tool('tabs', 'List tabs in Chrome.', {}, [], 'tabs', result => pageResult('Chrome tabs',
     result.tabs.map(t => `${t.id}${t.active ? '*' : ''} w${t.windowId} [${line(t.group)}] ${line(t.title)} ${line(t.url)}`).join('\n'))),
-  tool('bookmarks', 'List bookmarks; optionally filter folder, title or URL.', { query: S }, [], 'bookmarks', result => {
+  tool('bookmarks', 'List bookmarks; filter by folder, title or URL.', { query: S }, [], 'bookmarks', result => {
     const lines = result.bookmarks.map(b => `${line(b.path)}: ${line(b.title)} — ${line(b.url)}`).join('\n');
     const note = '\n[Bookmarks truncated at 20,000 characters; narrow query.]';
     return pageResult('Chrome bookmarks', lines.length > 20000 ? lines.slice(0, 20000 - note.length) + note : lines);
   }),
-  tool('wait', 'Wait for one of text, visible selector/ref, or URL substring; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 } }, [], 'wait', pageJSON),
+  tool('wait', 'Wait for text, a visible selector/ref or a URL part; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 } }, [], 'wait', pageJSON),
   tool('look', 'Read text and refs, incl floating menus/suggestions; click refs. visible:true is viewport only. Lists frames.', { tab, visible: B, frameId }, [], 'look',
     result => result?.note ? plainResult(result.note) : pageJSON(result)),
   {
-    name: 'browser_read', description: 'Extract readable markdown from a tab or a URL in a temporary tab.',
+    name: 'browser_read', description: 'Readable markdown from a tab or a URL in a temporary tab.',
     inputSchema: obj({ tab, url: S, approval, why }),
     run: args => readBrowser(args, rpc),
   },
-  tool('open', 'Open a background URL in Gaddi\'s window; foreground:true selects it.', { url: S, group: S, foreground: B, approval, why }, ['url'], 'open', pageJSON),
+  tool('open', 'Open a background URL in Gaddi\'s window; foreground selects it.', { url: S, group: S, foreground: B, approval, why }, ['url'], 'open', pageJSON),
   tool('goto', 'Navigate a tab to a URL.', { tab, url: S, approval, why }, ['url'], 'goto', pageJSON),
   tool('back', 'Go back in a tab.', { tab }, [], 'back', pageJSON),
-  tool('click', 'Click a selector, or at:{x,y} in the tab (a covered button, an embedded page). One-way actions may be held.', { tab, version, selector: S, at, frameId, approval, why }),
-  tool('type', 'Replace text by default; mode:append adds at the end, preserving chips/mentions. Passwords denied.', { tab, version, selector: S, text: S, mode: { ...S, enum: ['replace', 'append'] }, frameId }, ['selector', 'text']),
-  tool('signin', 'Sign in with 1Password; secrets stay hidden. Default needs_you holds for Touch ID.', { tab, item: S, approval, why }),
-  tool('press', 'Press a key; with frameId, inside that document once it holds the focus. Reports changed:true/false.', { tab, version, key: S, frameId, approval, why }, ['key']),
-  tool('hover', 'Hover over a CSS selector. Reports changed:true/false.', { tab, version, selector: S, frameId }, ['selector']),
+  tool('click', 'Click a selector, or at:{x,y} (a tab point) for a covered control. Version from look refuses stale.', { tab, version, selector: S, at, frameId, approval, why }),
+  tool('type', 'Replace text; mode:append adds at the end, preserving chips/mentions. Passwords denied.', { tab, version, selector: S, text: S, mode: { ...S, enum: ['replace', 'append'] }, frameId }, ['selector', 'text']),
+  tool('signin', 'Sign in with 1Password; secrets stay hidden. Holds for Touch ID.', { tab, item: S, approval, why }),
+  tool('press', 'Press a key; with frameId, inside that document while it holds focus. Reports changed.', { tab, version, key: S, frameId, approval, why }, ['key']),
+  tool('hover', 'Hover a CSS selector. Reports changed:true/false.', { tab, version, selector: S, frameId }, ['selector']),
   tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector. Reports changed:true/false.', { tab, version, dx: wheel, dy: wheel, selector: S }),
-  tool('select', 'Select an option by value. Reports changed:true/false.', { tab, version, selector: S, value: S }, ['selector', 'value']),
-  tool('upload', 'Attach a local file (path) to a file field, its label or a drop zone; held for approval.', { tab, version, selector: S, path: S, approval, why }, ['selector', 'path']),
+  tool('select', 'Select an option by value. Reports changed.', { tab, version, selector: S, value: S }, ['selector', 'value']),
+  tool('upload', 'Attach a local file to a file field, its label or a drop zone; held.', { tab, version, selector: S, path: S, approval, why }, ['selector', 'path']),
   tool('eval', 'Evaluate JavaScript; password reads and user policy matches are denied.', { tab, expression: S }, ['expression'], 'eval', pageJSON),
-  tool('emulate', 'Set viewport, color scheme or CSS/Web Animations speed; reset clears emulation.', {
+  tool('emulate', 'Set viewport, colour scheme or animation speed; reset clears.', {
     tab, width: { type: 'integer', minimum: 1 }, height: { type: 'integer', minimum: 1 }, mobile: B,
     colorScheme: { ...S, enum: ['light', 'dark', 'no-preference'] },
     animationSpeed: { type: 'number', exclusiveMinimum: 0, maximum: 1 }, reset: B,
@@ -125,7 +126,7 @@ const TOOLS: ToolDefinition[] = [
     },
   },
   tool('status', 'Report broker and Chrome bridge status.'),
-  tool('extensions', 'List, restart or manage Chrome extensions. Local install; disable/remove and outside repos need approval.', {
+  tool('extensions', 'List, restart or manage Chrome extensions; install, disable and remove may be held.', {
     operation: { ...S, enum: ['list', 'reload', 'enable', 'disable', 'uninstall', 'install'] }, extensionId: S, path: S, approval, why,
   }, [], 'extensions', result => pageResult('Chrome extensions', JSON.stringify(result, null, 2))),
 ];

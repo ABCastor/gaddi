@@ -7,7 +7,7 @@ import { spawnSync } from 'node:child_process';
 const repo = path.resolve(import.meta.dirname, '../..');
 const mutations = [
   { name: 'remember exception disabled', old: "return ALLOW('owner remembered this send kind on this site')", replacement: 'return check', assertion: 'ASSERT_SEND_RULE_APPLIED' },
-  { name: 'daemon send wiring removed', file: 'daemon/daemon.ts', test: 'tests/signin/send-broker.ts', old: 'check = checkRememberedSend(policy, pageURL, method, check, submitName);', replacement: '', assertion: 'ASSERT_SEND_WIRE_REMEMBERABLE' },
+  { name: 'daemon send wiring removed', file: 'daemon/daemon.ts', test: 'tests/signin/send-broker.ts', old: 'check = checkRememberedSend(policy, scopeURL, method, check, submitName);', replacement: '', assertion: 'ASSERT_SEND_WIRE_REMEMBERABLE' },
   { name: 'protected-page exclusion removed', old: 'if (builtInPolicy.hold.url_patterns.some(pattern => rx(pattern)?.test(page.href))) return;', replacement: '', assertion: 'ASSERT_PROTECTED_PAGE_INELIGIBLE' },
 ];
 for (const mutation of mutations) {

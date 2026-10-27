@@ -81,7 +81,7 @@ const table = {
   // A sign-in is never answerable from another device, whatever the facts say.
   SIGNIN: ['ASSERT_REMOTE_SIGNIN', ['daemon/remote.ts', ELIGIBLE, ELIGIBLE + " if (a.kind === 'signin') return true;"]],
   // The page address keeps its query, because a query can make a page protected.
-  QUERY: ['ASSERT_REMOTE_SCOPE', ['daemon/daemon.ts', 'remoteScope = { pageURL, scope };', 'remoteScope = { pageURL: cleanURL(pageURL), scope };']],
+  QUERY: ['ASSERT_REMOTE_SCOPE', ['daemon/daemon.ts', 'remoteScope = { pageURL: scopeURL, scope };', 'remoteScope = { pageURL: cleanURL(scopeURL), scope };']],
   // The scan shared with session grants.
   MIXED: ['ASSERT_REMOTE_SCOPE', ['daemon/grants.ts', 'for (const verb of protections(policy).verbs) {', 'for (const verb of [] as string[]) {']],
   DESTINATION: ['ASSERT_REMOTE_SCOPE', ['daemon/grants.ts', 'if (scope.destination) {', 'if (scope.destination && false) {']],
