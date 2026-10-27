@@ -1449,15 +1449,33 @@ async function dispatchAction({ method, params = {} }, scope) {
         if (action === 'screenshot')
             return rendered(async (send) => {
                 const { cssContentSize, cssVisualViewport } = await send('Page.getLayoutMetrics');
-                const bounds = params.fullPage === true ? cssContentSize : {
-                    x: cssVisualViewport.pageX, y: cssVisualViewport.pageY,
-                    width: cssVisualViewport.clientWidth, height: cssVisualViewport.clientHeight,
-                };
+                // A picture drawn inside an embedded document, such as a challenge, is only readable from
+                // the document itself: crop to it, and report where the crop sits in the tab so a pixel in
+                // the image maps back to a point that can be pressed.
+                const frame = params.frameId === undefined ? undefined : await frameBox(tab, params.frameId, check);
+                if (params.frameId !== undefined && !frame)
+                    throw new Error('That embedded document is off the page or nested too deep; look again and read it by frame');
+                if (frame && (frame.width < 2 || frame.height < 2))
+                    throw new Error('That embedded document has no visible area to capture; scroll the page to it and try again');
+                const bounds = frame
+                    ? { x: frame.x + cssVisualViewport.pageX, y: frame.y + cssVisualViewport.pageY, width: frame.width, height: frame.height }
+                    : params.fullPage === true ? cssContentSize : {
+                        x: cssVisualViewport.pageX, y: cssVisualViewport.pageY,
+                        width: cssVisualViewport.clientWidth, height: cssVisualViewport.clientHeight,
+                    };
                 const { result: { value: pixelRatio } } = await send('Runtime.evaluate', { expression: 'window.devicePixelRatio', returnByValue: true });
-                const scale = Math.min(1, 1568 / Math.max(bounds.width, bounds.height)) / pixelRatio;
-                const { data } = await send('Page.captureScreenshot', { format: 'jpeg', quality: 85,
-                    captureBeyondViewport: params.fullPage === true, clip: { ...bounds, scale } });
-                return { ...result, data, mimeType: 'image/jpeg' };
+                const scale = Math.min(frame ? 2 : 1, 1568 / Math.max(bounds.width, bounds.height)) / pixelRatio;
+                const { data } = await send('Page.captureScreenshot', { format: 'jpeg', quality: frame ? 92 : 85,
+                    captureBeyondViewport: params.fullPage === true || frame !== undefined, clip: { ...bounds, scale } });
+                if (!frame)
+                    return { ...result, data, mimeType: 'image/jpeg' };
+                const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(data), c => c.charCodeAt(0))], { type: 'image/jpeg' }));
+                const { width, height } = bitmap;
+                bitmap.close();
+                check();
+                return { ...result, data, mimeType: 'image/jpeg', width, height,
+                    box: { x: frame.x, y: frame.y, width: frame.width, height: frame.height },
+                    frame: { frameId: frame.frameId, url: frame.url } };
             });
         // Set when a click's press and release both reached Chrome before a session ended.
         let handed = false;

@@ -10,16 +10,37 @@
 <div id="scroller" style="width: 240px; height: 60px; overflow: auto"><div style="height: 400px">Tall list of challenges</div></div>
 <label id="robot-label"><input type="checkbox" id="robot"><span>I'm not a robot</span></label>
 <p id="result"></p>
+<div id="puzzle" hidden>
+  <p id="prompt">Select all squares with a bicycle</p>
+  <div id="grid" style="display: grid; grid-template-columns: repeat(3, 64px); gap: 4px; width: 200px"></div>
+  <p><button id="verify">Verify</button><button id="refresh">Refresh</button></p>
+</div>
 <script>
   // A human-verification widget of the same shape as the real ones: it believes only a person's
   // own click, and undoes anything a script synthesised. That is exactly why Gaddi sends trusted
   // input, and why nothing here can be answered without one.
-  Object.assign(window, { events: [] });
+  Object.assign(window, { events: [], answers: [], verified: false });
+  // A picture challenge of the provider's shape: the tiles are unnamed squares, so no text says
+  // which are bicycles. Only the picture does, and only a person's own click is believed.
+  const tiles = Array.from({ length: 9 }, (_, index) => {
+    const tile = document.createElement('button');
+    tile.className = 'tile'; tile.dataset.tile = String(index);
+    Object.assign(tile.style, { width: '64px', height: '64px', padding: '0',
+      background: index % 2 ? '#cfd8dc' : '#eceff1', border: '1px solid #b0bec5' });
+    tile.addEventListener('click', event => {
+      if (!event.isTrusted) return;
+      tile.style.background = '#90caf9';
+      window.answers.push(index);
+    });
+    return tile;
+  });
+  document.querySelector('#grid').replaceChildren(...tiles);
+  document.querySelector('#verify').addEventListener('click', event => { if (event.isTrusted) window.verified = true; });
   const box = document.querySelector('#robot');
   box.addEventListener('click', event => {
     window.events.push({ trusted: event.isTrusted });
     if (!event.isTrusted) { box.checked = false; document.querySelector('#result').textContent = 'untrusted'; }
-    else document.querySelector('#result').textContent = 'checked';
+    else { document.querySelector('#result').textContent = 'checked'; document.querySelector('#puzzle').hidden = false; }
   });
 </script>
 </html>

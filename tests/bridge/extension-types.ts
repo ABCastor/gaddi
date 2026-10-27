@@ -20,7 +20,8 @@ export interface ChromeResults {
   'chrome.describe': Required<ElementDescription> & { role: string; password: boolean; disabled: boolean };
   'chrome.read': { tab: number; url: string; text: string; outline: string; version?: string; scroll: { y: number; height: number }; note?: string; frames?: { frameId: number; url: string; challenge?: boolean }[] };
   'chrome.html': { html: string; truncated: boolean };
-  'chrome.screenshot': { data: string; mimeType: string };
+  'chrome.screenshot': { data: string; mimeType: string; width?: number; height?: number;
+    box?: { x: number; y: number; width: number; height: number }; frame?: { frameId: number; url: string } };
   'chrome.eval': { value: unknown };
   'chrome.emulate': { emulated: boolean };
   'chrome.click': { clicked: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string };

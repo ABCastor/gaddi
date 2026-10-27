@@ -176,7 +176,12 @@ export interface PointDescription extends Required<ElementDescription> {
 interface InputResult { tab: number; url: string; changed: boolean; version?: string; navigating?: boolean; note?: string }
 export interface CloseResult { closed: number[]; failed: { tab: number; reason: string }[] }
 interface BookmarkInfo { path: string; title: string; url: string }
-interface ScreenshotResult { path: string; mimeType: string; tab?: number; url?: string }
+// A crop of one document, and where that crop sits in the tab. A pixel (px, py) in an image of
+// width x height is the tab point box.x + px * box.width / width, box.y + py * box.height / height,
+// which is what `click` takes: a challenge picture can be read and answered, never guessed.
+interface ScreenshotResult { path: string; mimeType: string; tab?: number; url?: string;
+  width?: number; height?: number; box?: { x: number; y: number; width: number; height: number };
+  frame?: { frameId: number; url: string } }
 export interface BrokerResults {
   signin: SigninResult;
   tabs: { tabs: TabInfo[] };

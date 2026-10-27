@@ -25,7 +25,8 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] [--why <purp
       trusted input on what is really there, through a banner and inside an embedded page)
   type [tab] <selector> <text> [--mode replace|append]
   press [tab] <key> | select [tab] <selector> <value> | upload [tab] <selector> <path>
-  --frame <id> with look, click, type, press or hover acts inside a document look listed; keys there need
+  --frame <id> with look, screenshot, click, type, press or hover acts inside a document look listed;
+      screenshot crops to it (a challenge picture, answered by pressing --at points); keys there need
       that document to hold the focus. --at and --frame are alternatives, never both.
   scroll [tab] <dy|selector> [--dx N] [--dy N]  (wheel pixels; with a selector the wheel goes over that element)
   wait [tab] <JSON options>
@@ -82,7 +83,7 @@ const cmd = args.shift() ?? '';
 if (mode && cmd !== 'type') die('--mode is only supported for type', 2);
 if (at && cmd !== 'click') die('--at applies only to click', 2);
 if (at && frame !== undefined) die('--at is a point in the tab, so it takes no --frame', 2);
-if (frame !== undefined && !['look', 'click', 'type', 'press', 'hover'].includes(cmd)) die('--frame applies only to look, click, type, press or hover', 2);
+if (frame !== undefined && !['look', 'screenshot', 'click', 'type', 'press', 'hover'].includes(cmd)) die('--frame applies only to look, screenshot, click, type, press or hover', 2);
 if ((wheel.dx !== undefined || wheel.dy !== undefined) && cmd !== 'scroll') die('--dx and --dy are only supported for scroll', 2);
 if (cmd === 'approve') {
   if (args.length !== 1 || !/^[a-f0-9]+$/i.test(args[0])) die('gaddi approve <id>', 2);

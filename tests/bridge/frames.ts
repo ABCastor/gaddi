@@ -10,6 +10,7 @@ interface Recorder {
   events: { type: string; target: string; key?: string; trusted: boolean }[];
 }
 type Point = { x: number; y: number };
+interface Answers { answers: number[]; verified: boolean }
 interface PointDescription {
   name: string; tag: string; role: string; choice: boolean; href: string;
   frameId?: number; frameUrl?: string; blind?: boolean;
@@ -124,6 +125,10 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
   assert.equal(quiz.choice, true, 'ASSERT_CHOICE_NAME: a radio is a choice, so its prose is not an action name');
 
   // A point inside the frame resolves to the control there, not to the frame element.
+  // Earlier steps scrolled the page (a control brought into view inside its own document can also
+  // move the page around it); start from the top so the point below is one a person could see.
+  await page.evaluate(() => scrollTo(0, 0));
+  await innerFrame.evaluate(() => scrollTo(0, 0));
   const buttonAt = await boxOf(innerFrame, '#inner-button');
   const innerTarget = await describeAt(buttonAt);
   assert.equal(innerTarget.name, 'Inner action', 'ASSERT_FRAME_POINT_GATE: a point inside a frame is judged on the control inside it');
@@ -149,6 +154,37 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
   assert.equal(bySelector.clicked, true, 'ASSERT_CHALLENGE_SELECTOR: the checkbox is clickable by name inside the widget');
   assert.deepEqual(await widget.evaluate(() => (window as unknown as Recorder).events), [{ trusted: true }, { trusted: true }],
     'ASSERT_CHALLENGE_SELECTOR: the second press is a person click too, and the widget undid nothing');
+
+  // A picture challenge, answered by the agent itself: the widget is captured as a picture, the
+  // caller is told where that picture sits in the tab, and the tiles it chose are pressed as the
+  // person's own clicks. No card, no solver, no synthesised event.
+  assert.equal(await widget.locator('#puzzle').isVisible(), true, 'ASSERT_CHALLENGE_PICTURE: the puzzle appeared after the checkbox');
+  // A person scrolls the panel to the tile first; that can move the page around the frame too, so
+  // the picture is taken after it, and its box is read from that same moment.
+  const tile = await widget.evaluate(() => {
+    const element = document.querySelector('[data-tile="4"]')!;
+    element.scrollIntoView({ block: 'center' });
+    const r = element.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  const shot = await call('chrome.screenshot', { tab, frameId: widgetFrame.frameId });
+  assert.equal(shot.frame?.frameId, widgetFrame.frameId, 'ASSERT_CHALLENGE_PICTURE: the picture says which document it shows');
+  assert.match(shot.frame?.url || '', /\/vendor\/recaptcha\/anchor$/, 'ASSERT_CHALLENGE_PICTURE: and that document own address');
+  assert.ok(shot.box && shot.box.width > 100 && shot.box.height > 100, 'ASSERT_CHALLENGE_PICTURE: the crop carries its place in the tab');
+  assert.ok(shot.width! / shot.box!.width > 0.5 && shot.width! / shot.box!.width <= 3,
+    'ASSERT_CHALLENGE_PICTURE: the image is a crop at a knowable scale, not the whole tab');
+  assert.ok(shot.box!.width < 1000, 'ASSERT_CHALLENGE_PICTURE: the crop is the widget, not the page around it');
+  // A tile has no name, so it is only reachable by the point its picture shows: the tile position
+  // inside the widget plus the place the widget sits in the tab.
+  const tileAt = { x: Math.round(shot.box!.x + tile.x), y: Math.round(shot.box!.y + tile.y) };
+  const tileName = await describeAt(tileAt);
+  assert.equal(tileName.role, 'button', 'ASSERT_CHALLENGE_PICTURE: the point lands on the tile the picture shows');
+  await call('chrome.click', { tab, at: tileAt });
+  assert.deepEqual(await widget.evaluate(() => (window as unknown as Answers).answers), [4],
+    'ASSERT_CHALLENGE_PICTURE: the tile the agent chose is the tile the widget saw pressed');
+  await call('chrome.click', { tab, frameId: widgetFrame.frameId, selector: '#verify' });
+  assert.equal(await widget.evaluate(() => (window as unknown as Answers).verified), true,
+    'ASSERT_CHALLENGE_PICTURE: the challenge verifies itself, with no help from the owner');
 
   // A wheel inside an embedded document is aimed the same way a click is: the box is measured, the
   // point is checked from the tab's side, and only then does the wheel go there.

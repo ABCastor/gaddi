@@ -13,6 +13,8 @@ interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: u
   // The viewport point a click was aimed at, and the embedded document it fell inside. Structured,
   // already cleaned, and the only record of where a point click landed.
   point?: { x: number; y: number; frame?: string };
+  // The document a screenshot cropped to, so the audit says which document was pictured.
+  shot?: { frameId: number; url?: string };
   decision?: { approval: string; kind?: string; verb?: string }; remoteKey?: string;
   // Shown on the card if this call is held (approvals.ts ApprovalContext); never audited, never part of the action.
   context?: ApprovalContext;
@@ -351,7 +353,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   // A document inside the tab, named by what `look` listed. Every action on it then
   // resolves selectors and checks inside that document instead of the tab's own page.
   if (params.frameId !== undefined) {
-    if (!['look', 'html', 'click', 'type', 'press', 'hover', 'select', 'scroll', 'wait', 'upload'].includes(method))
+    if (!['look', 'html', 'screenshot', 'click', 'type', 'press', 'hover', 'select', 'scroll', 'wait', 'upload'].includes(method))
       throw new Error('frameId applies only to an action inside a tab');
     // Frames are numbered by Chrome; 0 is the tab itself, which needs no frameId.
     if (typeof params.frameId !== 'number' || !Number.isSafeInteger(params.frameId) || params.frameId < 1)
@@ -559,6 +561,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     return { tab: resolvedTab, ...html, truncated: html.truncated || result?.truncated === true } satisfies BrokerResults['html'];
   }
   if (method === 'screenshot') {
+    if (params.frameId !== undefined) meta.shot = { frameId: params.frameId, ...(typeof result?.frame === 'object' && isRecord(result?.frame) && typeof result.frame.url === 'string' ? { url: cleanURL(result.frame.url) } : {}) };
     const encoded = result?.data;
     if (typeof encoded !== 'string') throw new Error('bridge screenshot must return base64 PNG or JPEG');
     const bytes = Buffer.from(encoded, 'base64');
@@ -568,7 +571,16 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     const dir = path.join(home, 'shots'); fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
     const shot = path.join(dir, `${resolvedTab}-${crypto.randomUUID()}.${format === 'jpeg' ? 'jpg' : 'png'}`);
     fs.writeFileSync(shot, bytes, { mode: 0o600 });
-    return { tab: resolvedTab, url: pageURL, path: shot, mimeType: `image/${format}` } satisfies BrokerResults['screenshot'];
+    // A crop of an embedded document also says where it came from and where it sits, because the
+    // caller answers what it sees in the picture with a point in the tab.
+    const raw = isRecord(result?.box) ? result.box : undefined;
+    const box = raw && ['x', 'y', 'width', 'height'].every(k => typeof raw[k] === 'number')
+      ? { x: raw.x as number, y: raw.y as number, width: raw.width as number, height: raw.height as number } : undefined;
+    const frame = isRecord(result?.frame) && typeof result.frame.frameId === 'number' && typeof result.frame.url === 'string'
+      ? { frameId: result.frame.frameId, url: result.frame.url } : undefined;
+    return { tab: resolvedTab, url: pageURL, path: shot, mimeType: `image/${format}`,
+      ...(typeof result?.width === 'number' && typeof result?.height === 'number' ? { width: result.width, height: result.height } : {}),
+      ...(box ? { box } : {}), ...(frame ? { frame } : {}) } satisfies BrokerResults['screenshot'];
   }
   // Eval's arbitrary page object keys are data. Broker contract keys stay intact.
   if (method === 'eval' && isRecord(rawResult)) return { ...rawResult, value: signinSecrets.redact(rawResult.value) };
@@ -971,6 +983,7 @@ async function handle(input: unknown, conn: Socket) {
       ...(meta.grantId ? { grant: meta.grantId } : {}),
       ...(meta.zone ? { zone: meta.zone } : {}),
       ...(meta.point ? { point: meta.point } : {}),
+      ...(meta.shot ? { shot: meta.shot } : {}),
       ...(meta.reason ? { reason: meta.reason } : {}),
       // A decision from another device names who, which request and what was decided: never its signature or nonce.
       ...(meta.decision ? { approver: 'remote', kind: meta.decision.kind, verb: meta.decision.verb } : {}),
