@@ -11,6 +11,7 @@ interface Recorder {
 }
 type Point = { x: number; y: number };
 interface Answers { answers: number[]; verified: boolean }
+interface Hidden { hiddenClicked: boolean }
 interface PointDescription {
   name: string; tag: string; role: string; choice: boolean; href: string;
   frameId?: number; frameUrl?: string; blind?: boolean;
@@ -140,7 +141,24 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
 
   // Two documents deep: the verification widget on its own origin. Its checkbox is a choice, and
   // the gate sees the checkbox rather than the two frames around it.
-  const robotAt = await boxOf(widget, '#robot');
+  // A point inside the widget, taken the way Gaddi measures it: the document's own place in the
+  // tab, plus the position inside that document. Playwright's box for a doubly nested frame is
+  // not that place, and an agent aims with the extension's answer, not with a test runner's.
+  const widgetShot = await call('chrome.screenshot', { tab, frameId: widgetFrame.frameId });
+  const robotLocal = await widget.evaluate(() => {
+    const r = document.querySelector('#robot')!.getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  const robotAt = { x: Math.round(widgetShot.box!.x + robotLocal.x), y: Math.round(widgetShot.box!.y + robotLocal.y) };
+
+  console.log('DEBUG widgetElementAt', JSON.stringify(await widget.evaluate(() => {
+    const out: Record<string, string | null> = {};
+    for (const [x, y] of [[28, 87], [28, 30], [28, 200], [100, 87]]) {
+      const el = document.elementFromPoint(x, y);
+      out[`${x},${y}`] = el ? (el.id || el.tagName) : null;
+    }
+    return { out, vw: innerWidth, vh: innerHeight, body: document.body.getBoundingClientRect().height };
+  })));
   const robot = await describeAt(robotAt);
   assert.equal(robot.name, "I'm not a robot", 'ASSERT_FRAME_POINT_ACROSS: two levels down, the point resolves to the checkbox');
   assert.equal(robot.choice, true, 'ASSERT_FRAME_POINT_ACROSS: a checkbox is a choice, so no action verb hides in its words');
@@ -185,6 +203,15 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
   await call('chrome.click', { tab, frameId: widgetFrame.frameId, selector: '#verify' });
   assert.equal(await widget.evaluate(() => (window as unknown as Answers).verified), true,
     'ASSERT_CHALLENGE_PICTURE: the challenge verifies itself, with no help from the owner');
+  // A course player wraps its real controls in aria-hidden. A person presses those controls, so an
+  // agent may too; and its quizzes use a native select, which is set inside that document.
+  await call('chrome.click', { tab, frameId: widgetFrame.frameId, selector: '#hidden-ui' });
+  assert.equal(await widget.evaluate(() => (window as unknown as Hidden).hiddenClicked), true,
+    'ASSERT_ARIA_HIDDEN_CLICK: a control a person can press is pressable inside aria-hidden');
+  const picked = await call('chrome.select', { tab, frameId: widgetFrame.frameId, selector: '#inner-select', value: 'two' });
+  assert.equal(picked.selected, true, 'ASSERT_ARIA_HIDDEN_CLICK: a native select inside the document is set');
+  assert.equal(await widget.evaluate(() => (document.querySelector('#inner-select') as HTMLSelectElement).value), 'two',
+    'ASSERT_ARIA_HIDDEN_CLICK: the document own select really changed');
 
   // A wheel inside an embedded document is aimed the same way a click is: the box is measured, the
   // point is checked from the tab's side, and only then does the wheel go there.

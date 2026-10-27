@@ -14,12 +14,15 @@
   <p id="prompt">Select all squares with a bicycle</p>
   <div id="grid" style="display: grid; grid-template-columns: repeat(3, 64px); gap: 4px; width: 200px"></div>
   <p><button id="verify">Verify</button><button id="refresh">Refresh</button></p>
+  <!-- A course player wraps its real controls in aria-hidden, and its quizzes use native selects. -->
+  <div aria-hidden="true" id="player-bar"><button id="hidden-ui">Play module</button></div>
+  <select id="inner-select" aria-label="Module"><option value="one">One</option><option value="two">Two</option></select>
 </div>
 <script>
   // A human-verification widget of the same shape as the real ones: it believes only a person's
   // own click, and undoes anything a script synthesised. That is exactly why Gaddi sends trusted
   // input, and why nothing here can be answered without one.
-  Object.assign(window, { events: [], answers: [], verified: false });
+  Object.assign(window, { events: [], answers: [], verified: false, hiddenClicked: false });
   // A picture challenge of the provider's shape: the tiles are unnamed squares, so no text says
   // which are bicycles. Only the picture does, and only a person's own click is believed.
   const tiles = Array.from({ length: 9 }, (_, index) => {
@@ -36,6 +39,7 @@
   });
   document.querySelector('#grid').replaceChildren(...tiles);
   document.querySelector('#verify').addEventListener('click', event => { if (event.isTrusted) window.verified = true; });
+  document.querySelector('#hidden-ui').addEventListener('click', event => { if (event.isTrusted) window.hiddenClicked = true; });
   const box = document.querySelector('#robot');
   box.addEventListener('click', event => {
     window.events.push({ trusted: event.isTrusted });

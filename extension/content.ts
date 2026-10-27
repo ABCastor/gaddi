@@ -100,11 +100,20 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     state.nodes.set(selector, el); // Reattached nodes may have been pruned from the strong map.
     return selector;
   }
+  // What a person can put a finger on. `hidden` and `inert` are out because the page itself hides
+  // them; `aria-hidden` is NOT, because it only tells a screen reader to skip a region, and whole
+  // course players wrap their real controls in it. A control a person can see and press is a
+  // control an agent may press.
   function visible(el: PageElement) {
     const style = getComputedStyle(el);
-    return !el.closest('[hidden], [aria-hidden="true"], [inert]')
+    return !el.closest('[hidden], [inert]')
       && style.visibility !== 'hidden' && style.visibility !== 'collapse'
       && style.display !== 'none' && el.getClientRects().length > 0;
+  }
+  // What a reader may be told. Text behind `aria-hidden` is decoration for assistive tools, so it
+  // is never offered as page content or as a ref, even though a click on it still lands.
+  function readable(el: PageElement) {
+    return visible(el) && !el.closest('[aria-hidden="true"]');
   }
   function nameOf(el: PageElement, seen = new Set<PageElement>()): string {
     /* NAME_RESOLUTION_TEST_POINT */
@@ -162,7 +171,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     function group(node: Element): boolean {
       const cached = action === 'read' ? floatingGroups.get(node) : undefined;
       if (cached !== undefined) return cached;
-      const children = [...node.children].filter(child => ['DIV', 'LI'].includes(child.tagName) && visible(child) && clickable(child));
+      const children = [...node.children].filter(child => ['DIV', 'LI'].includes(child.tagName) && readable(child) && clickable(child));
       // Grouping propagates through any number of wrappers. An item with its
       // own handler keeps its title/description children as one click surface.
       const grouped = children.some(group) || (handlesClick(node)
@@ -385,9 +394,9 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
       }
     }
     walk(document);
-    let ambiguous = inputs.some(el => visible(el) && /(?:^|\s)new-password(?:\s|$)/i.test(el.getAttribute('autocomplete') || ''));
+    let ambiguous = inputs.some(el => readable(el) && /(?:^|\s)new-password(?:\s|$)/i.test(el.getAttribute('autocomplete') || ''));
     // An unavailable verification control still means authentication is unfinished.
-    if (inputs.some(el => visible(el) && el.type !== 'password'
+    if (inputs.some(el => readable(el) && el.type !== 'password'
       && (/(?:^|\s)one-time-code(?:\s|$)/i.test(el.getAttribute('autocomplete') || '')
         || /(?:^|[\s_-])(?:otp|totp|code|verification[-_]?code|one[-_]?time[-_]?code|auth[-_]?code)(?:$|[\s_-])/i.test(`${el.getAttribute('name') || ''} ${el.getAttribute('id') || ''}`))
       && signinKind(el) !== 'otp')) ambiguous = true;
@@ -401,7 +410,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     // Number controls cannot reliably select existing text for replacement.
     // Flag them as a challenge so their presence cannot imply sign-in succeeded.
     if (Object.values(fields).some(el => el.type === 'number')) ambiguous = true;
-    const passwordPresent = inputs.some(el => el.isConnected && visible(el)
+    const passwordPresent = inputs.some(el => el.isConnected && readable(el)
       && ((el.type || '').toLowerCase() === 'password'
         || /(?:^|\s)current-password(?:\s|$)/i.test(el.getAttribute('autocomplete') || '')));
     return { fields, ambiguous, passwordPresent };
@@ -411,7 +420,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     add(location.href); add(document.title);
     function walk(root: Document | ShadowRoot) {
       for (const el of root.querySelectorAll<PageElement>('*')) {
-        if (!visible(el)) continue;
+        if (!readable(el)) continue;
         add(el.tagName); add(selectorFor(el));
         if (el.tagName === 'INPUT') {
           add(el.type); add(el.getAttribute('autocomplete')); add(el.disabled); add(el.readOnly);
