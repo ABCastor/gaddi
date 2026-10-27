@@ -59,6 +59,14 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
   assert.equal(byPoint.clicked, true, 'ASSERT_FRAME_POINT_CLICK: a click by point is reported clicked');
   assert.deepEqual(await top(), [{ target: 'covered', trusted: true }], 'ASSERT_FRAME_POINT_CLICK: the button under the point takes a trusted click');
 
+  // The press only goes in while the point still holds the control the gate named: a page that
+  // swaps what sits there between the check and the click receives no input at all.
+  const swapped = await daemon.request('chrome.click', { tab, at: coveredAt, checkedDescription: { name: 'Something else', href: '' } });
+  assert.match(swapped.error?.message || '', /changed since it was checked/, 'ASSERT_FRAME_POINT_RECHECK: a point whose control changed is refused');
+  assert.equal((await top()).length, 1, 'ASSERT_FRAME_POINT_RECHECK: nothing was pressed at that point');
+  await call('chrome.click', { tab, at: coveredAt, checkedDescription: { name: 'Covered action', href: '' } });
+  assert.equal((await top()).length, 2, 'ASSERT_FRAME_POINT_RECHECK: the same point with its real control still clicks');
+
   // A marker that takes no pointer events is not in the way: the point resolves to the button
   // underneath, so an agent never has to know the marker exists.
   const ghostAt = await boxOf(page, '#ghosted');
@@ -67,6 +75,7 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
   assert.equal(ghost.choice, false, 'ASSERT_FRAME_POINT_THROUGH: a button is an action, not a choice');
   await call('chrome.click', { tab, at: ghostAt });
   assert.ok((await top()).some(click => click.target === 'ghosted' && click.trusted), 'ASSERT_FRAME_POINT_THROUGH: the marker does not swallow the trusted click');
+  assert.equal((await top()).length, 3, 'ASSERT_FRAME_POINT_THROUGH: three trusted clicks in total, one per point');
 
   // The cross-origin documents are invisible to a same-origin read, so the read lists the
   // documents it can address, and a read of one returns that document instead of the tab's.
