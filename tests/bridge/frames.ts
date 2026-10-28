@@ -225,6 +225,29 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
   assert.equal(await widget.evaluate(() => (document.querySelector('#inner-select') as HTMLSelectElement).value), 'two',
     'ASSERT_ARIA_HIDDEN_CLICK: the document own select really changed');
 
+  // A form whose DOM order is the reverse of its visual order. The outline follows the document,
+  // so the list alone runs bottom to top; the geometry that would settle it is not exposed yet
+  // (see CHANGES.log). What is proven here is that a native select inside a document registers a
+  // real change, and that the value lands on the row a person would have chosen.
+  const nestedPage = await call('chrome.read', { tab, frameId: nestedFrame.frameId });
+  const rows = nestedPage.outline.split('\n').filter(line => /^(?:combobox|listbox) "Row \d"/.test(line));
+  assert.equal(rows.length, 4, 'ASSERT_VISUAL_ORDER: every row of the form is listed');
+  assert.deepEqual(rows.map(line => /"(Row \d)"/.exec(line)![1]), ['Row 1', 'Row 2', 'Row 3', 'Row 4'],
+    'ASSERT_VISUAL_ORDER: the document order is kept, and it is the reverse of what a person sees');
+  for (const [index] of ['Row 4', 'Row 3', 'Row 2', 'Row 1'].entries()) {
+    await call('chrome.select', { tab, frameId: nestedFrame.frameId, selector: `select[name="row${4 - index}"]`, value: 'abcd'[index] });
+  }
+  const answers = await nested.evaluate(() => (window as unknown as { answers: Record<string, { value: string; trusted: boolean }> }).answers);
+  // The application's own model sees every change, which is what a framework needs; the event is
+  // dispatched by the content script, so it is NOT a person's own event. That limit is stated
+  // here rather than glossed: a trusted selection has to come from real key input in that document.
+  assert.deepEqual(answers, {
+    row4: { value: 'a', trusted: false }, row3: { value: 'b', trusted: false },
+    row2: { value: 'c', trusted: false }, row1: { value: 'd', trusted: false },
+  }, 'ASSERT_VISUAL_ORDER: every change reaches the application model, and no change claims to be trusted');
+  const rowChoice = await call('chrome.describe', { tab, frameId: nestedFrame.frameId, selector: 'select[name="row1"]' });
+  assert.equal(rowChoice.role, 'combobox', 'ASSERT_VISUAL_ORDER: a select inside a frame is described as the combobox it is');
+
   // A widget parks its frame off the page between rounds. A picture of it would be white, and a
   // model would try to read it, so the capture says what is really there instead.
   await innerFrame.evaluate(() => { document.querySelector('#nested')!.setAttribute('style', 'position: absolute; top: -4000px'); });

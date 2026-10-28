@@ -58,7 +58,7 @@ const approval = S;
 const why = S;
 const wheel = { type: 'number', minimum: -WHEEL_LIMIT, maximum: WHEEL_LIMIT };
 // A document inside the tab, as look lists it: actions then resolve inside that page.
-const frameId = { type: 'integer', description: 'Frame id from look.' };
+const frameId = { type: 'integer' };
 // A point the agent saw, in the tab's own viewport: what a screenshot shows. The broker bounds it.
 const at = { type: 'object' };
 const zoom = { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' },
@@ -78,7 +78,7 @@ const TOOLS: ToolDefinition[] = [
     const note = '\n[Bookmarks truncated at 20,000 characters; narrow query.]';
     return pageResult('Chrome bookmarks', lines.length > 20000 ? lines.slice(0, 20000 - note.length) + note : lines);
   }),
-  tool('wait', 'Wait for text, a visible selector/ref or a URL part; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 } }, [], 'wait', pageJSON),
+  tool('wait', 'Wait for text, a visible selector/ref or a URL part; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 } , frameId }, [], 'wait', pageJSON),
   tool('look', 'Read text and refs, incl floating menus/suggestions; click refs. visible:true is viewport only. Lists frames.', { tab, visible: B, frameId }, [], 'look',
     result => result?.note ? plainResult(result.note) : pageJSON(result)),
   {
@@ -89,13 +89,13 @@ const TOOLS: ToolDefinition[] = [
   tool('open', 'Open a background URL in Gaddi\'s window; foreground selects it.', { url: S, group: S, foreground: B, approval, why }, ['url'], 'open', pageJSON),
   tool('goto', 'Navigate a tab to a URL.', { tab, url: S, approval, why }, ['url'], 'goto', pageJSON),
   tool('back', 'Go back in a tab.', { tab }, [], 'back', pageJSON),
-  tool('click', 'Click a selector, or at:{x,y} (a tab point) for a covered control. Version from look refuses stale.', { tab, version, selector: S, at, frameId, approval, why }),
+  tool('click', 'Click a selector or at:{x,y} (a tab point). Version from look refuses a stale page.', { tab, version, selector: S, at, frameId, approval, why }),
   tool('type', 'Replace text; mode:append adds at the end, preserving chips/mentions. Passwords denied.', { tab, version, selector: S, text: S, mode: { ...S, enum: ['replace', 'append'] }, frameId }, ['selector', 'text']),
   tool('signin', 'Sign in with 1Password; secrets stay hidden. Holds for Touch ID.', { tab, item: S, approval, why }),
   tool('press', 'Press a key; with frameId, inside that document while it holds focus. Reports changed.', { tab, version, key: S, frameId, approval, why }, ['key']),
   tool('hover', 'Hover a CSS selector. Reports changed:true/false.', { tab, version, selector: S, frameId }, ['selector']),
-  tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector. Says changed:true/false.', { tab, version, dx: wheel, dy: wheel, selector: S }),
-  tool('select', 'Select an option by value. Reports changed.', { tab, version, selector: S, value: S }, ['selector', 'value']),
+  tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector.', { tab, version, dx: wheel, dy: wheel, selector: S, frameId }),
+  tool('select', 'Select an option by value. Reports changed.', { tab, version, selector: S, value: S, frameId }, ['selector', 'value']),
   tool('upload', 'Attach a local file to a file field, its label or a drop zone; held.', { tab, version, selector: S, path: S, approval, why }, ['selector', 'path']),
   tool('eval', 'Evaluate JavaScript; password reads and user policy matches are denied.', { tab, expression: S }, ['expression'], 'eval', pageJSON),
   tool('emulate', 'Set viewport, colour scheme or animation speed; reset clears.', {
