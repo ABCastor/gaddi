@@ -3,8 +3,8 @@ import { waitParams, wheelParams } from '../shared/protocol.ts';
 // Thin user-level broker: the extension operates the user's Chrome; this process gates and audits calls.
 import net from 'node:net';
 import type { Socket } from 'node:net';
-import { isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, pointParam } from '../shared/protocol.ts';
-import type { IncomingParams, ChromeParams, WireError, BrokerResults, SigninResult } from '../shared/protocol.ts';
+import { isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, pointParam, isControlPosition } from '../shared/protocol.ts';
+import type { IncomingParams, ChromeParams, WireError, BrokerResults, SigninResult, ControlPosition } from '../shared/protocol.ts';
 import type { PolicyCheck } from './policy.ts';
 import type { ApprovalAction, StoredApprovalRef, StoredApproval, RemoteFacts, ApprovalContext } from './approvals.ts';
 // `decision` and `remoteKey` exist only to be written to the audit: who answered from another device and what,
@@ -553,8 +553,20 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     }
     if (typeof result?.text !== 'string') throw new Error('bridge returned invalid text');
     const text = result.text.slice(0, TEXT_LIMIT), outline = String(result.outline || '').slice(0, TEXT_LIMIT);
+    // Only geometry for refs retained in this bounded outline may cross the bridge. Copy numeric
+    // observations, not page-supplied extra fields; this never changes the input authorization path.
+    const refs = new Set(outline.split('\n').map(line => line.split(' ').at(-1)));
+    const positions = new Map<string, ControlPosition>();
+    for (const position of Array.isArray(result.positions) ? result.positions : []) {
+      if (isControlPosition(position) && refs.has(position.ref)) {
+        const { ref, x, y, width, height } = position;
+        positions.set(ref, { ref, x, y, width, height });
+      }
+      if (positions.size >= refs.size) break;
+    }
     return { tab: resolvedTab, url: pageURL, title: result.title ?? tab.title, untrusted: true,
       ...(typeof result.version === 'string' ? { version: result.version } : {}),
+      ...(Array.isArray(result.positions) ? { positions: [...positions.values()] } : {}),
       ...(isRecord(result.scroll) && typeof result.scroll.y === 'number' && Number.isFinite(result.scroll.y)
         && typeof result.scroll.height === 'number' && Number.isFinite(result.scroll.height)
         ? { scroll: { y: result.scroll.y, height: result.scroll.height } } : {}),

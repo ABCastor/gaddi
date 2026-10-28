@@ -225,17 +225,26 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
   assert.equal(await widget.evaluate(() => (document.querySelector('#inner-select') as HTMLSelectElement).value), 'two',
     'ASSERT_ARIA_HIDDEN_CLICK: the document own select really changed');
 
-  // A form whose DOM order is the reverse of its visual order. The outline follows the document,
-  // so the list alone runs bottom to top; the geometry that would settle it is not exposed yet
-  // (see CHANGES.log). What is proven here is that a native select inside a document registers a
-  // real change, and that the value lands on the row a person would have chosen.
+  // Geometry is additive: keep the semantic outline and its last-token refs untouched. Choose
+  // the rows from returned geometry, not from prior knowledge of this reversed fixture's names.
   const nestedPage = await call('chrome.read', { tab, frameId: nestedFrame.frameId });
   const rows = nestedPage.outline.split('\n').filter(line => /^(?:combobox|listbox) "Row \d"/.test(line));
   assert.equal(rows.length, 4, 'ASSERT_VISUAL_ORDER: every row of the form is listed');
   assert.deepEqual(rows.map(line => /"(Row \d)"/.exec(line)![1]), ['Row 1', 'Row 2', 'Row 3', 'Row 4'],
-    'ASSERT_VISUAL_ORDER: the document order is kept, and it is the reverse of what a person sees');
-  for (const [index] of ['Row 4', 'Row 3', 'Row 2', 'Row 1'].entries()) {
-    await call('chrome.select', { tab, frameId: nestedFrame.frameId, selector: `select[name="row${4 - index}"]`, value: 'abcd'[index] });
+    'ASSERT_VISUAL_ORDER: the semantic document order stays unchanged');
+  const visualRows = (read: typeof nestedPage) => read.outline.split('\n')
+    .filter(line => /^(?:combobox|listbox) "Row \d"/.test(line)).map(line => {
+      const ref = line.split(' ').at(-1)!;
+      const position = read.positions?.find(position => position.ref === ref);
+      assert.ok(position, 'ASSERT_VISUAL_ORDER_POSITION: every listed row has document-viewport geometry');
+      assert.ok(position.width > 0 && position.height > 0, 'ASSERT_VISUAL_ORDER_POSITION: the control has dimensions');
+      return { name: /"(Row \d)"/.exec(line)![1], ref, y: position.y };
+    }).sort((a, b) => a.y - b.y);
+  const visual = visualRows(nestedPage);
+  assert.deepEqual(visual.map(row => row.name), ['Row 4', 'Row 3', 'Row 2', 'Row 1'],
+    'ASSERT_VISUAL_ORDER_POSITION: returned geometry resolves reversed screen order');
+  for (const [index, row] of visual.entries()) {
+    await call('chrome.select', { tab, frameId: nestedFrame.frameId, selector: row.ref, value: 'abcd'[index] });
   }
   const answers = await nested.evaluate(() => (window as unknown as { answers: Record<string, { value: string; trusted: boolean }> }).answers);
   // The application's own model sees every change, which is what a framework needs; the event is
@@ -247,6 +256,16 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
   }, 'ASSERT_VISUAL_ORDER: every change reaches the application model, and no change claims to be trusted');
   const rowChoice = await call('chrome.describe', { tab, frameId: nestedFrame.frameId, selector: 'select[name="row1"]' });
   assert.equal(rowChoice.role, 'combobox', 'ASSERT_VISUAL_ORDER: a select inside a frame is described as the combobox it is');
+  // A normal-layout control prevents a "reverse the DOM" implementation from passing.
+  await nested.evaluate(() => { document.querySelector<HTMLElement>('#reversed')!.style.flexDirection = 'column'; });
+  const normal = await call('chrome.read', { tab, frameId: nestedFrame.frameId });
+  assert.deepEqual(visualRows(normal).map(row => row.name), ['Row 1', 'Row 2', 'Row 3', 'Row 4'],
+    'ASSERT_VISUAL_ORDER_POSITION: normal screen order is measured rather than reversed blindly');
+  const visibleRows = await call('chrome.read', { tab, frameId: nestedFrame.frameId, visible: true });
+  const viewportHeight = await nested.evaluate(() => innerHeight);
+  assert.ok(visibleRows.positions?.length, 'ASSERT_VISUAL_ORDER_POSITION: visible read also exposes positions');
+  assert.ok(visibleRows.positions.every(p => p.y < viewportHeight && p.y + p.height > 0),
+    'ASSERT_VISUAL_ORDER_POSITION: visible read geometry stays in the inspected document viewport');
 
   // A widget parks its frame off the page between rounds. A picture of it would be white, and a
   // model would try to read it, so the capture says what is really there instead.

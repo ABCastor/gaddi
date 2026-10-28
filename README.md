@@ -90,6 +90,8 @@ A click can go where you point instead of at a reference: `gaddi click <tab-id> 
 
 <img src="docs/media/browser.png" width="700" alt="A disposable research-notes page in Chrome after Gaddi typed a query and clicked Search; Publish note remains unclicked.">
 
+`look` returns `positions` for its outlined references: `{ref, x, y, width, height}` in the inspected document's viewport, in CSS pixels. Use these to associate controls with visual rows; the outline keeps semantic document order, which may be the reverse of screen order. Inside an iframe these are not the parent tab's click coordinates. Geometry does not establish that an embedded document is on screen or authorize a click. Native `select` is a convenience that dispatches synthetic events; it does not promise `isTrusted` input.
+
 Pass the version from `look` to reject stale input. When a session ends, its background tabs are cleaned up; tabs shown to you are preserved.
 
 `browser_read` uses [OmniRead](https://github.com/ABCastor/omniread) to extract Markdown, sections and completeness information from page HTML, including logged-in tabs. Install it before registering your client, or set `OMNIREAD_BIN`. Without it, Gaddi returns page text without sections or continuation handles.

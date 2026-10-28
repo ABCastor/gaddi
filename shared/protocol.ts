@@ -101,6 +101,14 @@ export interface PointTarget {
 export interface FrameInfo { frameId: number; url: string; challenge?: boolean }
 export interface ScrollOffset { left: number; top: number }
 export interface ImageBox { x: number; y: number; width: number; height: number }
+// CSS pixels in the inspected document's viewport, not the parent tab's click coordinates.
+// Geometry is an observation, never authorization to send input without the normal target checks.
+export interface ControlPosition extends ImageBox { ref: string }
+export function isControlPosition(value: unknown): value is ControlPosition {
+  return isRecord(value) && typeof value.ref === 'string' && /^@[A-Za-z0-9_-]{6}:[0-9a-z]+$/.test(value.ref)
+    && ['x', 'y', 'width', 'height'].every(key => typeof value[key] === 'number' && Number.isFinite(value[key])
+      && (key === 'x' || key === 'y' || value[key] >= 0));
+}
 export interface ApprovalCapture { data: string; mimeType: string; width: number; height: number; box: ImageBox }
 export interface SigninProbe { url: string; signature: string; username?: string; password?: string; passwordPresent?: boolean; otp?: string; challenge?: boolean }
 export interface SigninResult { outcome: 'signed_in' | 'needs_you' | 'no_login' | 'choose' | 'failed'; site: string; item_title?: string; step?: string; reason?: string }
@@ -119,7 +127,7 @@ export interface PageResults {
   // What a point lands on inside one document: the gate's facts, plus the embedded
   // document's content box when the point falls on a frame (bg.ts follows it inwards).
   pointTarget: PointTarget;
-  read: { text: string; outline: string; version?: string; offscreen?: { above: number; below: number }; scroll: { y: number; height: number }; frames?: FrameInfo[] };
+  read: { text: string; outline: string; positions?: ControlPosition[]; version?: string; offscreen?: { above: number; below: number }; scroll: { y: number; height: number }; frames?: FrameInfo[] };
   html: { html: string; truncated: boolean };
   evalCheck: Record<string, never>;
   snapshot: { signature: string };
@@ -170,7 +178,7 @@ export function isTabInfo(value: unknown): value is TabInfo {
 }
 
 export interface HTMLPage { tab: number; url: string; html: string; truncated?: boolean }
-export interface TextPage { tab: number; url: string; text: string; version?: string; note?: string; outline?: string; offscreen?: { above: number; below: number }; title?: unknown; untrusted?: boolean; length?: number; truncated?: boolean; scroll?: { y: number; height: number }; frames?: FrameInfo[] }
+export interface TextPage { tab: number; url: string; text: string; version?: string; note?: string; outline?: string; positions?: ControlPosition[]; offscreen?: { above: number; below: number }; title?: unknown; untrusted?: boolean; length?: number; truncated?: boolean; scroll?: { y: number; height: number }; frames?: FrameInfo[] }
 // Where a click by point landed and what the gates judge: the deepest element under the
 // point, and the embedded document holding it when there is one.
 export interface PointDescription extends Required<ElementDescription> {
@@ -221,6 +229,7 @@ export function isBrokerResult<M extends string>(method: M, value: unknown): val
       && ['note', 'outline', 'version'].every(key => value[key] === undefined || typeof value[key] === 'string')
       && ['untrusted', 'truncated'].every(key => value[key] === undefined || typeof value[key] === 'boolean')
       && (value.scroll === undefined || isRecord(value.scroll) && typeof value.scroll.y === 'number' && typeof value.scroll.height === 'number')
+      && (value.positions === undefined || Array.isArray(value.positions) && value.positions.every(isControlPosition))
       && (value.length === undefined || typeof value.length === 'number');
     case 'close': return isRecord(value) && Array.isArray(value.closed) && value.closed.every(id => typeof id === 'number')
       && Array.isArray(value.failed) && value.failed.every(item => isRecord(item) && typeof item.tab === 'number' && typeof item.reason === 'string');

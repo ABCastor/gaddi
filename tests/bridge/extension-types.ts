@@ -1,4 +1,4 @@
-import type { ElementDescription, TabInfo, ChromeParams, ScrollOffset } from '../../shared/protocol.ts';
+import type { ElementDescription, TabInfo, ChromeParams, ScrollOffset, ControlPosition } from '../../shared/protocol.ts';
 import { isRecord } from '../../shared/protocol.ts';
 import assert from 'node:assert/strict';
 import type { FakeDaemon } from './fake-daemon.ts';
@@ -18,7 +18,7 @@ export interface ChromeResults {
   'chrome.close': { closed: number[]; failed: { tab: number; reason: string }[] };
   'chrome.bookmarks': { bookmarks: { path: string; title: string; url: string }[] };
   'chrome.describe': Required<ElementDescription> & { role: string; password: boolean; disabled: boolean };
-  'chrome.read': { tab: number; url: string; text: string; outline: string; version?: string; scroll: { y: number; height: number }; note?: string; frames?: { frameId: number; url: string; challenge?: boolean }[] };
+  'chrome.read': { tab: number; url: string; text: string; outline: string; positions?: ControlPosition[]; version?: string; scroll: { y: number; height: number }; note?: string; frames?: { frameId: number; url: string; challenge?: boolean }[] };
   'chrome.html': { html: string; truncated: boolean };
   'chrome.screenshot': { data: string; mimeType: string; width?: number; height?: number;
     box?: { x: number; y: number; width: number; height: number }; frame?: { frameId: number; url: string } };

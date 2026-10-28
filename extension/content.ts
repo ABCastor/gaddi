@@ -557,6 +557,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
       && rect.right > 0 && rect.left < innerWidth && rect.bottom > 0 && rect.top < innerHeight;
     for (const [key, el] of state.nodes) if (!el.isConnected) state.nodes.delete(key);
     const elements: string[] = [], texts: string[] = [], offscreen = { above: 0, below: 0 };
+    const positions: NonNullable<PageResults['read']['positions']> = [];
     function walk(root: Document | ShadowRoot) {
       for (const el of root.querySelectorAll<PageElement>('*')) {
         if (visible(el) && roleOf(el)) {
@@ -567,6 +568,8 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
           } else {
             const info = describe(el);
             elements.push(`${info.role} ${JSON.stringify(info.name)}${controlState(el)} ${info.selector}`);
+            const rect = box || el.getBoundingClientRect();
+            positions.push({ ref: info.selector, x: rect.x, y: rect.y, width: rect.width, height: rect.height });
           }
         }
         if (el.shadowRoot) walk(el.shadowRoot);
@@ -600,7 +603,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     walk(document);
     if (viewportOnly) collectText(document.body || document);
     return { text: (viewportOnly ? texts.join('').replace(/\s+/g, ' ').trim() : document.body?.innerText || '').slice(0, 20000),
-      outline: elements.join('\n'), version: pageVersion(), scroll: { y: scrollY, height: document.documentElement.scrollHeight },
+      outline: elements.join('\n'), positions, version: pageVersion(), scroll: { y: scrollY, height: document.documentElement.scrollHeight },
       ...(viewportOnly ? { offscreen } : {}) } satisfies PageResults['read'];
   }
   if (action === 'snapshot') return { signature: signature() } satisfies PageResults['snapshot'];

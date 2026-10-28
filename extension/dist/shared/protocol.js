@@ -18,6 +18,11 @@ export function extensionParams(params) {
         throw new Error('extensionId must be self or a Chrome extension ID');
     return { operation: operation, extensionId: params.extensionId };
 }
+export function isControlPosition(value) {
+    return isRecord(value) && typeof value.ref === 'string' && /^@[A-Za-z0-9_-]{6}:[0-9a-z]+$/.test(value.ref)
+        && ['x', 'y', 'width', 'height'].every(key => typeof value[key] === 'number' && Number.isFinite(value[key])
+            && (key === 'x' || key === 'y' || value[key] >= 0));
+}
 export function isRecord(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -49,6 +54,7 @@ export function isBrokerResult(method, value) {
             && ['note', 'outline', 'version'].every(key => value[key] === undefined || typeof value[key] === 'string')
             && ['untrusted', 'truncated'].every(key => value[key] === undefined || typeof value[key] === 'boolean')
             && (value.scroll === undefined || isRecord(value.scroll) && typeof value.scroll.y === 'number' && typeof value.scroll.height === 'number')
+            && (value.positions === undefined || Array.isArray(value.positions) && value.positions.every(isControlPosition))
             && (value.length === undefined || typeof value.length === 'number');
         case 'close': return isRecord(value) && Array.isArray(value.closed) && value.closed.every(id => typeof id === 'number')
             && Array.isArray(value.failed) && value.failed.every(item => isRecord(item) && typeof item.tab === 'number' && typeof item.reason === 'string');
