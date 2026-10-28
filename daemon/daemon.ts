@@ -360,6 +360,18 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       throw new Error('frameId must be a positive integer from look');
     args.frameId = params.frameId;
   }
+  // A close-up is a region of one document, so it needs that document; an unbounded rectangle would
+  // be a full-page capture wearing another name.
+  if (params.zoom !== undefined) {
+    const zoom = params.zoom;
+    if (args.frameId === undefined) throw new Error('zoom is a region of an embedded document: give frameId too');
+    if (!isRecord(zoom) || !['x', 'y', 'width', 'height'].every(k => typeof zoom[k] === 'number' && Number.isFinite(zoom[k])))
+      throw new Error('zoom must be an object with numeric x, y, width and height, in the document own pixels');
+    const area = { x: zoom.x as number, y: zoom.y as number, width: zoom.width as number, height: zoom.height as number };
+    if (area.width < 8 || area.height < 8 || area.width > 4000 || area.height > 4000 || area.x < 0 || area.y < 0)
+      throw new Error('zoom must be a region at least 8 by 8 and at most 4000 by 4000, inside the document');
+    args.zoom = area;
+  }
   // A point in the tab's own viewport, as a screenshot shows it: the place the owner would
   // click. It is never combined with frameId, because the extension follows it into whichever
   // document it falls in; naming a frame as well could only disagree with that.

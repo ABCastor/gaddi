@@ -61,6 +61,8 @@ const wheel = { type: 'number', minimum: -WHEEL_LIMIT, maximum: WHEEL_LIMIT };
 const frameId = { type: 'integer', description: 'Frame id from look.' };
 // A point the agent saw, in the tab's own viewport: what a screenshot shows. The broker bounds it.
 const at = { type: 'object' };
+const zoom = { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' },
+  width: { type: 'number' }, height: { type: 'number' } }, required: ['x', 'y', 'width', 'height'] };
 const obj = (properties: Record<string, Field>, required: string[] = []): ToolDefinition['inputSchema'] => ({ type: 'object', properties, required, additionalProperties: false });
 const tool = <M extends string>(name: string, description: string, properties: Record<string, Field> = {}, required: string[] = [], method: M = name as M, format: (result: BrokerResult<M>) => CallToolResult | Promise<CallToolResult> = plainResult): ToolDefinition => ({
   name: 'browser_' + name, description, inputSchema: obj(properties, required),
@@ -92,7 +94,7 @@ const TOOLS: ToolDefinition[] = [
   tool('signin', 'Sign in with 1Password; secrets stay hidden. Holds for Touch ID.', { tab, item: S, approval, why }),
   tool('press', 'Press a key; with frameId, inside that document while it holds focus. Reports changed.', { tab, version, key: S, frameId, approval, why }, ['key']),
   tool('hover', 'Hover a CSS selector. Reports changed:true/false.', { tab, version, selector: S, frameId }, ['selector']),
-  tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector. Reports changed:true/false.', { tab, version, dx: wheel, dy: wheel, selector: S }),
+  tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector. Says changed:true/false.', { tab, version, dx: wheel, dy: wheel, selector: S }),
   tool('select', 'Select an option by value. Reports changed.', { tab, version, selector: S, value: S }, ['selector', 'value']),
   tool('upload', 'Attach a local file to a file field, its label or a drop zone; held.', { tab, version, selector: S, path: S, approval, why }, ['selector', 'path']),
   tool('eval', 'Evaluate JavaScript; password reads and user policy matches are denied.', { tab, expression: S }, ['expression'], 'eval', pageJSON),
@@ -101,7 +103,7 @@ const TOOLS: ToolDefinition[] = [
     colorScheme: { ...S, enum: ['light', 'dark', 'no-preference'] },
     animationSpeed: { type: 'number', exclusiveMinimum: 0, maximum: 1 }, reset: B,
   }),
-  tool('screenshot', 'See a screenshot and its path. frame crops that document; press what it shows with at: points from box.', { tab, fullPage: B, frameId }, [], 'screenshot', async result => ({
+  tool('screenshot', 'See a screenshot and its path. frame crops a document; zoom (x,y,w,h) closes in; press box points.', { tab, fullPage: B, frameId, zoom }, [], 'screenshot', async result => ({
     content: [{ type: 'text', text: result.path },
       { type: 'image', mimeType: result.mimeType, data: (await readFile(result.path)).toString('base64') }],
   })),

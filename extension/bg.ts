@@ -1221,23 +1221,37 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
         throw new Error('That embedded document is off the page or nested too deep; look again and read it by frame');
       if (frame && (frame.width < 2 || frame.height < 2))
         throw new Error('That embedded document has no visible area to capture; scroll the page to it and try again');
-      const bounds = frame
-        ? { x: frame.x + cssVisualViewport.pageX, y: frame.y + cssVisualViewport.pageY, width: frame.width, height: frame.height }
+      // A close-up of part of the document: the region is in the document's own pixels, and what
+      // comes back says where that region sits in the tab, so the mapping from picture to point
+      // does not change. Drawn at up to four times its size, which is what makes a small letter
+      // readable.
+      const region = params.zoom && frame
+        ? { x: frame.x + params.zoom.x, y: frame.y + params.zoom.y, width: params.zoom.width, height: params.zoom.height }
+        : undefined;
+      const area = region ?? (frame
+        ? { x: frame.x, y: frame.y, width: frame.width, height: frame.height }
         : params.fullPage === true ? cssContentSize : {
           x: cssVisualViewport.pageX, y: cssVisualViewport.pageY,
           width: cssVisualViewport.clientWidth, height: cssVisualViewport.clientHeight,
-        };
+        });
+      const bounds = frame
+        ? { x: area.x + cssVisualViewport.pageX, y: area.y + cssVisualViewport.pageY, width: area.width, height: area.height }
+        : area;
       const { result: { value: pixelRatio } } = await send('Runtime.evaluate', { expression: 'window.devicePixelRatio', returnByValue: true });
-      const scale = Math.min(frame ? 2 : 1, 1568 / Math.max(bounds.width, bounds.height)) / pixelRatio;
-      const { data } = await send('Page.captureScreenshot', { format: 'jpeg', quality: frame ? 92 : 85,
+      const scale = Math.min(region ? 4 : frame ? 2 : 1, 1568 / Math.max(bounds.width, bounds.height)) / pixelRatio;
+      // A picture challenge is read letter by letter, and JPEG artefacts sit exactly on the shapes
+      // a model has to recognise; only a plain page shot stays compressed.
+      const format = frame ? 'png' : 'jpeg';
+      const { data } = await send('Page.captureScreenshot', { format, ...(format === 'jpeg' ? { quality: 85 } : {}),
         captureBeyondViewport: params.fullPage === true || frame !== undefined, clip: { ...bounds, scale } });
-      if (!frame) return { ...result, data, mimeType: 'image/jpeg' };
-      const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(data), c => c.charCodeAt(0))], { type: 'image/jpeg' }));
+      const mimeType = format === 'png' ? 'image/png' : 'image/jpeg';
+      if (!frame) return { ...result, data, mimeType };
+      const bitmap = await createImageBitmap(new Blob([Uint8Array.from(atob(data), c => c.charCodeAt(0))], { type: mimeType }));
       const { width, height } = bitmap;
       bitmap.close();
       check();
-      return { ...result, data, mimeType: 'image/jpeg', width, height,
-        box: { x: frame.x, y: frame.y, width: frame.width, height: frame.height },
+      return { ...result, data, mimeType, width, height,
+        box: { x: area.x, y: area.y, width: area.width, height: area.height },
         frame: { frameId: frame.frameId, url: frame.url } };
     });
     // Set when a click's press and release both reached Chrome before a session ended.

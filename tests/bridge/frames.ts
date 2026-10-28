@@ -159,6 +159,18 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
     }
     return { out, vw: innerWidth, vh: innerHeight, body: document.body.getBoundingClientRect().height };
   })));
+  // A close-up: a region of the document, magnified, and the same mapping from picture to point.
+  // That is how a letter drawn small enough to be unreadable becomes a letter a model can read.
+  const closeUp = await call('chrome.screenshot', { tab, frameId: widgetFrame.frameId,
+    zoom: { x: 0, y: 60, width: 200, height: 60 } });
+  assert.equal(closeUp.mimeType, 'image/png', 'ASSERT_FRAME_ZOOM: a close-up is lossless, because JPEG blurs the shapes');
+  assert.equal(Math.round(closeUp.box!.width), 200, 'ASSERT_FRAME_ZOOM: the picture says which region of the document it shows');
+  assert.equal(Math.round(closeUp.box!.x), Math.round(widgetShot.box!.x), 'ASSERT_FRAME_ZOOM: and where that region sits in the tab');
+  assert.ok(closeUp.width! >= 400, 'ASSERT_FRAME_ZOOM: the region is magnified, not just cropped');
+  const closeAt = { x: Math.round(closeUp.box!.x + robotLocal.x), y: Math.round(closeUp.box!.y + (robotLocal.y - 60)) };
+  const closeTarget = await describeAt(closeAt);
+  assert.equal(closeTarget.name, "I'm not a robot", 'ASSERT_FRAME_ZOOM: a point worked out from a close-up holds the same control');
+
   const robot = await describeAt(robotAt);
   assert.equal(robot.name, "I'm not a robot", 'ASSERT_FRAME_POINT_ACROSS: two levels down, the point resolves to the checkbox');
   assert.equal(robot.choice, true, 'ASSERT_FRAME_POINT_ACROSS: a checkbox is a choice, so no action verb hides in its words');

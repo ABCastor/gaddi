@@ -19,6 +19,9 @@ export interface ChromeParams {
   // middle) or cannot be written (inside another origin's page). It is never translated
   // into a frame's coordinates; the extension resolves which document it falls in.
   at?: { x: number; y: number };
+  // A region of an embedded document to see close up, in that document's own pixels: the answer to
+  // a picture a model cannot read at the size it is drawn.
+  zoom?: { x: number; y: number; width: number; height: number };
   // The document inside a tab to act on: 0 is the tab itself, any other id comes from
   // `look`, which lists every document the extension can reach.
   frameId?: number;

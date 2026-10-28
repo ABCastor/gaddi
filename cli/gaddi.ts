@@ -26,7 +26,8 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] [--why <purp
   type [tab] <selector> <text> [--mode replace|append]
   press [tab] <key> | select [tab] <selector> <value> | upload [tab] <selector> <path>
   --frame <id> with look, screenshot, click, type, press or hover acts inside a document look listed;
-      screenshot crops to it (a challenge picture, answered by pressing --at points); keys there need
+      screenshot crops to it (a challenge picture, answered by pressing --at points); --zoom x,y,w,h
+      with screenshot magnifies part of that document, in its own pixels, for a picture too small to read; keys there need
       that document to hold the focus. --at and --frame are alternatives, never both.
   scroll [tab] <dy|selector> [--dx N] [--dy N]  (wheel pixels; with a selector the wheel goes over that element)
   wait [tab] <JSON options>
@@ -43,6 +44,7 @@ let json = false, fullPage = false, foreground = false, visible = false;
 let approval: string | undefined, tab: number | undefined, group: string | undefined, item: string | undefined, why: string | undefined;
 let mode: 'replace' | 'append' | undefined;
 let at: { x: number; y: number } | undefined, frame: number | undefined;
+let zoom: { x: number; y: number; width: number; height: number } | undefined;
 const wheel: { dx?: number; dy?: number } = {};
 for (let i = 0; i < argv.length; i++) {
   const arg = argv[i];
@@ -53,6 +55,12 @@ for (let i = 0; i < argv.length; i++) {
     wheel[arg.slice(2) as 'dx' | 'dy'] = Number(value);
   }
   else if (arg === '--full-page') fullPage = true;
+  else if (arg === '--zoom') {
+    // A region of the embedded document, in that document's own pixels: x,y,width,height.
+    const parts = (argv[++i] || '').split(',').map(part => Number(part.trim()));
+    if (parts.length !== 4 || parts.some(part => !Number.isFinite(part) || part < 0)) die('--zoom needs x,y,width,height', 2);
+    zoom = { x: parts[0], y: parts[1], width: parts[2], height: parts[3] };
+  }
   else if (arg === '--at') {
     const value = argv[++i] || '';
     const parts = value.split(',').map(part => Number(part.trim()));
@@ -127,7 +135,7 @@ switch (cmd) {
   }
   case 'bookmarks': if (args.length) params.query = args.splice(0).join(' '); break;
   case 'read': if (args.length) params.url = take('URL'); break;
-  case 'screenshot': params.fullPage = fullPage; break;
+  case 'screenshot': params.fullPage = fullPage; if (zoom) params.zoom = zoom; break;
   case 'open': params.url = take('URL'); params.foreground = foreground; if (group !== undefined) params.group = group; break;
   case 'goto': params.url = take('URL'); break;
   case 'click': if (at) { if (args.length) die('click: --at takes no selector', 2); } else params.selector = take('selector'); break;
