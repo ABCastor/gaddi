@@ -1221,6 +1221,10 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
         throw new Error('That embedded document is off the page or nested too deep; look again and read it by frame');
       if (frame && (frame.width < 2 || frame.height < 2))
         throw new Error('That embedded document has no visible area to capture; scroll the page to it and try again');
+      // A widget parks its frame far off the page between rounds; cropping it would hand a model a
+      // blank picture to reason about, which is worse than saying nothing is there.
+      if (frame && (frame.y < -100 || frame.x < -100))
+        throw new Error('That embedded document is not on the page any more; look again and take the picture afresh');
       // A close-up of part of the document: the region is in the document's own pixels, and what
       // comes back says where that region sits in the tab, so the mapping from picture to point
       // does not change. Drawn at up to four times its size, which is what makes a small letter

@@ -225,6 +225,13 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
   assert.equal(await widget.evaluate(() => (document.querySelector('#inner-select') as HTMLSelectElement).value), 'two',
     'ASSERT_ARIA_HIDDEN_CLICK: the document own select really changed');
 
+  // A widget parks its frame off the page between rounds. A picture of it would be white, and a
+  // model would try to read it, so the capture says what is really there instead.
+  await innerFrame.evaluate(() => { document.querySelector('#nested')!.setAttribute('style', 'position: absolute; top: -4000px'); });
+  const parked = await daemon.request('chrome.screenshot', { tab, frameId: nestedFrame.frameId });
+  assert.match(parked.error?.message || '', /not on the page/, 'ASSERT_FRAME_PARKED: a document off the page is refused, never a blank picture');
+  await innerFrame.evaluate(() => { document.querySelector('#nested')!.removeAttribute('style'); });
+
   // A wheel inside an embedded document is aimed the same way a click is: the box is measured, the
   // point is checked from the tab's side, and only then does the wheel go there.
   const scrollerAt = await boxOf(widget, '#scroller');
