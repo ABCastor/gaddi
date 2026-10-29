@@ -100,7 +100,7 @@ Pass the version from `look` to reject stale input. When a session ends, its bac
 
 For a new account, pass `create:{title,username,vault}`. You approve the new item and vault; `op` generates and saves its password, then Gaddi fills the signup form without submitting. Use `signup:true` with `item` to fill an already saved login. Submit with an ordinary click, keeping its existing approval rules. See [the sign-in contract](docs/authorization.md#new-accounts-and-a-locked-password-manager).
 
-Credentials stay out of sign-in results and audit entries. Text output redacts exact matches for ten minutes after use; screenshots do not.
+Credentials stay out of sign-in results and audit entries. Text output redacts exact matches for ten minutes after use; screenshots do not. Credential-bearing URL query/fragment values are redacted independently, across results, errors, events and stored broker metadata. Navigation and signed approvals still use the original URL. Existing broker state and audit files are scrubbed at startup; client transcripts and Chrome history are not. See [URL credentials](docs/authorization.md#url-credentials).
 
 Uploads have a 20 MB limit. Protected credential paths and key files are refused; arbitrary files can still contain secrets. See [extension controls](docs/extension-controls.md). Connection recovery does not resubmit pending page actions.
 

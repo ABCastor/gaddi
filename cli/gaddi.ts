@@ -2,11 +2,16 @@
 // Thin socket client. Approval launches the app's Touch ID flow; the CLI grants no authority.
 import type { BrokerParams, BrokerResult, BrokerRequest } from '../shared/protocol.ts';
 import { isRecord, parseJSON, errorMessage, waitParams } from '../shared/protocol.ts';
+import { redactURLText } from '../shared/url-redaction.ts';
 import net from 'node:net';
 import { socketRequest, SocketError } from '../shared/socket.ts';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+
+// Invariant: locally generated errors and event/reader formatting obey the same URL rule as RPCs.
+const output = (value: string) => process.stdout.write(redactURLText(value));
+const diagnostic = (value: string) => process.stderr.write(redactURLText(value));
 
 // Drain both streams before an explicit exit: pipes may accept only part of a large write.
 const exit = async (code: number): Promise<never> => {
@@ -214,17 +219,17 @@ const rpc = <M extends string>(method: M, arguments_: BrokerParams = {}): Promis
 if (cmd !== 'events') {
   try {
     const result = cmd === 'read' ? await (await import('../mcp/reader.ts')).readBrowser(params, rpc) : await rpc(method, params);
-    process.stdout.write((cmd === 'screenshot' && !json ? (isRecord(result) ? result.path : undefined)
+    output((cmd === 'screenshot' && !json ? (isRecord(result) ? result.path : undefined)
       : JSON.stringify(json ? { result } : result, null, json ? 0 : 2)) + '\n');
   } catch (error) {
     const failure = error instanceof SocketError && isRecord(error.raw) ? error.raw : { code: 'error', message: errorMessage(error) };
-    if (json) process.stdout.write(JSON.stringify({ error: failure }) + '\n'); else process.stderr.write(`gaddi: ${failure.message}\n`);
+    if (json) output(JSON.stringify({ error: failure }) + '\n'); else diagnostic(`gaddi: ${failure.message}\n`);
     await exit(failure.code === 'held' ? 4 : failure.code === 'denied' ? 5 : 1);
   }
   await exit(0);
 }
 const conn = net.connect(socket); let buffer = '';
-const fail = async (message: string) => { process.stderr.write(message + '\n'); await exit(1); };
+const fail = async (message: string) => { diagnostic(message + '\n'); await exit(1); };
 conn.setEncoding('utf8');
 conn.on('connect', () => conn.write(JSON.stringify({ id: 1, method, params } satisfies BrokerRequest) + '\n'));
 conn.on('error', error => fail(`gaddi: daemon not reachable at ${socket} (${(isRecord(error) ? error.code : undefined) || error.message})`));
@@ -234,12 +239,12 @@ conn.on('data', async data => {
     let message: Record<string, unknown>;
     try { const parsed = parseJSON(buffer.slice(0, end)); if (!isRecord(parsed)) throw new Error('malformed response'); message = parsed; } catch { return await fail('gaddi: malformed response'); }
     buffer = buffer.slice(end + 1);
-    if (!message.error) { if (message.event) process.stdout.write(JSON.stringify(message) + '\n'); continue; }
+    if (!message.error) { if (message.event) output(JSON.stringify(message) + '\n'); continue; }
     const failure = isRecord(message.error) ? message.error : {};
-    if (json) process.stdout.write(JSON.stringify({ error: message.error }) + '\n'); else process.stderr.write(`gaddi: ${failure.message}\n`);
+    if (json) output(JSON.stringify({ error: message.error }) + '\n'); else diagnostic(`gaddi: ${failure.message}\n`);
     await exit(failure.code === 'held' ? 4 : failure.code === 'denied' ? 5 : 1);
   }
 });
 conn.on('end', async () => { await exit(0); });
 }
-await main().catch(async (error: unknown) => { process.stderr.write(errorMessage(error) + '\n'); await exit(isRecord(error) && typeof error.exitCode === 'number' ? error.exitCode : 1); });
+await main().catch(async (error: unknown) => { diagnostic(errorMessage(error) + '\n'); await exit(isRecord(error) && typeof error.exitCode === 'number' ? error.exitCode : 1); });

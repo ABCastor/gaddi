@@ -1,5 +1,6 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { isRecord } from '../shared/protocol.ts';
+import { redactURLText } from '../shared/url-redaction.ts';
 // mcp/map.ts — pure mapping helpers for the MCP server (unit-testable, no I/O).
 // Socket errors -> tool results; page data -> the untrusted wrapper.
 
@@ -23,7 +24,7 @@ export function mapSocketError(error: unknown): CallToolResult {
   if (code === 'denied') {
     return text(`DENIED: ${reason}. There is no approval path for this action.`);
   }
-  return { content: [{ type: 'text', text: `ERROR: ${e.message || 'unknown error'}` }], isError: true };
+  return { ...text(`ERROR: ${e.message || 'unknown error'}`), isError: true };
 }
 
 // A session grant is never retried: the broker acts on the owner's signed answer by itself, so the
@@ -38,13 +39,13 @@ export function mapGrantError(error: unknown): CallToolResult {
 }
 
 function text(s: unknown): { content: [{ type: 'text'; text: string }] } {
-  return { content: [{ type: 'text', text: String(s) }] };
+  return { content: [{ type: 'text', text: redactURLText(String(s)) }] };
 }
 
 // Always provide a complete boundary, even if page text imitates the wrapper.
 export function wrapPage(url: unknown, body: unknown) {
   const s = body == null ? '' : String(body);
-  return `${WRAP_OPEN}${url || 'unknown url'}]\n${s}\n${WRAP_CLOSE}`;
+  return `${WRAP_OPEN}${redactURLText(String(url || 'unknown url'))}]\n${redactURLText(s)}\n${WRAP_CLOSE}`;
 }
 
 export function pageResult(url: unknown, body: unknown, extra?: string) {

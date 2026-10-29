@@ -28,6 +28,7 @@ import crypto from 'node:crypto';
 import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from './policy.ts';
 import { signinSite, listLogins, chooseLogin, runSignin, createLogin, PASSWORD_UNAVAILABLE } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
+import { redactURLs, redactURLText } from '../shared/url-redaction.ts';
 import { downloadTarget, saveDownload, checkDownload, DOWNLOAD_LIMIT } from './downloads.ts';
 import { readUpload, UPLOAD_CHUNK } from './uploads.ts';
 import type { UploadFile } from './uploads.ts';
@@ -48,12 +49,28 @@ const statePath = process.env.GADDI_STATE || path.join(home, 'state.json');
 const TEXT_LIMIT = 20000, HTML_LIMIT = 5 * 1024 * 1024;
 const AGENT_GROUP_PREFIX = '● ';
 const AUDIT_MAX_BYTES = 10 * 1024 * 1024;
-const log = (...args: unknown[]) => console.error(new Date().toISOString(), '[gaddi]', ...args);
+const log = (...args: unknown[]) => console.error(new Date().toISOString(), '[gaddi]', ...redactURLs(args));
 fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+// Invariant: upgrading cannot re-expose legacy URL credentials from broker-owned JSON/JSONL.
+// Rewrite privately and atomically, without retaining an unredacted backup or changing proof hashes.
+for (const file of [statePath, `${statePath}.tmp`, auditPath, `${auditPath}.1`]) {
+  let previous: string;
+  try { previous = fs.readFileSync(file, 'utf8'); }
+  catch (error) { if (hasErrorCode(error, 'ENOENT')) continue; throw error; }
+  const safe = redactURLText(previous);
+  if (safe === previous) continue;
+  const temporary = `${file}.redact-${crypto.randomUUID()}`;
+  try {
+    fs.writeFileSync(temporary, safe, { mode: 0o600, flag: 'wx' });
+    fs.renameSync(temporary, file);
+  } finally { fs.rmSync(temporary, { force: true }); }
+}
 const startedAt = Date.now();
 const policyPath = path.join(home, 'policy.json');
 let policy = loadPolicy({ overlay: policyPath, log });
 const signinSecrets = createSigninSecrets();
+// One sink for responses, errors, events and stored metadata, independent of policy or sign-in.
+const publicOutput = (value: unknown) => redactURLs(signinSecrets.redact(value, undefined, false));
 const subscribers = new Set<Socket>(), connections = new Set<Socket>();
 const nonAuditedMethods = new Set(['status', 'approvals.list', 'signin.remembered', 'sends.remembered', 'uploads.remembered', 'zones.list', 'bridge.status', 'bridge.health', 'events.subscribe', 'session.begin', 'remote.status']);
 interface Session { caller: string; owned: Set<number>; lastActivity: number; endedAt?: number }
@@ -134,7 +151,7 @@ function emit(event: string, data: unknown) {
   if (event === 'approval.pending') {
     if (isRecord(data)) wakeApprovalApp([data.approval], { log });
   }
-  const line = JSON.stringify(signinSecrets.redact({ event, ts: new Date().toISOString(), data }, undefined, false)) + '\n';
+  const line = JSON.stringify(publicOutput({ event, ts: new Date().toISOString(), data })) + '\n';
   for (const conn of subscribers) {
     if (conn.destroyed || conn.writableLength > 1024 * 1024) { subscribers.delete(conn); conn.destroy(); }
     else conn.write(line);
@@ -149,7 +166,7 @@ const remote = createRemote({ statePath: path.join(home, 'remote.json'),
   keyPath: process.env.GADDI_REMOTE_KEY || path.join(home, 'remote-approver.pub'), proofs, emit, log });
 const approvals = createApprovals({ waitMinutes: policy.approvals.wait_minutes, imageRoot: path.join(home, 'approvals'), log, ttlMinutes: Number(policy.approvals.ttl_minutes) > 0 ? Number(policy.approvals.ttl_minutes) : 10,
   onChange: () => {
-    fs.writeFileSync(statePath + '.tmp', JSON.stringify({ approvals: approvals.persistable() }), { mode: 0o600 });
+    fs.writeFileSync(statePath + '.tmp', JSON.stringify(publicOutput({ approvals: approvals.persistable() })), { mode: 0o600 });
     fs.renameSync(statePath + '.tmp', statePath);
   },
   // Whether the owner's other device may answer this record right now, judged from the live policy and state.
@@ -927,7 +944,7 @@ function rotateAudit() {
 }
 function audit(entry: unknown) {
   rotateAudit();
-  fs.appendFileSync(auditPath, JSON.stringify(signinSecrets.redact(entry, undefined, false)) + '\n', { mode: 0o600 });
+  fs.appendFileSync(auditPath, JSON.stringify(publicOutput(entry)) + '\n', { mode: 0o600 });
 }
 // Serialize broker actions to keep tab resolution, metadata and forwarding together. Approval
 // and event calls remain independent, so a slow browser operation cannot block the approval app.
@@ -1078,8 +1095,8 @@ async function handle(input: unknown, conn: Socket) {
       approval: error?.approval?.id ?? meta.decision?.approval ?? params.approval, error: error?.code, ms: Date.now() - start });
   }
   // The caller's correlation ID and wire keys are protocol, never page-derived credentials.
-  if (!conn.destroyed) conn.write(JSON.stringify(error ? { id, error: signinSecrets.redact(error, undefined, false) }
-    : { id, result: signinSecrets.redact(result, undefined, false) }) + '\n');
+  if (!conn.destroyed) conn.write(JSON.stringify(error ? { id, error: publicOutput(error) }
+    : { id, result: publicOutput(result) }) + '\n');
 }
 
 const server = net.createServer(conn => {

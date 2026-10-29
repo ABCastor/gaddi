@@ -156,6 +156,14 @@ Gaddi fills supported one-step and two-step forms and an available TOTP. Captcha
 
 The agent receives an outcome, site and item title, never a credential field from the sign-in operation. For ten minutes, the broker redacts exact credential matches from text tool output and audit/error records. This does not cover transformed values or screenshot pixels. A visible username or revealed password can still appear in a screenshot. Agents with unrestricted shell access can reach 1Password independently of Gaddi.
 
+### URL credentials
+
+**URL-CREDENTIALS.** Every broker response, error and event redacts credential-bearing URL query and fragment values before delivery, independently of sign-in and policy settings. This includes tab titles/lists, bookmarks, look/frame metadata, eval's automatic page envelope, navigation results and extracted text. Matching includes `code`, `state`, `id_token`, `access_token`, `token`, `sig`, `key`, `password`, `session` and related credential names, with case/encoding variants, repeated parameters and nested redirect URLs. URL userinfo is withheld too. Ordinary query values remain useful. MCP wrappers and CLI output apply the same rule after local formatting.
+
+Redaction is a display/storage boundary, never a navigation rewrite. Chrome, policy checks and signed action hashes still receive the exact original URL; approving one query cannot authorize a different query. Implemented by `shared/url-redaction.ts` and the broker's shared output sink; `tests/redaction/broker.test.sh` tests the real broker/MCP/CLI against synthetic callbacks and falsifies the protection by removing the broker sanitizer in a disposable fixture.
+
+Audit page addresses already omit queries and fragments, but other metadata and legacy restored records can contain URLs. New audit writes and approval-state writes are sanitized. At startup, existing `state.json`, its `.tmp` file and both audit-log generations are scrubbed by private atomic replacement without keeping an unredacted backup. Native-host logs contain fixed lifecycle codes, not URLs; extension storage retains target/window IDs and recovery metadata, not page URLs. Raw URLs needed to act remain in memory. This does not alter Chrome's own history, screenshot pixels, arbitrary secret-bearing page content or previously retained client transcripts. Already exposed credentials and transcript remediation need separate incident handling.
+
 ### New accounts and a locked password manager
 
 A new account uses `browser_signin` with `create:{title,username,vault}` or `gaddi signin <tab-id> --create '{"title":"Example login","username":"test@example.test","vault":"<vault-id>"}'`. `vault` is the intended vault's ID, not its name. Gaddi shows the vault, title and username on a signed approval, creates a new Login through `op`, then fills the email, password and optional confirmation. `op` generates the password internally; no password argument is accepted. It never edits a matching existing item. To retry a previously saved login, select it with `item` and `signup:true` (`--signup` in the CLI).
@@ -172,4 +180,4 @@ Use `browser_click` with `download:"/absolute/path/export.zip"`, or `gaddi click
 
 ## Local records
 
-`gaddi audit` records caller labels, action metadata and outcomes. Addresses omit query strings; typed text and page contents are excluded. Caller labels are supplied by clients, not authenticated operating-system identities. Captures and other state stay in `~/Library/Application Support/Gaddi` by default. Gaddi forwards page content to the connected agent, whose model provider and data policy you choose separately.
+`gaddi audit` records caller labels, action metadata and outcomes. Page addresses omit queries and fragments; credential-bearing URLs in other metadata are redacted too. Typed text and page contents are excluded. Caller labels are supplied by clients, not authenticated operating-system identities. Captures and other state stay in `~/Library/Application Support/Gaddi` by default. Gaddi forwards page content to the connected agent, whose model provider and data policy you choose separately.
