@@ -538,6 +538,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     if (params.selector !== undefined) args.selector = requiredString(params.selector, 'selector');
     Object.assign(args, wheelParams(params));
     if (args.selector === undefined && args.dx === undefined && args.dy === undefined) throw new Error('scroll requires dx, dy or selector');
+    // A wheel with no selector lands at the tab's corner, on the tab's own page: it cannot scroll a document inside it.
+    if (args.frameId !== undefined && args.selector === undefined) throw new Error('scroll inside a frame needs a selector to aim at');
   } else if (method === 'screenshot') {
     if (params.fullPage !== undefined && typeof params.fullPage !== 'boolean') throw new Error('fullPage must be boolean');
     args.fullPage = params.fullPage ?? false;
@@ -546,14 +548,19 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     if (!isRecord(info) || typeof info.name !== 'string') throw new Error('bridge returned invalid element description');
     targetSelector = typeof info.selector === 'string' ? info.selector : args.selector;
     meta.upload = { name: upload.name, bytes: upload.bytes.length };
+    // The file goes to the document that holds the field, so that site is what the gates judge.
+    const scopeURL = actingURL(info.frameUrl, pageURL);
     check = checkUpload(policy);
-    check = checkRememberedUpload(policy, pageURL, check);
+    // A remembered site covers its own pages only: a file into another site's embedded document
+    // asks every time, and is never offered as remembered for the tab's site.
+    if (scopeURL === pageURL) check = checkRememberedUpload(policy, pageURL, check);
+    else check = strictest(check, checkNavigation(policy, navigationURL(scopeURL)));
     if (check.outcome === 'allow' && !params.approval) meta.reason = check.reason;
     // readUpload already refused secret stores above, so a grant never reaches a refused file.
-    check = grantCheck(check, { kind: 'upload' });
+    check = grantCheck(check, { kind: 'upload' }, scopeURL);
     const size = upload.bytes.length < 1024 * 1024 ? `${Math.ceil(upload.bytes.length / 1024)} KB` : `${(upload.bytes.length / 1024 / 1024).toFixed(1)} MB`;
     // The approval app reads this as: <agent> wants to upload “<file> (<size>)” on <site>.
-    detail = `${cleanDetail(upload.name)} (${size})`;
+    detail = `${cleanDetail(upload.name)} (${size})${scopeURL !== pageURL ? ` in ${cleanURL(scopeURL)}` : ''}`;
   } else if (method === 'emulate') {
     for (const key of ['width', 'height'] as const) if (params[key] !== undefined) {
       if (typeof params[key] !== 'number' || !Number.isSafeInteger(params[key]) || params[key] < 1) throw new Error(`${key} must be a positive integer`);

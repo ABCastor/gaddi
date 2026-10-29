@@ -57,8 +57,10 @@ const approval = S;
 // The agent's one-line purpose, shown to the owner if the action is held. Only on tools that can be held.
 const why = S;
 const wheel = { type: 'number', minimum: -WHEEL_LIMIT, maximum: WHEEL_LIMIT };
-// A document inside the tab, as look lists it: actions then resolve inside that page.
-const frameId = { type: 'integer', description: 'Frame id from look.' };
+// A document inside the tab, as look lists it: actions then resolve inside that page. Every tool the
+// CLI's --frame reaches takes it (tests/mcp/metadata.test.ts); the name alone says where it comes from,
+// which keeps tools/list in budget.
+const frameId = { type: 'integer' };
 // A point the agent saw, in the tab's own viewport: what a screenshot shows. The broker bounds it.
 const at = { type: 'object' };
 const zoom = { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' },
@@ -78,7 +80,7 @@ const TOOLS: ToolDefinition[] = [
     const note = '\n[Bookmarks truncated at 20,000 characters; narrow query.]';
     return pageResult('Chrome bookmarks', lines.length > 20000 ? lines.slice(0, 20000 - note.length) + note : lines);
   }),
-  tool('wait', 'Wait for text, selector/ref or URL part; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 } }, [], 'wait', pageJSON),
+  tool('wait', 'Wait for text, selector/ref or URL part; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 }, frameId }, [], 'wait', pageJSON),
   tool('look', 'Read text/refs, floating menus/suggestions and frames; visible:true is viewport.', { tab, visible: B, frameId }, [], 'look',
     result => result?.note ? plainResult(result.note) : pageJSON(result)),
   {
@@ -94,9 +96,9 @@ const TOOLS: ToolDefinition[] = [
   tool('signin', '1Password. create:{title,username,vault}: new login; signup:true: fill existing. Signup never submits.', { tab, item: S, signup: B, create: { type: 'object', properties: { title: S, username: S, vault: S }, required: ['title','username','vault'], additionalProperties: false }, approval, why }),
   tool('press', 'Press key; frameId requires focus in that document.', { tab, version, key: S, frameId, approval, why }, ['key']),
   tool('hover', 'Hover selector.', { tab, version, selector: S, frameId }, ['selector']),
-  tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector.', { tab, version, dx: wheel, dy: wheel, selector: S }),
-  tool('select', 'Select option by value.', { tab, version, selector: S, value: S }, ['selector', 'value']),
-  tool('upload', 'Attach local file to a field/label/drop zone; held.', { tab, version, selector: S, path: S, approval, why }, ['selector', 'path']),
+  tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector.', { tab, version, dx: wheel, dy: wheel, selector: S, frameId }),
+  tool('select', 'Select option by value.', { tab, version, selector: S, value: S, frameId }, ['selector', 'value']),
+  tool('upload', 'Attach local file to a field/label/drop zone; held.', { tab, version, selector: S, path: S, frameId, approval, why }, ['selector', 'path']),
   tool('eval', 'Evaluate JS; password reads and user-policy matches denied.', { tab, expression: S }, ['expression'], 'eval', pageJSON),
   tool('emulate', 'Set viewport, theme or animation speed; reset clears.', {
     tab, width: { type: 'integer', minimum: 1 }, height: { type: 'integer', minimum: 1 }, mobile: B,

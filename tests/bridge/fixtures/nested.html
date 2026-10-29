@@ -6,10 +6,16 @@
 <h2 id="nested-heading">Nested heading</h2>
 <button id="nested-button">Nested action</button>
 <input id="nested-field" aria-label="Nested field">
+<input id="nested-file" type="file" aria-label="Nested file">
 <script>
   Object.assign(window, { events: [] });
   const record = type => event => window.events.push({ type, target: event.target.id, trusted: event.isTrusted });
   document.addEventListener('click', record('click'), true);
   document.addEventListener('input', record('input'), true);
+  // What the document own file field received, so a test can tell which document got the file.
+  window.files = [];
+  document.querySelector('#nested-file').addEventListener('change', event => {
+    for (const file of event.target.files) window.files.push({ name: file.name, size: file.size });
+  });
 </script>
 </html>

@@ -53,6 +53,8 @@ async function result(method: string, params: BrokerParams = {}) {
 const sign = (message: string, ts: number) => ({ ts, sig: crypto.sign('sha256', Buffer.from(message), privateKey).toString('base64') });
 const site = 'https://github.com';
 let page = site + '/ABCastor/gaddi/settings';
+// The embedded document that holds the field, when the upload is aimed inside one.
+let frameUrl: string | undefined;
 const image = path.join(home, 'preview.png'); fs.writeFileSync(image, 'fixture image');
 const dispatched: ChromeRequest[] = [], events: string[] = [];
 let passed = 0;
@@ -65,7 +67,7 @@ try {
     if (request.id === 'attach') return;
     let value: unknown = {};
     if (request.method === 'chrome.tabs') value = { tabs: [{ id: 7, url: page, title: 'Fixture' }] };
-    else if (request.method === 'chrome.describe') value = { name: 'Upload preview', tag: 'INPUT', type: 'file', selector: '@abcdef:1' };
+    else if (request.method === 'chrome.describe') value = { name: 'Upload preview', tag: 'INPUT', type: 'file', selector: '@abcdef:1', ...(frameUrl ? { frameUrl } : {}) };
     else if (request.method === 'chrome.uploadChunk' || request.method === 'chrome.upload') {
       dispatched.push(request); if (request.method === 'chrome.upload') value = { uploaded: true };
     }
@@ -126,6 +128,28 @@ try {
   assert.equal((await call('upload', { ...uploadParams, path: refused })).error?.code, 'denied', 'ASSERT_UPLOAD_WIRE_FILE_REFUSED');
   assert.equal(dispatched.filter(r => r.method === 'chrome.upload').length, 2);
   pass('protected pages including query/hash and refused hosts stay held; other origins stay held and refused files never dispatch');
+  // The tab's site is remembered, but the field sits in another site's embedded document: that site
+  // receives the file, so it asks, names the document, and offers no remember for the tab's site.
+  frameUrl = 'https://uploads.example.test/widget?code=fixture-callback-value';
+  const framed = await call('upload', { ...uploadParams, frameId: 3 });
+  assert.equal(framed.error?.code, 'held', 'ASSERT_UPLOAD_FRAME_HELD: a remembered tab site does not cover an embedded document');
+  const framedApproval = (await result('approvals.list') as { pending: StoredApproval[] }).pending.find(a => a.id === framed.error?.approval?.id);
+  assert.ok(framedApproval, 'ASSERT_UPLOAD_FRAME_HELD');
+  assert.equal(framedApproval.rememberable, undefined, 'ASSERT_UPLOAD_FRAME_HELD: a framed upload is never offered as remembered');
+  assert.equal(framedApproval.site, undefined, 'ASSERT_UPLOAD_FRAME_HELD');
+  assert.match(String(framedApproval.detail), / in https:\/\/uploads\.example\.test\/widget$/, 'ASSERT_UPLOAD_FRAME_HELD: the card names the receiving document');
+  assert.ok(!JSON.stringify(framedApproval).includes('fixture-callback-value'), 'ASSERT_UPLOAD_FRAME_HELD: its query stays off the card');
+  const onceTs = Date.now();
+  assert.throws(() => approvalMessage('grant', framedApproval, onceTs, true), /can remember a site/, 'ASSERT_UPLOAD_FRAME_HELD: always-allow cannot even be worded for it');
+  assert.equal((await call('approval.grant', { id: String(framedApproval.id), remember: true,
+    proof: sign(approvalMessage('grant', framedApproval, onceTs), onceTs) })).error?.code, 'approval-invalid', 'ASSERT_UPLOAD_FRAME_HELD: nor granted');
+  await result('approval.grant', { id: String(framedApproval.id), proof: sign(approvalMessage('grant', framedApproval, onceTs), onceTs) });
+  assert.deepEqual(await result('upload', { ...uploadParams, frameId: 3, approval: String(framedApproval.id) }), { uploaded: true });
+  const sent = dispatched.filter(r => r.method === 'chrome.upload').at(-1);
+  assert.equal(sent?.params?.frameId, 3, 'ASSERT_UPLOAD_FRAME_DISPATCH: the approved file goes to the document that was judged');
+  assert.deepEqual(await result('uploads.remembered'), { sites: [site] }, 'ASSERT_UPLOAD_FRAME_HELD: nothing new is remembered');
+  frameUrl = undefined;
+  pass('a field inside another site embedded document is judged on that site: held despite a remembered tab, never rememberable, approved once and dispatched to that frame');
   assert.equal((await call('uploads.revoke', { site })).error?.code, 'proof-invalid');
   const revokeTs = Date.now(), revokeProof = sign(uploadRevokeMessage(site, revokeTs), revokeTs);
   assert.equal((await call('uploads.revoke', { site: 'https://other.example.test', proof: revokeProof })).error?.code, 'proof-invalid');
