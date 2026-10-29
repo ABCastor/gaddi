@@ -96,7 +96,9 @@ Pass the version from `look` to reject stale input. When a session ends, its bac
 
 ### Sign in with 1Password
 
-`browser_signin` uses the [1Password CLI](https://developer.1password.com/docs/cli/) and desktop-app integration. You authorize the site and Login item; Gaddi fills it. Captchas, passkeys and extra verification can need you.
+`browser_signin` uses the [1Password CLI](https://developer.1password.com/docs/cli/) and desktop-app integration, without needing the browser's password-manager extension. You authorize the site and Login item; Gaddi fills it. A locked or unavailable CLI returns an unlock/retry instruction after a five-second process budget. Agents can work through visual challenges with screenshot/click; passkeys and extra verification can need you.
+
+For a new account, pass `create:{title,username,vault}`. You approve the new item and vault; `op` generates and saves its password, then Gaddi fills the signup form without submitting. Use `signup:true` with `item` to fill an already saved login. Submit with an ordinary click, keeping its existing approval rules. See [the sign-in contract](docs/authorization.md#new-accounts-and-a-locked-password-manager).
 
 Credentials stay out of sign-in results and audit entries. Text output redacts exact matches for ten minutes after use; screenshots do not.
 
@@ -112,7 +114,9 @@ bash tests/run-all.sh
 
 Tests use isolated state and falsify gates by removing their protection. Browser tests need Chrome for Testing; Secure Enclave checks need a desktop session. Missing prerequisites are skipped. Commit regenerated extension output after changes. [Visual sources](docs/media/README.md) are included.
 
-There is no console or network inspection, download handling, browser-dialog handling or video recording. CSS and Web Animations can be slowed; JavaScript timers, canvas and video cannot.
+`browser_click` accepts `download:"/absolute/path/export.zip"` for an approved, same-origin blob/filesystem anchor export that reaches the top document. It saves a new file under Downloads or the system temporary directory, up to 20 MiB, with no overwrite. Detached anchors, other download methods and embedded documents are unsupported. See [the bounded download contract](docs/authorization.md#page-generated-downloads).
+
+There is no console or network inspection, general download manager, browser-dialog handling or video recording. CSS and Web Animations can be slowed; JavaScript timers, canvas and video cannot.
 
 Original code is licensed under [Apache-2.0](LICENSE). Bundled fonts, the Public Suffix List and dependencies keep their own licenses; see [NOTICE](NOTICE).
 

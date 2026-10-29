@@ -37,7 +37,7 @@ export function isTabInfo(value) {
 // Check only the result fields a client consumes; arbitrary eval and policy payloads stay opaque.
 export function isBrokerResult(method, value) {
     switch (method) {
-        case 'signin': return isRecord(value) && ['signed_in', 'needs_you', 'no_login', 'choose', 'failed'].includes(String(value.outcome))
+        case 'signin': return isRecord(value) && ['signed_in', 'filled', 'needs_you', 'no_login', 'choose', 'failed'].includes(String(value.outcome))
             && typeof value.site === 'string' && ['item_title', 'step', 'reason'].every(key => value[key] === undefined || typeof value[key] === 'string')
             && Object.keys(value).every(key => ['outcome', 'site', 'item_title', 'step', 'reason'].includes(key));
         case 'tabs': return isRecord(value) && Array.isArray(value.tabs) && value.tabs.every(isTabInfo);

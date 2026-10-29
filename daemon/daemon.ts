@@ -26,8 +26,9 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from './policy.ts';
-import { signinSite, listLogins, chooseLogin, runSignin } from './signin.ts';
+import { signinSite, listLogins, chooseLogin, runSignin, createLogin, PASSWORD_UNAVAILABLE } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
+import { downloadTarget, saveDownload, checkDownload, DOWNLOAD_LIMIT } from './downloads.ts';
 import { readUpload, UPLOAD_CHUNK } from './uploads.ts';
 import type { UploadFile } from './uploads.ts';
 import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail, approvalContext } from './approvals.ts';
@@ -349,6 +350,9 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     zone = zoned.zone;
     return zoned;
   };
+  if (params.download !== undefined && method !== 'click') throw new Error('download applies only to click');
+  const download = params.download === undefined ? undefined : downloadTarget(params.download);
+  if (download && params.frameId !== undefined) throw new Error('Generated-download capture currently supports the top document only');
   const args: ChromeParams = { tab: resolvedTab };
   // A document inside the tab, named by what `look` listed. Every action on it then
   // resolves selectors and checks inside that document instead of the tab's own page.
@@ -385,23 +389,48 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     const finish = (result: SigninResult) => { meta.signin = result; return result; };
     try {
       site = signinSite(pageURL);
-      let logins;
-      try { logins = await listLogins(); }
-      catch { return finish({ outcome: 'needs_you', site, step: '1password', reason: '1Password is locked or did not answer: unlock it with Touch ID, then retry' }); }
-      const selection = chooseLogin(logins, site, params.item);
-      if (selection.outcome !== 'selected') return finish(selection);
-      const item = selection.item;
-      const title = cleanDetail(item.title);
+      if (params.signup !== undefined && typeof params.signup !== 'boolean') throw new Error();
+      const creating = params.create !== undefined, signup = creating || params.signup === true;
+      if (creating && (params.item !== undefined || !isRecord(params.create) || typeof params.create.title !== 'string'
+        || !params.create.title.trim() || params.create.title.length > 160 || typeof params.create.username !== 'string'
+        || !params.create.username.trim() || params.create.username.length > 320
+        || typeof params.create.vault!=='string' || !/^[a-z0-9]{26}$/.test(params.create.vault)
+        || Object.keys(params.create).some(key=>!['title','username','vault'].includes(key)))) throw new Error();
+      if (creating && checkSignin(policy,site).outcome==='deny') return finish({outcome:'failed',site,reason:'Site refused'});
+      let item;
+      if (creating) item = { id: 'new', title: String((params.create as Record<string, unknown>).title), urls: [site] };
+      else {
+        let logins;
+        try { logins = await listLogins(); }
+        catch { return finish({ outcome: 'needs_you', site, step: '1password', reason: PASSWORD_UNAVAILABLE }); }
+        const selection = chooseLogin(logins, site, params.item);
+        if (selection.outcome !== 'selected') return finish(selection);
+        item = selection.item;
+      }
+      const title = cleanDetail(creating ? `Create new login: ${item.title} (${String((params.create as Record<string, unknown>).username)}), vault ${String((params.create as Record<string, unknown>).vault)}` : item.title);
       try {
-        await gate({ kind: 'signin', meta, detail: title, check: checkSignin(policy, site), approval: params.approval,
-          action: { method: 'signin', caller: meta.caller, url: pageURL, tab: resolvedTab, item: item.id, title, site } });
+        await gate({ kind: 'signin', meta, detail: title,
+          check: creating ? { outcome: 'hold', reason: 'create and save a new 1Password login' } : checkSignin(policy, site), approval: params.approval,
+          action: { method: 'signin', caller: meta.caller, url: pageURL, tab: resolvedTab, item: item.id, title, site, signup,
+            ...(creating ? { create: params.create } : {}) } });
       } catch (error) {
         if (error instanceof GateError && error.code === 'held' && error.approval) return finish({ outcome: 'needs_you', site,
           item_title: title, step: 'approval', reason: `held: approve ${String(error.approval.id)} in Gaddi, then retry with approval=${String(error.approval.id)}` });
         return finish({ outcome: 'failed', site, item_title: title, step: 'approval', reason: 'Sign-in approval refused or invalid' });
       }
+      // Creation is a separate signed operation; refused/protected sites still win.
+      if (creating) {
+        const protection = checkSignin(policy, site);
+        if (protection.outcome === 'deny') return finish({ outcome: 'failed', site, reason: 'Site refused' });
+        const probe = await request('signinProbe', { tab: resolvedTab, signin: { site, signup: true } });
+        if (!isRecord(probe) || probe.challenge || !probe.password || signinSite(probe.url) !== site)
+          return finish({ outcome: 'needs_you', site, reason: 'No supported signup form. No item created.' });
+        try { item = await createLogin(site, params.create); }
+        catch { return finish({ outcome: 'needs_you', site, step: '1password', item_title: item.title,
+          reason: `${PASSWORD_UNAVAILABLE} Check for the new item before retrying creation; a timed-out save may have completed.` }); }
+      }
       // The bridge connection and tab remain pinned while op and the page advance.
-      return finish(await runSignin({ site, item, request: (name, values, deadline) => bridge.request('chrome.' + name, { ...values, tab: resolvedTab }, connection, deadline),
+      return finish(await runSignin({ site, item, signup, request: (name, values, deadline) => bridge.request('chrome.' + name, { ...values, tab: resolvedTab }, connection, deadline),
         remember: value => signinSecrets.remember(resolvedTab, [value]) }));
     } catch {
       return finish({ outcome: 'failed', site, step: 'signin', reason: 'Sign-in unavailable or site refused' });
@@ -425,6 +454,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     if (!isRecord(info) || typeof info.name !== 'string' || typeof info.tag !== 'string') throw new Error('bridge returned invalid element description');
     // The document that would act: the frame when the action happens inside an embedded page.
     const scopeURL = actingURL(info.frameUrl, pageURL);
+    if (download && scopeURL!==pageURL) throw new Error('Generated-download capture currently supports the top document only');
     if (method === 'click') {
       if (typeof info.href !== 'string') throw new Error('chrome.describe must return href');
       // A point click keeps its point: substituting the element's reference would click
@@ -438,7 +468,10 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       // Neither the tab's own rules nor the acting document's can be escaped: the stricter wins.
       if (info.blind !== true && scopeURL !== pageURL) check = strictest(check, checkClick(policy, hostOf(pageURL), info.name, control));
       const destination = info.href ? new URL(info.href, scopeURL).href : '';
-      if (check.outcome === 'allow' && info.href) check = checkNavigation(policy, navigationURL(destination));
+      const generated = download && /^(?:blob:|filesystem:)/.test(destination);
+      if (generated && new URL(destination.replace(/^filesystem:/, '')).origin !== new URL(scopeURL).origin)
+        throw new GateError('denied', 'Generated download belongs to a different site');
+      if (check.outcome === 'allow' && info.href && !generated) check = checkNavigation(policy, navigationURL(destination));
       if (check.outcome === 'allow' && scopeURL !== pageURL) check = checkNavigation(policy, navigationURL(scopeURL));
       check = checkRememberedSend(policy, scopeURL, method, check, info.name, destination);
       check = grantCheck(check, { kind: 'click', name: info.name, destination }, scopeURL);
@@ -524,12 +557,16 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   if (method === 'select') {
     if (typeof params.value !== 'string') throw new Error('value must be a string'); args.value = params.value;
   }
+  // DOWNLOAD: a capture always asks once, even on a zone or a remembered/granted click.
+  // The original action's stricter deny/hold is retained; the file path is signed too.
+  if (download) { check = strictest(check, checkDownload(policy)); detail += ` -> ${download} (up to 20 MB)`; }
   await gate({ kind: method, meta, detail, check, approval: params.approval, targetSelector, remoteScope,
     capture: targetSelector ? () => bridge.request('chrome.approvalCapture', { tab: resolvedTab,
       selector: targetSelector, checkedDescription: args._description, ...(method === 'press' ? { key: args.key } : {}) },
       connection, Math.min(deadline, Date.now() + 3000)) : undefined,
     // An approval covers this exact file: its name, size and content digest.
     action: { method, caller: meta.caller, url: pageURL, ...args,
+      ...(download ? { download } : {}),
       ...(upload ? { file: { name: upload.name, bytes: upload.bytes.length, sha256: upload.sha256 } } : {}) } });
   // A supplied approval went through consume, so only an action the grant itself waived is credited to it.
   if (grantId && !params.approval) meta.grantId = grantId;
@@ -543,6 +580,41 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     for (let index = 0; index < chunks; index++) await request('uploadChunk', { upload: { id, index,
       data: upload.bytes.subarray(index * UPLOAD_CHUNK, (index + 1) * UPLOAD_CHUNK).toString('base64') } });
     args.upload = { id, chunks, name: upload.name, type: upload.type, lastModified: upload.lastModified, size: upload.bytes.length, sha256: upload.sha256 };
+  }
+  if (download) {
+    const capture = { id: crypto.randomUUID(), site: new URL(pageURL).origin };
+    const captureArgs: ChromeParams = { tab: resolvedTab, downloadCapture: capture };
+    const until = Math.min(deadline - 1000, Date.now() + 12000);
+    try {
+      const armed = await request('downloadArm', captureArgs);
+      if (!isRecord(armed) || armed.armed !== true) throw new Error('Download capture was not armed');
+      const clicked = await request('click', args); // Exactly once, through the same checked trusted-input path.
+      let state;
+      while (Date.now() < until) {
+        state = await request('downloadPoll', captureArgs);
+        if (!isRecord(state)) throw new Error('Invalid download status');
+        if (state.error) throw new Error(String(state.error));
+        if (state.ready === true) break;
+        await new Promise(resolve => setTimeout(resolve,100));
+      }
+      if (!isRecord(state) || state.ready !== true) throw new Error('No generated anchor download captured; the click was not retried');
+      if (typeof state.bytes !== 'number' || !Number.isSafeInteger(state.bytes) || state.bytes < 0 || state.bytes > DOWNLOAD_LIMIT
+        || typeof state.chunks !== 'number' || state.chunks !== Math.max(1,Math.ceil(state.bytes/(192*1024)))) throw new Error('Invalid download size');
+      const pieces: Buffer[] = [];
+      for (let index=0;index<state.chunks;index++) {
+        const chunk = await request('downloadChunk',{...captureArgs,downloadCapture:{...capture,index}});
+        if (!isRecord(chunk) || typeof chunk.data !== 'string' || chunk.data.length>256*1024
+          || chunk.data.length%4!==0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(chunk.data)) throw new Error('Invalid download chunk');
+        pieces.push(Buffer.from(chunk.data,'base64'));
+      }
+      const bytes=Buffer.concat(pieces);
+      if (bytes.length!==state.bytes) throw new Error('Download size changed');
+      // Revalidate after the page acted; an intervening file or link must not be overwritten.
+      if (downloadTarget(download)!==download) throw new Error('Download destination changed');
+      saveDownload(download,bytes);
+      return {...(isRecord(clicked)?clicked:{}),tab:resolvedTab,url:pageURL,downloaded:true,path:download,bytes:bytes.length,
+        sha256:crypto.createHash('sha256').update(bytes).digest('hex')};
+    } finally { await request('downloadEnd',captureArgs).catch(()=>{}); }
   }
   const rawResult = await request(method === 'look' ? 'read' : method, args);
   const result = isRecord(rawResult) ? rawResult : undefined;

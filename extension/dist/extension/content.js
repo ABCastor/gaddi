@@ -7,6 +7,97 @@ export async function pageTask(action, params = {}) {
             prefix: '@' + [...crypto.getRandomValues(new Uint8Array(6))].map(n => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-'[n & 63]).join('') + ':',
             next: 0, nodes: new Map(), ids: new WeakMap(),
         };
+        if (action.startsWith('download')) {
+            const capture = params.downloadCapture;
+            if (!capture || typeof capture.id !== 'string' || capture.site !== location.origin)
+                throw new Error('Download origin changed');
+            if (action === 'downloadArm') {
+                if (state.download)
+                    throw new Error('A download capture is already active');
+                const abort = new AbortController();
+                const download = { id: capture.id, site: capture.site, busy: false, stop: () => { } };
+                // DOWNLOAD: intercept only a same-origin blob/filesystem anchor. Never navigate to
+                // an arbitrary scheme, inspect another origin, or export bytes to page/agent code.
+                const listener = (event) => {
+                    const anchor = event.composedPath().find(node => node instanceof HTMLAnchorElement);
+                    if (!anchor)
+                        return;
+                    const href = anchor.href;
+                    if (!/^(?:blob:|filesystem:)/.test(href))
+                        return;
+                    event.preventDefault();
+                    event.stopImmediatePropagation();
+                    if (download.busy)
+                        return;
+                    download.busy = true;
+                    let url;
+                    try {
+                        url = new URL(href.replace(/^filesystem:/, ''));
+                    }
+                    catch {
+                        download.error = 'Invalid generated download';
+                        return;
+                    }
+                    if (url.origin !== capture.site) {
+                        download.error = 'Generated download belongs to a different site';
+                        return;
+                    }
+                    void (async () => {
+                        const response = await fetch(href, { signal: abort.signal, redirect: 'error' });
+                        if (!response.ok || !response.body)
+                            throw new Error();
+                        const reader = response.body.getReader(), pieces = [];
+                        let size = 0;
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done)
+                                break;
+                            size += value.byteLength;
+                            if (size > 20 * 1024 * 1024) {
+                                await reader.cancel();
+                                download.error = 'Download exceeds 20 MB';
+                                return;
+                            }
+                            pieces.push(value);
+                        }
+                        const bytes = new Uint8Array(size);
+                        let offset = 0;
+                        for (const piece of pieces) {
+                            bytes.set(piece, offset);
+                            offset += piece.byteLength;
+                        }
+                        if (!abort.signal.aborted)
+                            download.data = bytes;
+                    })().catch(() => { download.error ||= 'Generated download could not be captured'; });
+                };
+                const timer = setTimeout(() => { download.stop(); if (state.download === download)
+                    delete state.download; }, 15000);
+                download.stop = () => { clearTimeout(timer); document.removeEventListener('click', listener, true); abort.abort(); };
+                state.download = download;
+                document.addEventListener('click', listener, true);
+                return { armed: true };
+            }
+            const download = state.download;
+            if (!download || download.id !== capture.id || download.site !== capture.site)
+                throw new Error('Download capture expired or page changed');
+            if (action === 'downloadEnd') {
+                download.stop();
+                delete state.download;
+                return { ended: true };
+            }
+            if (action === 'downloadPoll')
+                return { ready: !!download.data, ...(download.data ? { bytes: download.data.length, chunks: Math.max(1, Math.ceil(download.data.length / (192 * 1024))) } : {}), ...(download.error ? { error: download.error } : {}) };
+            if (action === 'downloadChunk') {
+                const index = capture.index;
+                if (!download.data || typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || index >= Math.max(1, Math.ceil(download.data.length / (192 * 1024))))
+                    throw new Error('Invalid download chunk');
+                let binary = '';
+                for (const byte of download.data.subarray(index * 192 * 1024, (index + 1) * 192 * 1024))
+                    binary += String.fromCharCode(byte);
+                return { data: btoa(binary) };
+            }
+            throw new Error('Unsupported download action');
+        }
         if (action === 'typeCleanup') {
             if (state.appendCleanup && state.appendCleanup.owner === params.appendCleanup) {
                 state.appendCleanup.restore();
@@ -390,8 +481,14 @@ export async function pageTask(action, params = {}) {
                 || el.getAttribute('aria-disabled') === 'true')
                 return;
             const tokens = (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/);
-            if (tokens.includes('new-password'))
+            if (tokens.includes('new-password') && !params.signin?.signup)
                 return;
+            if (params.signin?.signup && el.type === 'password') {
+                const passwords = [...(el.form?.elements || document.querySelectorAll('input'))].filter(control => control.type === 'password' && visible(control) && !control.disabled);
+                if (passwords.length === 2 && passwords[1] === el)
+                    return 'confirmation';
+                return 'password';
+            }
             const type = (el.type || 'text').toLowerCase();
             if (!['text', 'email', 'tel', 'number', 'password'].includes(type))
                 return;
@@ -428,14 +525,16 @@ export async function pageTask(action, params = {}) {
                 }
             }
             walk(document);
-            let ambiguous = inputs.some(el => readable(el) && /(?:^|\s)new-password(?:\s|$)/i.test(el.getAttribute('autocomplete') || ''));
+            let ambiguous = !params.signin?.signup && inputs.some(el => readable(el) && /(?:^|\s)new-password(?:\s|$)/i.test(el.getAttribute('autocomplete') || ''));
+            if (params.signin?.signup && inputs.filter(el => readable(el) && el.type === 'password').length > 2)
+                ambiguous = true;
             // An unavailable verification control still means authentication is unfinished.
             if (inputs.some(el => readable(el) && el.type !== 'password'
                 && (/(?:^|\s)one-time-code(?:\s|$)/i.test(el.getAttribute('autocomplete') || '')
                     || /(?:^|[\s_-])(?:otp|totp|code|verification[-_]?code|one[-_]?time[-_]?code|auth[-_]?code)(?:$|[\s_-])/i.test(`${el.getAttribute('name') || ''} ${el.getAttribute('id') || ''}`))
                 && signinKind(el) !== 'otp'))
                 ambiguous = true;
-            for (const kind of ['username', 'password', 'otp']) {
+            for (const kind of ['username', 'password', 'confirmation', 'otp']) {
                 const hinted = inputs.filter(el => signinKind(el, true) === kind);
                 const matches = hinted.length ? hinted : inputs.filter(el => signinKind(el) === kind);
                 if (matches.length > 1)
@@ -522,8 +621,11 @@ export async function pageTask(action, params = {}) {
             const known = state.signin?.get(params.selector), el = resolve(params.selector);
             const kind = params.signin?.kind;
             const { fields, ambiguous } = signinFields();
-            if (!known || known.kind !== kind || ambiguous || signinChallenge() || fields[known.kind] !== el
+            if (!known || known.kind !== kind || known.signup !== (params.signin?.signup === true) || ambiguous || signinChallenge() || fields[known.kind] !== el
                 || signinKind(el) !== known.kind || (el.form || null) !== known.form)
+                throw new Error('Sign-in refused');
+            // Signup authority fills only. Submission always crosses the ordinary click/payment/send/delete gates.
+            if (submit && params.signin?.signup)
                 throw new Error('Sign-in refused');
             if (submit)
                 signinForm(el);
@@ -535,12 +637,12 @@ export async function pageTask(action, params = {}) {
             state.signin = new Map();
             const refs = {};
             if (!challenge)
-                for (const kind of ['username', 'password', 'otp']) {
+                for (const kind of ['username', 'password', 'confirmation', 'otp']) {
                     const el = fields[kind];
                     if (el) {
                         const ref = selectorFor(el);
                         refs[kind] = ref;
-                        state.signin.set(ref, { kind, form: el.form || null });
+                        state.signin.set(ref, { kind, form: el.form || null, signup: params.signin?.signup === true });
                     }
                 }
             return { url: location.href, signature: signinSignature(), passwordPresent, ...refs, ...(challenge ? { challenge: true } : {}) };

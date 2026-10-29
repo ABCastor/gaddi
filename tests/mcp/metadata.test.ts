@@ -98,7 +98,13 @@ try {
   assert.doesNotMatch(instructions, /agents cannot grant permissions/, 'ASSERT_GRANT_GUIDANCE');
   assert.match(instructions, /ask for a session grant with browser_grant.*only the owner approves it in Gaddi/, 'ASSERT_GRANT_GUIDANCE');
   assert.match(instructions, /Payments, sends, sign-in, security stay held/, 'ASSERT_GRANT_GUIDANCE');
-  assert.deepEqual(Object.keys(schema('signin').properties).sort(), ['approval', 'item', 'tab', 'why']);
+  assert.deepEqual(Object.keys(schema('signin').properties).sort(), ['approval', 'create', 'item', 'signup', 'tab', 'why']);
+  assert.deepEqual(schema('click').properties.download,{type:'string'},'ASSERT_DOWNLOAD_SCHEMA');
+  const create=schema('signin').properties.create;assert.ok(isRecord(create)&&isRecord(create.properties));
+  assert.deepEqual(Object.keys(create.properties).sort(),['title','username','vault'],'ASSERT_CREATE_NO_SECRET_FIELD');
+  assert.deepEqual(create.required,['title','username','vault']);
+  assert.equal(create.additionalProperties,false);
+  assert.deepEqual(schema('signin').properties.signup,{type:'boolean'});
   // Every tool whose call can be held takes the agent's one-line purpose, for the owner's card; no other tool does.
   const holdable = ['read', 'open', 'goto', 'click', 'press', 'signin', 'upload', 'extensions'];
   for (const tool of listed.tools) {

@@ -8,10 +8,12 @@ import { spawn } from 'node:child_process';
 import type { AddressInfo } from 'node:net';
 import type { Browser } from 'playwright-core';
 import { chromium } from 'playwright-core';
-import { runSignin } from '../../daemon/signin.ts';
+import { runSignin, createLogin } from '../../daemon/signin.ts';
+import { downloadTarget, saveDownload } from '../../daemon/downloads.ts';
 import { FakeDaemon, waitFor } from '../bridge/fake-daemon.ts';
 import { requireHeadless, watchHeadless } from '../bridge/background.ts';
 import { writeForeignExtension } from '../bridge/foreign-frame.ts';
+import { exerciseHelperBroker } from './helper-broker.ts';
 
 // Real extension/native host and disposable Chrome; credentials come only from a fake op.
 const repo = path.resolve(import.meta.dirname, '../..');
@@ -32,7 +34,8 @@ const server = http.createServer((req, res) => {
     req.on('end', () => {
       submissions++;
       const fields = new URLSearchParams(body);
-      credentialsAccepted = fields.get('username') === username && fields.get('password') === password;
+      credentialsAccepted = fields.get('username') === username && fields.get('password') === password
+        && (!req.url?.includes('signup') || fields.get('confirmation') === password);
       body = '';
       signedIn = credentialsAccepted;
       // Same URL, new document: covers sites that reload on successful submission.
@@ -41,6 +44,10 @@ const server = http.createServer((req, res) => {
     return;
   }
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  if (req.url?.startsWith('/download')) { res.end(`<!doctype html><title>Export fixture</title><button id="export">Export ZIP</button><script>
+    document.querySelector('button').onclick=()=>{const a=document.createElement('a');a.download='page-export.zip';a.href=URL.createObjectURL(new Blob(['fixture generated export'],{type:'application/zip'}));document.body.append(a);a.click();};
+    </script>`); return; }
+  if (req.url?.includes('signup') && !signedIn) { res.end(fs.readFileSync(path.join(repo,'tests/signin/fixtures/signup.html'))); return; }
   if (signedIn) { res.end('<!doctype html><title>Account</title><main>Signed in</main>'); return; }
   if (req.url?.includes('aura')) { res.end(fs.readFileSync(path.join(repo, 'tests/signin/fixtures/aura-login.html'))); return; }
   res.end(`<!doctype html><title>Login</title><form method="post">
@@ -89,7 +96,7 @@ try {
   fs.writeFileSync(path.join(nativeDir, `${hostName}.json`), JSON.stringify({
     name: hostName, description: 'Sign-in test host', type: 'stdio', path: path.join(repo, 'bridge/host.sh'), allowed_origins: [`chrome-extension://${id}/`],
   }));
-  fs.writeFileSync(path.join(state, 'op'), `#!${process.execPath}\nconsole.log(${JSON.stringify(JSON.stringify([{ label: 'username', value: username }, { label: 'password', value: password }]))});\n`, { mode: 0o700 });
+  fs.writeFileSync(path.join(state, 'op'), `#!${process.execPath}\nif(process.argv[3]==='create'){let data='';process.stdin.on('data',c=>data+=c);process.stdin.on('end',()=>console.log(JSON.stringify({id:'created-fixture',title:JSON.parse(data).title,vault:{id:'aaaaaaaaaaaaaaaaaaaaaaaaaa'}})));}else console.log(${JSON.stringify(JSON.stringify([{ label: 'username', value: username }, { label: 'password', value: password }]))});\n`, { mode: 0o700 });
   await daemon.start();
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
   const site = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -115,7 +122,7 @@ try {
   process.env.PATH = `${state}:${process.env.PATH}`;
   const cases = process.env.GADDI_SIGNIN_CASE ? [process.env.GADDI_SIGNIN_CASE]
     : process.env.GADDI_SIGNIN_BREAK_LANDED === '1' ? ['?sticky']
-    : auraMutation ? ['?aura'] : ['?plain', '?persistent', '?focus', '?sticky', '?aura', '?aura-sticky'];
+    : auraMutation ? ['?aura'] : ['?plain', '?persistent', '?focus', '?sticky', '?aura', '?aura-sticky', '?signup'];
   for (const suffix of cases) {
     submissions = 0; credentialsAccepted = false; signedIn = false;
     const url = `${site}/${suffix === '?plain' ? 'login' : 'foreign'}.html${suffix}`;
@@ -124,7 +131,8 @@ try {
     const page = await waitFor(() => context.pages().find(page => page.url() === url), 'sign-in fixture');
     if (suffix === '?persistent') await waitFor(() => page.frames().some(frame => frame.url().startsWith('chrome-extension://')), 'inline frame');
     const methods: string[] = [];
-    const result = await runSignin({ site, item: { id: 'test-login', title: 'Test login', urls: [site] }, tab,
+    const item = suffix==='?signup' ? await createLogin(site,{title:'Fixture signup',username,vault:'aaaaaaaaaaaaaaaaaaaaaaaaaa'}) : {id:'test-login',title:'Test login',urls:[site]};
+    const result = await runSignin({ site, item, signup:suffix==='?signup', tab,
       remember(value) { assert.ok(secrets.includes(value)); },
       async request(name, params, deadline) {
         methods.push(name);
@@ -142,7 +150,14 @@ try {
       passwordAccepted: document.querySelector<HTMLInputElement>('input[type="password"]')?.value === password,
     }), { username, password }))}`);
     if (suffix.includes('aura') && result.outcome !== 'signed_in') console.log(`TRACE signin component events: ${JSON.stringify(await page.evaluate(() => (window as Window & { signinEvents?: unknown[] }).signinEvents))}`);
-    assert.equal(result.outcome, 'signed_in', `ASSERT_SIGNIN_RELOAD ${suffix}`);
+    if(suffix==='?signup') {
+      assert.equal(result.outcome,'filled','ASSERT_SIGNUP_FILL');
+      assert.equal(submissions,0,'privileged signup never submits');
+      assert.equal(await page.locator('[name=confirmation]').evaluate((el,p)=>(el as HTMLInputElement).value===p,password),true);
+      const button = await daemon.call('chrome.describe',{tab,selector:'button'}) as {selector:string;name:string;href:string};
+      await daemon.call('chrome.click',{tab,selector:button.selector,checkedDescription:{name:button.name,href:button.href}});
+      await page.waitForSelector('main');
+    } else assert.equal(result.outcome, 'signed_in', `ASSERT_SIGNIN_RELOAD ${suffix}`);
     assert.equal(submissions, 1, 'submit must not be replayed');
     assert.ok(credentialsAccepted, 'submitted credentials must match without exposing values');
     assert.equal(await page.locator('main').innerText(), 'Signed in');
@@ -158,8 +173,29 @@ try {
     await daemon.call('chrome.close', { tabs: [tab] });
     passed++; console.log(`PASS real sign-in reload ${suffix}, one submit, no secrets`);
   }
+  if (!process.env.GADDI_SIGNIN_CASE && !process.env.GADDI_SIGNIN_BREAK_LANDED && !auraMutation) {
+    await exerciseHelperBroker({site,daemon,state,username,password,reset(){signedIn=false;submissions=0;credentialsAccepted=false;}});
+    signedIn=false;
+    const opened=await daemon.call('chrome.open',{url:site+'/download'}) as {id:number};
+    const tab=opened.id, downloadCapture={id:crypto.randomUUID(),site};
+    await daemon.call('chrome.downloadArm',{tab,downloadCapture});
+    await daemon.call('chrome.click',{tab,selector:'#export'});
+    const status=await waitFor(async()=>{const s=await daemon.call('chrome.downloadPoll',{tab,downloadCapture}) as {ready:boolean;error?:string;bytes:number;chunks:number}; assert.equal(s.error,undefined); return s.ready&&s;},'blob download captured');
+    const pieces:Buffer[]=[];
+    for(let index=0;index<status.chunks;index++) { const c=await daemon.call('chrome.downloadChunk',{tab,downloadCapture:{...downloadCapture,index}}) as {data:string};pieces.push(Buffer.from(c.data,'base64')); }
+    const target=downloadTarget(path.join(os.tmpdir(),`gaddi-export-${crypto.randomUUID()}.zip`));
+    try {saveDownload(target,Buffer.concat(pieces));assert.equal(fs.readFileSync(target,'utf8'),'fixture generated export');}
+    finally {if(fs.existsSync(target))fs.unlinkSync(target);}
+    await daemon.call('chrome.downloadEnd',{tab,downloadCapture});
+    await daemon.call('chrome.close',{tabs:[tab]});
+    passed++;console.log('PASS real extension captures JS-generated blob ZIP and saves exact bytes on disk');
+  }
   guard.verify();
   console.log(`== signin browser: ${passed} passed, 0 failed`);
+} catch(error) {
+  const log=path.join(state,'bridge.log');
+  if(fs.existsSync(log)) console.log(fs.readFileSync(log,'utf8').split('\n').filter(line=>!secrets.some(s=>line.includes(s))).slice(-30).join('\n'));
+  throw error;
 } finally {
   process.env = originalEnv;
   guard?.stop();

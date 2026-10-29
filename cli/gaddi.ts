@@ -32,7 +32,8 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] [--why <purp
       that document to hold the focus. --at and --frame are alternatives, never both.
   scroll [tab] <dy|selector> [--dx N] [--dy N]  (wheel pixels; with a selector the wheel goes over that element)
   wait [tab] <JSON options>
-  signin [tab] [--item <title-or-id>]
+  signin [tab] [--item <title-or-id>] [--signup | --create '{"title":"...","username":"...","vault":"<vault-id>"}']
+  click [tab] <selector> --download <new-file-in-Downloads-or-temp>
   eval [tab] <expression> | emulate [tab] <JSON options>
   status | approvals | pending | cancel <id> | audit [n] | events | bridge status
   remote | remote off  (approving some holds from another device: show its state, or turn it off; turning it on needs Touch ID in the Gaddi app)
@@ -44,6 +45,7 @@ const argv = process.argv.slice(2), args: string[] = [];
 let json = false, fullPage = false, foreground = false, visible = false;
 let approval: string | undefined, tab: number | undefined, group: string | undefined, item: string | undefined, why: string | undefined;
 let mode: 'replace' | 'append' | undefined;
+let signup = false, create: BrokerParams['create'], download: string | undefined;
 let at: { x: number; y: number } | undefined, frame: number | undefined;
 let zoom: { x: number; y: number; width: number; height: number } | undefined;
 const wheel: { dx?: number; dy?: number } = {};
@@ -55,6 +57,14 @@ for (let i = 0; i < argv.length; i++) {
     if (!value?.trim() || !Number.isFinite(Number(value))) die(`${arg} needs a number`, 2);
     wheel[arg.slice(2) as 'dx' | 'dy'] = Number(value);
   }
+  else if (arg === '--signup') signup = true;
+  else if (arg === '--create') {
+    const value = parseJSON(argv[++i] || 'null');
+    if (isRecord(value) && typeof value.title === 'string' && typeof value.username === 'string'
+      && typeof value.vault==='string' && Object.keys(value).every(key=>['title','username','vault'].includes(key))) create = {title:value.title,username:value.username,vault:value.vault};
+    else die('--create needs JSON with title, username and vault ID, never a password',2);
+  }
+  else if (arg === '--download') { download = argv[++i]; if (!download) die('--download needs a new file path',2); }
   else if (arg === '--full-page') fullPage = true;
   else if (arg === '--zoom') {
     // A region of the embedded document, in that document's own pixels: x,y,width,height.
@@ -90,6 +100,8 @@ for (let i = 0; i < argv.length; i++) {
 }
 const cmd = args.shift() ?? '';
 if (mode && cmd !== 'type') die('--mode is only supported for type', 2);
+if ((signup || create) && cmd !== 'signin') die('--signup and --create apply only to signin',2);
+if (download !== undefined && cmd !== 'click') die('--download applies only to click',2);
 if (at && cmd !== 'click') die('--at applies only to click', 2);
 if (at && frame !== undefined) die('--at is a point in the tab, so it takes no --frame', 2);
 // The daemon decides what a frame means; the CLI must not narrow the surface it offers, or the
@@ -105,6 +117,9 @@ if (cmd === 'approve') {
 }
 const params: BrokerParams = { caller: process.env.GADDI_CALLER || 'cli' };
 if (mode) params.mode = mode;
+if (signup) params.signup = true;
+if (create) params.create = create;
+if (download !== undefined) params.download = download;
 if (at) params.at = at;
 if (frame !== undefined) params.frameId = frame;
 if (process.env.GADDI_HARNESS) params.harness = process.env.GADDI_HARNESS;

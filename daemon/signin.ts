@@ -76,13 +76,16 @@ function opBinary(): string {
   }
   return 'op';
 }
-function op(args: string[]): Promise<string> {
+export const PASSWORD_UNAVAILABLE = '1Password is locked or unavailable: unlock the desktop app, authorize CLI access, then retry. The browser extension is not required.';
+function op(args: string[], input?: string): Promise<string> {
   return new Promise((resolve, reject) => {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('OP_')));
     let stdout = '', size = 0, done = false;
     const fail = () => { if (!done) { done = true; reject(new Error('1Password lookup failed')); } };
     let child;
-    try { child = spawn(opBinary(), args, { env, stdio: ['ignore', 'pipe', 'pipe'], timeout: 60000 }); } catch { fail(); return; }
+    try { child = spawn(opBinary(), args, { env, stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000, killSignal: 'SIGKILL' });
+      child.stdin.on('error', () => {});
+      child.stdin.end(input); } catch { fail(); return; }
     child.stdout.setEncoding('utf8');
     child.stdout.on('data', (chunk: string) => {
       size += Buffer.byteLength(chunk);
@@ -136,8 +139,24 @@ export async function getOTP(item: LoginItem): Promise<string | undefined> {
   } catch { return undefined; }
 }
 
-export async function runSignin({ site: requestedSite, item, request, remember, tab }: {
-  site: string; item: LoginItem; tab?: number;
+// A new item is always created in the caller-selected vault, never edited in place.
+// Password generation happens inside op; neither argv nor agent-visible output contains it.
+export async function createLogin(site: string, value: unknown): Promise<LoginItem> {
+  site = signinSite(site);
+  if (!isRecord(value) || typeof value.vault !== 'string' || !/^[a-z0-9]{26}$/.test(value.vault) || typeof value.title !== 'string' || !value.title.trim() || value.title.length > 160
+    || typeof value.username !== 'string' || !value.username.trim() || value.username.length > 320
+    || Object.keys(value).some(key=>!['title','username','vault'].includes(key))) throw new Error('Invalid new login');
+  const template = JSON.stringify({ category: 'LOGIN', title: value.title, urls: [{ href: site, primary: true }],
+    fields: [{ id: 'username', type: 'STRING', purpose: 'USERNAME', value: value.username }] });
+  const saved: unknown = JSON.parse(await op(['item', 'create', '-', '--vault', value.vault,
+    '--generate-password=letters,digits,symbols,32', '--format', 'json'], template));
+  if (!isRecord(saved) || typeof saved.id !== 'string' || saved.title !== value.title
+    || !isRecord(saved.vault) || saved.vault.id !== value.vault) throw new Error('New login was not confirmed');
+  return { id: saved.id, title: value.title, urls: [site] };
+}
+
+export async function runSignin({ site: requestedSite, item, request, remember, tab, signup = false }: {
+  site: string; item: LoginItem; tab?: number; signup?: boolean;
   request: (name: string, args: ChromeParams, deadline?: number) => Promise<unknown>;
   remember: (value: string) => void;
 }): Promise<SigninResult> {
@@ -153,18 +172,19 @@ export async function runSignin({ site: requestedSite, item, request, remember, 
     } finally { if (timer) clearTimeout(timer); }
   }
   function call(name: string, args: ChromeParams = {}): Promise<unknown> {
-    return bounded(() => request(name, { ...args, ...(tab === undefined ? {} : { tab }) }, until));
+    const signin = args.signin ? { ...args.signin, ...(signup ? { signup: true } : {}) } : undefined;
+    return bounded(() => request(name, { ...args, ...(signin ? { signin } : {}), ...(tab === undefined ? {} : { tab }) }, until));
   }
   async function probe(): Promise<SigninProbe> {
     const value = await call('signinProbe', { signin: { site } });
     if (!isRecord(value) || typeof value.url !== 'string' || typeof value.signature !== 'string'
-      || ['username', 'password', 'otp'].some(key => value[key] !== undefined && typeof value[key] !== 'string')
+      || ['username', 'password', 'confirmation', 'otp'].some(key => value[key] !== undefined && typeof value[key] !== 'string')
       || value.passwordPresent !== undefined && typeof value.passwordPresent !== 'boolean'
       || value.challenge !== undefined && typeof value.challenge !== 'boolean') throw new Error();
     if (signinSite(value.url) !== site) throw new Error();
     return value as unknown as SigninProbe;
   }
-  async function type(kind: 'username' | 'password' | 'otp', text: string): Promise<string | undefined> {
+  async function type(kind: 'username' | 'password' | 'confirmation' | 'otp', text: string): Promise<string | undefined> {
     const current = await probe();
     if (current.challenge || !current[kind]) return undefined;
     await call('signinType', { selector: current[kind], text, signin: { site, kind } });
@@ -205,7 +225,8 @@ export async function runSignin({ site: requestedSite, item, request, remember, 
     let page = await probe();
     if (page.challenge || !page.username && !page.password) return result('needs_you', 'No supported login form');
     step = 'credentials';
-    ({ username, password } = await bounded(() => getCredentials(item)));
+    try { ({ username, password } = await bounded(() => getCredentials(item))); }
+    catch { return result('needs_you', PASSWORD_UNAVAILABLE); }
     remember(username); remember(password);
     page = await probe(); // op may have waited for desktop approval; recheck before using its values.
     if (page.challenge) return result('needs_you', 'Additional verification required');
@@ -214,7 +235,7 @@ export async function runSignin({ site: requestedSite, item, request, remember, 
       const selector = await type('username', username);
       if (!selector) return result('needs_you', 'Login form changed');
       page = await probe();
-      if (!page.password) {
+      if (!page.password && !signup) {
         await submit('username', selector);
         page = await waitFor(current => !!current.password || !!current.otp);
       }
@@ -223,6 +244,12 @@ export async function runSignin({ site: requestedSite, item, request, remember, 
     step = 'password';
     const selector = await type('password', password);
     if (!selector) return result('needs_you', 'Login form changed');
+    if (signup) {
+      page = await probe();
+      if (page.confirmation && !await type('confirmation', password)) return result('needs_you', 'Confirmation field changed');
+      step = 'complete';
+      return result('filled', 'Saved login filled. Inspect the form, complete other fields, then click its submit through the ordinary gates.');
+    }
     const before = await submit('password', selector);
     let settled = await settleSignin(before);
     page = settled.page;

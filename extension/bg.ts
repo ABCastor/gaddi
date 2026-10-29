@@ -1023,7 +1023,8 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
     });
   }
   const operations = ['describe', 'read', 'html', 'screenshot', 'approvalCapture', 'click', 'type', 'press', 'goto',
-    'hover', 'scroll', 'select', 'upload', 'back', 'eval', 'emulate', 'wait', 'signinProbe', 'signinType', 'signinSubmit'];
+    'hover', 'scroll', 'select', 'upload', 'back', 'eval', 'emulate', 'wait', 'signinProbe', 'signinType', 'signinSubmit',
+    'downloadArm', 'downloadPoll', 'downloadChunk', 'downloadEnd'];
   const action = typeof method === 'string' && method.startsWith('chrome.') ? method.slice(7) : '';
   if (!operations.includes(action)) throw new Error('Unsupported Chrome method');
   if (action === 'wait') waitParams(params);
@@ -1073,6 +1074,7 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
       if (background && scope.end - Date.now() > 200) { await new Promise(resolve => setTimeout(resolve, 100)); check(); }
       return value;
     }, check, background, route);
+    if (action === 'downloadArm' || action === 'downloadPoll' || action === 'downloadChunk' || action === 'downloadEnd') return onPage(tab, action, params, check);
     if (action === 'signinProbe') return emulatedFocus(() => onPage(tab, 'signinProbe', params, check));
     if (action === 'signinType' || action === 'signinSubmit') {
       if (action === 'signinType' && typeof params.text !== 'string') throw new Error('Sign-in action failed');
