@@ -78,7 +78,7 @@ const TOOLS: ToolDefinition[] = [
     const note = '\n[Bookmarks truncated at 20,000 characters; narrow query.]';
     return pageResult('Chrome bookmarks', lines.length > 20000 ? lines.slice(0, 20000 - note.length) + note : lines);
   }),
-  tool('wait', 'Wait for text, visible selector/ref or URL part; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 } }, [], 'wait', pageJSON),
+  tool('wait', 'Wait for text, selector/ref or URL part; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 } }, [], 'wait', pageJSON),
   tool('look', 'Read text/refs, floating menus/suggestions and frames; visible:true is viewport.', { tab, visible: B, frameId }, [], 'look',
     result => result?.note ? plainResult(result.note) : pageJSON(result)),
   {
@@ -127,7 +127,7 @@ const TOOLS: ToolDefinition[] = [
       catch (e) { return mapGrantError(e instanceof SocketError ? e.raw : { message: errorMessage(e) }); }
     },
   },
-  tool('status', 'Broker/Chrome status.'),
+  tool('status', 'Report broker and Chrome bridge status.'),
   tool('extensions', 'List, restart or manage Chrome extensions; install, disable and remove may be held.', {
     operation: { ...S, enum: ['list', 'reload', 'enable', 'disable', 'uninstall', 'install'] }, extensionId: S, path: S, approval, why,
   }, [], 'extensions', result => pageResult('Chrome extensions', JSON.stringify(result, null, 2))),

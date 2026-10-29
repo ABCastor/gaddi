@@ -21,7 +21,7 @@ export async function exerciseHelperBroker({site,daemon,state,username,password,
   const {publicKey,privateKey}=crypto.generateKeyPairSync('ec',{namedCurve:'prime256v1'});
   fs.writeFileSync(path.join(home,'approver.pub'),publicKey.export({type:'spki',format:'pem'}));
   fs.writeFileSync(path.join(home,'op'),`#!${process.execPath}
-const fs=require('node:fs'), args=process.argv.slice(2);
+import fs from 'node:fs'; const args=process.argv.slice(2);
 if(fs.existsSync(${JSON.stringify(lock)})){setTimeout(()=>console.log('[]'),8000);}else if(args[1]==='create'){
  let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{const value=JSON.parse(input);
  if(args[args.indexOf('--vault')+1]!=='aaaaaaaaaaaaaaaaaaaaaaaaaa'||!args.includes('--generate-password=letters,digits,symbols,32'))process.exit(2);
@@ -93,10 +93,11 @@ else console.log(${JSON.stringify(JSON.stringify([{label:'username',value:userna
       assert.ok(isRecord(swapped)&&swapped.outcome!=='filled','ASSERT_CREATE_BINDING');
       assert.equal(fs.existsSync(saves),false,'changed vault/username cannot spend the signed create');
     }
-    const invalid=await result('signin',{tab,create:{...create,password:'fixture-forbidden-field'}});
+    const invalidCreate={...create,password:'fixture-forbidden-field'};
+    const invalid=await result('signin',{tab,create:invalidCreate});
     assert.ok(isRecord(invalid)&&invalid.outcome==='failed'&&invalid.step==='signin','ASSERT_CREATE_REJECT_SECRET');
     assert.equal(fs.existsSync(saves),false);
-    const filled=await result('signin',{tab,create,approval:card.id});assert.ok(isRecord(filled)&&filled.outcome==='filled','ASSERT_HELPER_CREATE_FILL');
+    const filled=await result('signin',{tab,create,approval:card.id});assert.ok(isRecord(filled)&&filled.outcome==='filled','ASSERT_HELPER_CREATE_FILL: '+JSON.stringify(filled));
     assert.equal(fs.readFileSync(saves,'utf8'),'saved\n','exactly one NEW item');
     const replay=await result('signin',{tab,create,approval:card.id});assert.ok(isRecord(replay)&&replay.outcome==='failed');
     assert.equal(fs.readFileSync(saves,'utf8'),'saved\n','approval replay cannot save a second item');
