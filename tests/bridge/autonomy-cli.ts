@@ -7,6 +7,7 @@ import { stripTypeScriptTypes } from 'node:module';
 import { EventEmitter } from 'node:events';
 import { isRecord, parseJSON, errorMessage, waitParams } from '../../shared/protocol.ts';
 import type { BrokerRequest } from '../../shared/protocol.ts';
+import { redactURLText } from '../../shared/url-redaction.ts';
 
 // Exercise production CLI argument parsing and outgoing JSON without opening
 // an OS socket (the sandbox prohibits listening on a Unix socket).
@@ -24,7 +25,7 @@ async function run(args: string[]) {
     queueMicrotask(() => socket.emit('connect')); return socket;
   } };
   const processDouble = { argv: ['node', 'gaddi', ...args], env: {}, stdout: stream(), stderr: stream(true), exit: complete };
-  await vm.runInNewContext(`(async () => { ${socketSource}\n${source}\n })()`, { process: processDouble, net, os, path, isRecord, parseJSON, errorMessage, waitParams, setTimeout, clearTimeout, Buffer });
+  await vm.runInNewContext(`(async () => { ${socketSource}\n${source}\n })()`, { process: processDouble, net, os, path, isRecord, parseJSON, errorMessage, waitParams, redactURLText, setTimeout, clearTimeout, Buffer });
   const code = await finished;
   return { request, code, stderr };
 }
