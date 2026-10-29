@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Thin socket client. Approval launches the app's Touch ID flow; the CLI grants no authority.
 import type { BrokerParams, BrokerResult, BrokerRequest } from '../shared/protocol.ts';
-import { isRecord, parseJSON, errorMessage, waitParams } from '../shared/protocol.ts';
+import { isRecord, parseJSON, errorMessage, waitParams, FRAME_TOOLS } from '../shared/protocol.ts';
 import { redactURLText } from '../shared/url-redaction.ts';
 import net from 'node:net';
 import { socketRequest, SocketError } from '../shared/socket.ts';
@@ -111,7 +111,7 @@ if (at && cmd !== 'click') die('--at applies only to click', 2);
 if (at && frame !== undefined) die('--at is a point in the tab, so it takes no --frame', 2);
 // The daemon decides what a frame means; the CLI must not narrow the surface it offers, or the
 // same capability exists through MCP and not from a shell.
-if (frame !== undefined && !['look', 'screenshot', 'click', 'type', 'press', 'hover', 'select', 'scroll', 'wait', 'upload'].includes(cmd)) die('--frame applies to look, screenshot, click, type, press, hover, select, scroll, wait or upload', 2);
+if (frame !== undefined && !FRAME_TOOLS.includes(cmd)) die(`--frame applies to ${FRAME_TOOLS.slice(0, -1).join(', ')} or ${FRAME_TOOLS.at(-1)}`, 2);
 if ((wheel.dx !== undefined || wheel.dy !== undefined) && cmd !== 'scroll') die('--dx and --dy are only supported for scroll', 2);
 if (cmd === 'approve') {
   if (args.length !== 1 || !/^[a-f0-9]+$/i.test(args[0])) die('gaddi approve <id>', 2);

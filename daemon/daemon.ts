@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { waitParams, wheelParams } from '../shared/protocol.ts';
+import { waitParams, wheelParams, FRAME_TOOLS } from '../shared/protocol.ts';
 // Thin user-level broker: the extension operates the user's Chrome; this process gates and audits calls.
 import net from 'node:net';
 import type { Socket } from 'node:net';
@@ -374,7 +374,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   // A document inside the tab, named by what `look` listed. Every action on it then
   // resolves selectors and checks inside that document instead of the tab's own page.
   if (params.frameId !== undefined) {
-    if (!['look', 'html', 'screenshot', 'click', 'type', 'press', 'hover', 'select', 'scroll', 'wait', 'upload'].includes(method))
+    // html is the broker's own read behind browser_read; it takes a frame as look does.
+    if (![...FRAME_TOOLS, 'html'].includes(method))
       throw new Error('frameId applies only to an action inside a tab');
     // Frames are numbered by Chrome; 0 is the tab itself, which needs no frameId.
     if (typeof params.frameId !== 'number' || !Number.isSafeInteger(params.frameId) || params.frameId < 1)
@@ -553,8 +554,9 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     check = checkUpload(policy);
     // A remembered site covers its own pages only: a file into another site's embedded document
     // asks every time, and is never offered as remembered for the tab's site.
-    if (scopeURL === pageURL) check = checkRememberedUpload(policy, pageURL, check);
-    else check = strictest(check, checkNavigation(policy, navigationURL(scopeURL)));
+    if (scopeURL === pageURL) {
+      check = checkRememberedUpload(policy, pageURL, check);
+    } else check = strictest(check, checkNavigation(policy, navigationURL(scopeURL)));
     if (check.outcome === 'allow' && !params.approval) meta.reason = check.reason;
     // readUpload already refused secret stores above, so a grant never reaches a refused file.
     check = grantCheck(check, { kind: 'upload' }, scopeURL);

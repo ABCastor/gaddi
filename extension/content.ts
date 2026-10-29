@@ -794,7 +794,8 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
   if (action === 'typeLanded') return { landed: !isPassword(el)
     && (el.isContentEditable ? el.textContent : el.value) === params.text } satisfies PageResults['typeLanded'];
   // Inside an embedded document the gates judge that document's own site, so it says where it is.
-  if (action === 'describe') return { ...describe(el), ...(window === window.top ? {} : { frameUrl: location.href }),
+  const topWindow = (globalThis as { top?: unknown }).top, embedded = topWindow != null && topWindow !== globalThis;
+  if (action === 'describe') return { ...describe(el), ...(embedded ? { frameUrl: location.href } : {}),
     matched: (params.denySelectors || []).filter(selector => el.matches(selector)) } satisfies PageResults['describe'];
   if (action === 'captureBox') {
     if (!visible(el)) throw new Error('Capture target is not visible');

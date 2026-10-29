@@ -89,6 +89,9 @@ export function wheelParams(params) {
     return wheel;
 }
 // Shared by broker and extension, including clients that bypass MCP schemas.
+// The tools that can act inside one document of the tab, a frame `look` lists. One list, so the CLI's
+// --frame, MCP's frameId and the broker offer the same surface (tests/mcp/metadata.test.ts).
+export const FRAME_TOOLS = ['look', 'screenshot', 'click', 'type', 'press', 'hover', 'select', 'scroll', 'wait', 'upload'];
 export function waitParams(params) {
     const keys = ['text', 'selector', 'url'].filter(key => params[key] !== undefined);
     if (keys.length !== 1)

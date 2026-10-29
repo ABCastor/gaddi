@@ -267,6 +267,9 @@ export function wheelParams(params: { dx?: unknown; dy?: unknown }): { dx?: numb
 }
 
 // Shared by broker and extension, including clients that bypass MCP schemas.
+// The tools that can act inside one document of the tab, a frame `look` lists. One list, so the CLI's
+// --frame, MCP's frameId and the broker offer the same surface (tests/mcp/metadata.test.ts).
+export const FRAME_TOOLS: readonly string[] = ['look', 'screenshot', 'click', 'type', 'press', 'hover', 'select', 'scroll', 'wait', 'upload'];
 export function waitParams(params: { text?: unknown; selector?: unknown; url?: unknown; gone?: unknown; timeout?: unknown }): ChromeParams {
   const keys = (['text', 'selector', 'url'] as const).filter(key => params[key] !== undefined);
   if (keys.length !== 1) throw new Error('wait requires exactly one of text, selector or url');

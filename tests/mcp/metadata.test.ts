@@ -1,8 +1,7 @@
-import { isRecord } from '../../shared/protocol.ts';
+import { isRecord, FRAME_TOOLS } from '../../shared/protocol.ts';
 // MCP handshake and exact public surface require no daemon or browser.
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -83,19 +82,11 @@ try {
   assert.match(listed.tools.find(t => t.name === 'browser_scroll')!.description!, /dx\/dy wheel pixels \(over selector if given\), or to a selector/, 'ASSERT_SCROLL_SCHEMA');
   console.log('PASS ASSERT_SCROLL_SCHEMA');
   const shownTab = schema('show').properties.tab; assert.ok(isRecord(shownTab)); assert.equal(shownTab.maximum, Number.MAX_SAFE_INTEGER);
-  // A document inside the tab is reachable from MCP exactly where it is from a shell: the CLI's --frame
-  // allow-list and the broker's own list (less html, which no tool serves) name the same tools.
-  const frameList = (source: string, pattern: RegExp) => {
-    const found = pattern.exec(fs.readFileSync(new URL(source, import.meta.url), 'utf8'));
-    assert.ok(found, `ASSERT_FRAME_PARITY: ${source} still holds its frame list`);
-    return [...found[1].matchAll(/'([a-z]+)'/g)].map(match => match[1]).sort();
-  };
-  const cliFrames = frameList('../../cli/gaddi.ts', /if \(frame !== undefined && !\[([^\]]+)\]\.includes\(cmd\)\)/);
-  const brokerFrames = frameList('../../daemon/daemon.ts', /if \(!\[([^\]]+)\]\.includes\(method\)\)\s*throw new Error\('frameId applies only/).filter(name => name !== 'html');
+  // A document inside the tab is reachable from MCP exactly where it is from a shell: the CLI's --frame,
+  // the broker and MCP all read one list (shared/protocol.ts), so MCP must offer frameId on each of them.
   const mcpFrames = listed.tools.filter(tool => isRecord(tool.inputSchema.properties) && 'frameId' in tool.inputSchema.properties)
     .map(tool => tool.name.slice(8)).sort();
-  assert.deepEqual(mcpFrames, cliFrames, 'ASSERT_FRAME_PARITY: MCP offers frameId on every tool the CLI offers --frame on');
-  assert.deepEqual(brokerFrames, cliFrames, 'ASSERT_FRAME_PARITY: the broker accepts a frame on exactly those methods');
+  assert.deepEqual(mcpFrames, [...FRAME_TOOLS].sort(), 'ASSERT_FRAME_PARITY: MCP offers frameId on every tool the CLI offers --frame on');
   for (const name of mcpFrames) assert.deepEqual(schema(name).properties.frameId, { type: 'integer' }, `ASSERT_FRAME_PARITY: ${name}`);
   assert.ok(mcpFrames.includes('select') && mcpFrames.includes('upload'), 'ASSERT_FRAME_PARITY: select and upload reach a frame');
   console.log('PASS ASSERT_FRAME_PARITY');
