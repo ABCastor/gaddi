@@ -44,6 +44,15 @@ try {
   assert.equal(checkType(policy, { tag: 'input', autocomplete: 'current-password' }).outcome, 'deny');
   pass('overlay-adds-expression-denies-and-preserves-default-gates');
 
+  // Italian 'Ordina' on its own is a sort button ('Ordina per: Ora di partenza'), not an order.
+  // Real orders still hold. Why: 2026-10-30, Italo's results-sort click needed Touch ID.
+  const italo = 'Ritorno Ordina per: Ora di partenza Filtra per orario: Mostra tutti Ordina Filtra';
+  assert.equal(checkClick(base, 'biglietti.italotreno.com', italo).outcome, 'allow', 'ASSERT_SORT_NOT_ORDER');
+  assert.equal(checkClick(base, 'biglietti.italotreno.com', 'Ordina').outcome, 'allow', 'ASSERT_SORT_NOT_ORDER');
+  for (const label of ['Ordina ora', 'Conferma ordine', 'Invia ordine', 'Acquista', 'Procedi al pagamento'])
+    assert.equal(checkClick(base, 'shop.example.it', label).outcome, 'hold', `ASSERT_ORDER_HELD ${label}`);
+  pass('sort-buttons-allowed-real-orders-held');
+
   write({ hold: { verbs: ['submit record'] }, approvals: { ttl_minutes: 2 }, deny: { eval_patterns: [] } });
   const merged = loadPolicy({ overlay, off: false });
   assert.deepEqual(merged.hold.verbs, ['submit record']);
