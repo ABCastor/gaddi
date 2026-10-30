@@ -747,6 +747,7 @@ export async function pageTask(action, params = {}) {
                 if (!el.isConnected)
                     state.nodes.delete(key);
             const elements = [], texts = [], offscreen = { above: 0, below: 0 };
+            const positions = [];
             function walk(root) {
                 for (const el of root.querySelectorAll('*')) {
                     if (visible(el) && roleOf(el)) {
@@ -760,6 +761,8 @@ export async function pageTask(action, params = {}) {
                         else {
                             const info = describe(el);
                             elements.push(`${info.role} ${JSON.stringify(info.name)}${controlState(el)} ${info.selector}`);
+                            const rect = box || el.getBoundingClientRect();
+                            positions.push({ ref: info.selector, x: rect.x, y: rect.y, width: rect.width, height: rect.height });
                         }
                     }
                     if (el.shadowRoot)
@@ -800,7 +803,7 @@ export async function pageTask(action, params = {}) {
             if (viewportOnly)
                 collectText(document.body || document);
             return { text: (viewportOnly ? texts.join('').replace(/\s+/g, ' ').trim() : document.body?.innerText || '').slice(0, 20000),
-                outline: elements.join('\n'), version: pageVersion(), scroll: { y: scrollY, height: document.documentElement.scrollHeight },
+                outline: elements.join('\n'), positions, version: pageVersion(), scroll: { y: scrollY, height: document.documentElement.scrollHeight },
                 ...(viewportOnly ? { offscreen } : {}) };
         }
         if (action === 'snapshot')

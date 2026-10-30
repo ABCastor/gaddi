@@ -7,6 +7,14 @@
 <button id="nested-button">Nested action</button>
 <input id="nested-field" aria-label="Nested field">
 <input id="nested-file" type="file" aria-label="Nested file">
+<!-- A form whose DOM order is the reverse of its visual order: the first child is drawn at the
+     bottom. An agent that reads the outline as a list answers the rows upside down. -->
+<form id="reversed" style="display: flex; flex-direction: column-reverse; width: 240px; margin-top: 12px">
+  <label>Row 1 <select name="row1" aria-label="Row 1"><option value="">-</option><option value="a">A</option><option value="b">B</option><option value="c">C</option><option value="d">D</option></select></label>
+  <label>Row 2 <select name="row2" aria-label="Row 2"><option value="">-</option><option value="a">A</option><option value="b">B</option><option value="c">C</option><option value="d">D</option></select></label>
+  <label>Row 3 <select name="row3" aria-label="Row 3"><option value="">-</option><option value="a">A</option><option value="b">B</option><option value="c">C</option><option value="d">D</option></select></label>
+  <label>Row 4 <select name="row4" aria-label="Row 4"><option value="">-</option><option value="a">A</option><option value="b">B</option><option value="c">C</option><option value="d">D</option></select></label>
+</form>
 <script>
   Object.assign(window, { events: [] });
   const record = type => event => window.events.push({ type, target: event.target.id, trusted: event.isTrusted });
@@ -16,6 +24,13 @@
   window.files = [];
   document.querySelector('#nested-file').addEventListener('change', event => {
     for (const file of event.target.files) window.files.push({ name: file.name, size: file.size });
+  });
+  document.addEventListener('change', record('change'), true);
+  // What an application would keep: one answer per row, keyed by the row's own name.
+  window.answers = {};
+  document.querySelector('#reversed').addEventListener('change', event => {
+    const field = event.target;
+    window.answers[field.name] = { value: field.value, trusted: event.isTrusted };
   });
 </script>
 </html>
