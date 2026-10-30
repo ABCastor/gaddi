@@ -14,8 +14,9 @@ func headlessCheck() -> Never {
         print(connected ? "SUBSCRIBED events.subscribe" : "RECONNECT \(message)")
         fflush(stdout)
     }
-    model.onEvent = { name, _ in
+    model.onEvent = { name, data in
         print("EVENT \(name)")
+        if let notice = browserNotice(name, data) { print("NOTICE \(notice)") }
         if name == "approval.pending" { seenPending = true }
     }
     model.onSnapshot = { snapshot in

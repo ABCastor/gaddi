@@ -13,7 +13,7 @@ import { readBrowser } from './reader.ts';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { mapGrantError, mapSocketError, pageResult, plainResult } from './map.ts';
+import { mapGrantError, mapSocketError, pageResult, plainResult, withRecovery } from './map.ts';
 
 const SOCK = process.env.GADDI_SOCKET || path.join(os.homedir(), 'Library/Application Support/Gaddi/gaddi.sock');
 const HARNESS = process.env.GADDI_HARNESS || 'unknown';
@@ -68,7 +68,10 @@ const zoom = { type: 'object', properties: { x: { type: 'number' }, y: { type: '
 const obj = (properties: Record<string, Field>, required: string[] = []): ToolDefinition['inputSchema'] => ({ type: 'object', properties, required, additionalProperties: false });
 const tool = <M extends string>(name: string, description: string, properties: Record<string, Field> = {}, required: string[] = [], method: M = name as M, format: (result: BrokerResult<M>) => CallToolResult | Promise<CallToolResult> = plainResult): ToolDefinition => ({
   name: 'browser_' + name, description, inputSchema: obj(properties, required),
-  run: async (args: BrokerParams) => format(await rpc(method, args)),
+  run: async (args: BrokerParams) => {
+    const result = await rpc(method, args);
+    return withRecovery(await format(result), isRecord(result) ? result.recovery : undefined);
+  },
 });
 const pageJSON = (result: unknown) => pageResult(isRecord(result) ? result.url : undefined, JSON.stringify(result, null, 2));
 const line = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim();

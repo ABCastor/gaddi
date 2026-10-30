@@ -104,6 +104,10 @@ Credentials stay out of sign-in results and audit entries. Text output redacts e
 
 Uploads have a 20 MB limit. Protected credential paths and key files are refused; arbitrary files can still contain secrets. See [extension controls](docs/extension-controls.md). Connection recovery does not resubmit pending page actions.
 
+### When Chrome stops
+
+If Chrome has quit or crashed, the next browser call reopens it in the background with your normal profile and last session (`open -a`, never a fresh profile), waits up to 45 seconds for the extension, and tells the agent and you once (a Gaddi banner) what happened. It reopens Chrome at most once per 10 minutes and three times an hour, and never while Chrome is running: then it waits for the extension to reconnect and, if it does not, names the click (`chrome://extensions` → Gaddi → Reload). `browser_status` shows the recovery state. Nothing reopens Chrome until an agent needs it.
+
 ## Development
 
 ```sh

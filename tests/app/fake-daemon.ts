@@ -74,6 +74,8 @@ const server = net.createServer(socket => {
           setTimeout(() => {
             pending.push(approval('a1')); event(socket, 'approval.pending', { approval: pending.at(-1), tab: 42 }, true);
           }, 250);
+          // The broker's Chrome recovery notice reaches the app as an ordinary event.
+          setTimeout(() => event(socket, 'browser.notice', { kind: 'chrome-recovery', text: 'Chrome had stopped (crash or quit); Gaddi reopened it.' }), 400);
           setTimeout(() => {
             // The broker retains granted records until the agent consumes them.
             pending.find(a => a.id === 'a1')!.status = 'granted';

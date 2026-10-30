@@ -38,6 +38,13 @@ export function mapGrantError(error: unknown): CallToolResult {
   return text(`HELD (approval ${id}): session grant. The owner decides with Touch ID in Gaddi, or by phone if enabled for this request (at most 120 minutes and 20 rules). It takes effect as soon as they approve: do not retry, just keep working. Do not ask again for more sites one by one: a new ask from this chat joins this card. browser_approvals lists the grants that are active.${expiry ? ` The request expires ${expiry}.` : ''}`);
 }
 
+// The broker's own note that it reopened Chrome or waited out a reconnect: trusted, so it goes first,
+// outside any page-content wrapper.
+export function withRecovery(result: CallToolResult, recovery: unknown): CallToolResult {
+  if (typeof recovery !== 'string' || !recovery) return result;
+  return { ...result, content: [{ type: 'text', text: `Gaddi: ${redactURLText(recovery)}` }, ...result.content] };
+}
+
 function text(s: unknown): { content: [{ type: 'text'; text: string }] } {
   return { content: [{ type: 'text', text: redactURLText(String(s)) }] };
 }

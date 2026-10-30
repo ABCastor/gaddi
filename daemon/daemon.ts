@@ -41,6 +41,7 @@ import { createRemote } from './remote.ts';
 import { createBridge } from './bridge.ts';
 import { extensionCall } from './extensions.ts';
 import { wakeApprovalApp } from './approval-wake.ts';
+import { createChromeHeal, chromeControls } from './chrome-heal.ts';
 
 const home = process.env.GADDI_HOME || path.join(os.homedir(), 'Library/Application Support/Gaddi');
 const socket = process.env.GADDI_SOCKET || path.join(home, 'gaddi.sock');
@@ -147,6 +148,7 @@ function emit(event: string, data: unknown) {
     for (const session of sessions.values()) session.owned.clear();
     shown.clear();
     tabActivity.clear();
+    chromeHeal.attached();
   }
   if (event === 'approval.pending') {
     if (isRecord(data)) wakeApprovalApp([data.approval], { log });
@@ -158,6 +160,12 @@ function emit(event: string, data: unknown) {
   }
 }
 const bridge = createBridge({ emit });
+// A stopped Chrome is reopened when an agent next needs it (chrome-heal.ts holds the guards).
+const chromeHeal = createChromeHeal({ ...chromeControls(), log,
+  connected: () => bridge.status().connected,
+  tabCount: async () => tabList(await bridge.request('chrome.tabs', { browser: policy.browser })).length,
+  // The approval app shows this as one banner per incident.
+  notify: text => emit('browser.notice', { kind: 'chrome-recovery', text }) });
 const proofs = createProofVerifier({ publicKeyPath: process.env.GADDI_APPROVER_PUB || path.join(os.homedir(), 'Library/Application Support/Gaddi/approver.pub'),
   usedPath: path.join(home, 'used-proofs.log') });
 // Approving some holds from another device (remote.ts). Off until the owner turns it on with Touch ID; the saved
@@ -836,10 +844,10 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
     return {};
   }),
   status: () => ({ version: 3, pid: process.pid, uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
-    socket, audit: auditPath, bridge: bridge.status(), pendingApprovals: approvals.list().pending.length,
+    socket, audit: auditPath, bridge: { ...bridge.status(), recovery: chromeHeal.status() }, pendingApprovals: approvals.list().pending.length,
     policy: { off: policy.off, sources: policy.sources } }),
   'bridge.attach': ({ kind }, conn) => bridge.attach(conn, kind),
-  'bridge.status': () => bridge.status(),
+  'bridge.status': () => ({ ...bridge.status(), recovery: chromeHeal.status() }),
   'bridge.health': ({ lastSelfHeal }, conn) => bridge.health(conn, { lastSelfHeal }),
   extensions: (params, _conn, meta) => serial(async () => {
     const operation = params.operation ?? 'list';
@@ -1066,11 +1074,16 @@ async function handle(input: unknown, conn: Socket) {
   let result: unknown, error: (Omit<WireError, 'approval'> & { approval?: StoredApprovalRef }) | undefined;
   try {
     const methodName = typeof method === 'string' ? method : String(method);
-    if (typeof method === 'string' && browserMethods.has(method)) result = await serial(async () => {
-      const value = await browserCall(methodName, params, meta);
-      observeEffect(methodName, meta, value);
-      return value;
-    });
+    if (typeof method === 'string' && browserMethods.has(method)) {
+      // Outside the serial queue, so every waiting call shares one recovery instead of queueing behind it.
+      const recovery = await chromeHeal.ensure();
+      result = await serial(async () => {
+        const value = await browserCall(methodName, params, meta);
+        observeEffect(methodName, meta, value);
+        return value;
+      });
+      if (recovery && isRecord(result)) result = { ...result, recovery };
+    }
     else if (Object.hasOwn(methods, methodName)) {
       if (typeof method === 'string' && ['approval.grant', 'approval.deny', 'approval.cancel'].includes(method)) {
         const record = approvals.get(params.id); meta.tab = record.tab; meta.url = record.url;
