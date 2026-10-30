@@ -54,6 +54,13 @@ items.get(other)!.mayDisable = false;
 await assert.rejects(run({ operation: 'disable', extensionId: other }), /Chrome policy/);
 items.get(other)!.mayDisable = true;
 pass('management respects Chrome managed-extension restrictions');
+const coldTurkey = 'pganeibhckoanndahmnfggfoeofncnii';
+items.set(coldTurkey, { ...items.get(other)!, id: coldTurkey, name: 'Cold Turkey Blocker', enabled: true });
+for (const operation of ['reload', 'disable', 'uninstall'] as const)
+  await assert.rejects(run({ operation, extensionId: coldTurkey }), /cannot be switched off or restarted/, 'ASSERT_WATCHDOG_KEPT');
+assert.equal(items.get(coldTurkey)!.enabled, true); assert.ok(!calls.some(call => call.startsWith(coldTurkey)));
+items.delete(coldTurkey);
+pass('a watchdog extension (Cold Turkey) is never switched off, restarted or removed');
 const removal = await run({ operation: 'uninstall', extensionId: other });
 assert.ok(removal && typeof removal === 'object' && 'uninstalled' in removal && removal.uninstalled === false);
 assert.ok(items.has(other)); assert.ok(!calls.some(call => call.startsWith('uninstall:')));

@@ -1,4 +1,4 @@
-import { extensionParams } from '../shared/protocol.js';
+import { extensionParams, WATCHDOG_EXTENSIONS } from '../shared/protocol.js';
 function describe(info) {
     return { id: info.id, name: info.name, version: info.version, enabled: info.enabled,
         installType: info.installType, mayDisable: info.mayDisable, mayEnable: info.mayEnable,
@@ -28,6 +28,8 @@ export async function manageExtensions(params, check, selfReload) {
         throw new Error('Gaddi cannot disable or uninstall itself');
     if (id === chrome.runtime.id && input.operation === 'reload')
         return selfReload();
+    if (WATCHDOG_EXTENSIONS[id] && ['disable', 'uninstall', 'reload'].includes(input.operation))
+        throw new Error(`this extension cannot be switched off or restarted: ${WATCHDOG_EXTENSIONS[id]}`);
     const info = await chrome.management.get(id);
     check();
     if (info.type !== 'extension')

@@ -1,4 +1,4 @@
-import { extensionParams, isRecord } from '../shared/protocol.ts';
+import { extensionParams, isRecord, WATCHDOG_EXTENSIONS } from '../shared/protocol.ts';
 import type { ChromeParams, IncomingParams, ExtensionInfo } from '../shared/protocol.ts';
 import type { ApprovalAction } from './approvals.ts';
 import { GateError } from './approvals.ts';
@@ -43,6 +43,8 @@ export async function extensionCall(params: IncomingParams, caller: string, poli
   const before = extensionInfo(await request({ operation: 'get', extensionId: input.extensionId }));
   if (input.extensionId !== 'self' && before.id !== input.extensionId || input.extensionId === 'self' && !before.self) throw new Error('Chrome extension identity mismatch');
   if (before.self && ['disable', 'uninstall'].includes(input.operation)) throw new GateError('denied', 'Gaddi cannot disable or uninstall itself');
+  if (WATCHDOG_EXTENSIONS[before.id] && ['disable', 'uninstall', 'reload'].includes(input.operation))
+    throw new GateError('denied', `${before.name} cannot be switched off or restarted: ${WATCHDOG_EXTENSIONS[before.id]}`);
   if (before.type !== 'extension') throw new GateError('denied', 'only Chrome extensions can be changed');
   const action = { method: 'extensions', caller, url: meta.url, operation: input.operation, extension: before };
   await gate({ kind: 'extension.' + input.operation, meta, detail: `${before.name} (${before.version}, ${before.id})`, action,

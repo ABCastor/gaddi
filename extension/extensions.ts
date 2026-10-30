@@ -1,5 +1,5 @@
 import type { ChromeParams, ExtensionInfo } from '../shared/protocol.ts';
-import { extensionParams } from '../shared/protocol.ts';
+import { extensionParams, WATCHDOG_EXTENSIONS } from '../shared/protocol.ts';
 
 function describe(info: chrome.management.ExtensionInfo): ExtensionInfo {
   return { id: info.id, name: info.name, version: info.version, enabled: info.enabled,
@@ -25,6 +25,8 @@ export async function manageExtensions(params: ChromeParams, check: () => void,
   const id = input.extensionId === 'self' ? chrome.runtime.id : input.extensionId;
   if (id === chrome.runtime.id && ['disable', 'uninstall'].includes(input.operation)) throw new Error('Gaddi cannot disable or uninstall itself');
   if (id === chrome.runtime.id && input.operation === 'reload') return selfReload();
+  if (WATCHDOG_EXTENSIONS[id] && ['disable', 'uninstall', 'reload'].includes(input.operation))
+    throw new Error(`this extension cannot be switched off or restarted: ${WATCHDOG_EXTENSIONS[id]}`);
   const info = await chrome.management.get(id); check();
   if (info.type !== 'extension') throw new Error('only extensions can be changed');
   if (input.operation === 'reload') {

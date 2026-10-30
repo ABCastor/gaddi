@@ -28,7 +28,8 @@ let bridge: net.Socket | undefined, mcp: Client | undefined, passed = 0;
 const selfId = 'a'.repeat(32), otherId = 'b'.repeat(32);
 const info = (id: string): ExtensionInfo => ({ id, name: id === selfId ? 'Gaddi' : 'Fixture', version: '1', enabled: true,
   installType: 'development', mayDisable: true, type: 'extension', self: id === selfId });
-const items = new Map([[selfId, info(selfId)], [otherId, info(otherId)]]);
+const coldTurkeyId = 'pganeibhckoanndahmnfggfoeofncnii';
+const items = new Map([[selfId, info(selfId)], [otherId, info(otherId)], [coldTurkeyId, info(coldTurkeyId)]]);
 const mutations: BrokerParams[] = [];
 const pass = (label: string) => { passed++; console.log(`PASS ${label}`); };
 async function rpc(method: string, params: BrokerParams = {}): Promise<Reply> {
@@ -85,7 +86,7 @@ try {
     });
   }); await ready;
   const list = await rpc('extensions'); assert.equal(list.error, undefined); assert.ok(isRecord(list.result));
-  assert.equal((list.result.extensions as unknown[]).length, 2); pass('broker lists metadata through dedicated management route');
+  assert.equal((list.result.extensions as unknown[]).length, 3); pass('broker lists metadata through dedicated management route');
   const reload = await rpc('extensions', { operation: 'reload', extensionId: 'self' }); assert.equal(reload.error, undefined);
   assert.equal(mutations.pop()!.extensionId, selfId); pass('broker requests bounded self reload without approval');
   const held = await rpc('extensions', { operation: 'disable', extensionId: otherId });
@@ -97,6 +98,11 @@ try {
   assert.ok(replay.error); assert.equal(mutations.length, 0); pass('disable waits for signed single-use approval');
   const locked = await rpc('extensions', { operation: 'uninstall', extensionId: 'self' }); assert.equal(locked.error?.code, 'denied');
   pass('broker blocks removing Gaddi even through raw RPC');
+  for (const operation of ['reload', 'disable', 'uninstall'] as const) {
+    const kept = await rpc('extensions', { operation, extensionId: coldTurkeyId });
+    assert.equal(kept.error?.code, 'denied', 'ASSERT_WATCHDOG_BROKER'); assert.equal(kept.error?.approval, undefined);
+  }
+  assert.equal(mutations.length, 0); pass('broker never switches off or restarts a watchdog extension, not even with approval');
   const removal = await rpc('extensions', { operation: 'uninstall', extensionId: otherId }); assert.equal(removal.error?.code, 'held');
   assert.ok(removal.error?.approval); await grant(removal.error.approval.id);
   items.get(otherId)!.version = '2';
