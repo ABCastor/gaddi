@@ -66,6 +66,8 @@ const context = vm.createContext({
   createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString, createRemote,
   readUpload, UPLOAD_CHUNK, signinSite, listLogins, chooseLogin, runSignin, createSigninSecrets,
   createBridge: () => bridge, isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, waitParams, FRAME_TOOLS, redactURLs, redactURLText,
+  // Chrome recovery is not under test here: a connected bridge never needs it.
+  createChromeHeal: () => ({ attached: () => {}, ensure: async () => null, status: () => ({}) }), chromeControls: () => ({}),
   wakeApprovalApp: (pending: readonly unknown[]) => wakeApprovalApp(pending, { launcher: '/usr/bin/true' }),
 });
 const source = stripTypeScriptTypes(fs.readFileSync(new URL('../../daemon/daemon.ts', import.meta.url), 'utf8'))
