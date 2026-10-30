@@ -303,6 +303,8 @@ async function getTab(id) {
         throw new Error('No active Chrome tab');
     return tabs[0];
 }
+// The document an action was aimed at, carried to every page task that serves it.
+const frameOf = (params) => params.frameId === undefined ? {} : { frameId: params.frameId };
 async function onPage(tab, action, params = {}, check) {
     // Version guards run before in-page effects. Trusted CDP input follows this
     // promise asynchronously, so this is a preflight check, not atomic native input.
@@ -547,7 +549,7 @@ async function waitOnTab(tab, params, scope) {
                 try {
                     const remaining = Math.max(0, end - Date.now());
                     const result = await Promise.race([
-                        onPage(tab, 'wait', { ...args, timeout: Math.min(2000, remaining) }, scope.check),
+                        onPage(tab, 'wait', { ...args, ...frameOf(params), timeout: Math.min(2000, remaining) }, scope.check),
                         new Promise(resolve => {
                             const done = () => { wake = undefined; resolve(null); };
                             // A busy renderer can take hundreds of ms to answer even a check-now wait.
@@ -613,9 +615,9 @@ async function afterInput(tab, before, url, scope, combobox = false, frameId) {
 }
 // A wheel scroll keeps animating after the input returns. Follow the scroller until it holds still,
 // within a small budget; a page that vanished or cannot be read simply has no position to report.
-async function settledOffset(tab, scroller, before, scope) {
+async function settledOffset(tab, scroller, before, scope, frameId) {
     const read = async () => {
-        const offset = await onPage(tab, 'scrollPosition', { selector: scroller }, scope.check);
+        const offset = await onPage(tab, 'scrollPosition', { selector: scroller, ...(frameId === undefined ? {} : { frameId }) }, scope.check);
         return typeof offset.left === 'number' && typeof offset.top === 'number' ? { left: offset.left, top: offset.top } : undefined;
     };
     try {
@@ -1223,7 +1225,8 @@ async function dispatchAction({ method, params = {} }, scope) {
         });
     }
     const operations = ['describe', 'read', 'html', 'screenshot', 'approvalCapture', 'click', 'type', 'press', 'goto',
-        'hover', 'scroll', 'select', 'upload', 'back', 'eval', 'emulate', 'wait', 'signinProbe', 'signinType', 'signinSubmit'];
+        'hover', 'scroll', 'select', 'upload', 'back', 'eval', 'emulate', 'wait', 'signinProbe', 'signinType', 'signinSubmit',
+        'downloadArm', 'downloadPoll', 'downloadChunk', 'downloadEnd'];
     const action = typeof method === 'string' && method.startsWith('chrome.') ? method.slice(7) : '';
     if (!operations.includes(action))
         throw new Error('Unsupported Chrome method');
@@ -1287,6 +1290,8 @@ async function dispatchAction({ method, params = {} }, scope) {
             }
             return value;
         }, check, background, route);
+        if (action === 'downloadArm' || action === 'downloadPoll' || action === 'downloadChunk' || action === 'downloadEnd')
+            return onPage(tab, action, params, check);
         if (action === 'signinProbe')
             return emulatedFocus(() => onPage(tab, 'signinProbe', params, check));
         if (action === 'signinType' || action === 'signinSubmit') {
@@ -1382,14 +1387,14 @@ async function dispatchAction({ method, params = {} }, scope) {
             const digest = [...new Uint8Array(await crypto.subtle.digest('SHA-256', bytes))].map(b => b.toString(16).padStart(2, '0')).join('');
             if (digest !== meta.sha256 || bytes.length !== meta.size)
                 throw new Error('Upload data did not arrive intact; retry');
-            const before = await onPage(tab, 'upload', { selector: params.selector, version: params.version,
+            const before = await onPage(tab, 'upload', { selector: params.selector, version: params.version, ...frameOf(params),
                 file: { name: meta.name, type: meta.type || 'application/octet-stream', lastModified: meta.lastModified ?? Date.now(), data } }, check);
-            return { ...result, uploaded: true, via: before.via, ...await afterInput(tab, before, result.url, scope) };
+            return { ...result, uploaded: true, via: before.via, ...await afterInput(tab, before, result.url, scope, false, params.frameId) };
         }
         if (action === 'select')
             return emulatedFocus(async () => {
                 const before = await onPage(tab, 'select', params, check);
-                return { ...result, selected: true, ...await afterInput(tab, before, result.url, scope) };
+                return { ...result, selected: true, ...await afterInput(tab, before, result.url, scope, false, params.frameId) };
             });
         if (action === 'scroll') {
             const { dx, dy } = wheelParams(params), wheel = dx !== undefined || dy !== undefined;
@@ -1399,13 +1404,13 @@ async function dispatchAction({ method, params = {} }, scope) {
             if (!wheel)
                 return emulatedFocus(async () => {
                     const before = await onPage(tab, 'scroll', params, check);
-                    return { ...result, scrolled: true, ...await afterInput(tab, before, result.url, scope) };
+                    return { ...result, scrolled: true, ...await afterInput(tab, before, result.url, scope, false, params.frameId) };
                 });
             if (params.selector === undefined)
                 return trusted(async (send) => {
                     const before = await onPage(tab, 'snapshot', params, check);
                     await send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: 1, y: 1, deltaX: dx ?? 0, deltaY: dy ?? 0 });
-                    return { ...result, scrolled: true, ...await afterInput(tab, before, result.url, scope) };
+                    return { ...result, scrolled: true, ...await afterInput(tab, before, result.url, scope, false, params.frameId) };
                 });
             // The wheel goes to whatever is under the pointer, so move the pointer onto the element first.
             return trusted(async (send) => {
@@ -1416,8 +1421,8 @@ async function dispatchAction({ method, params = {} }, scope) {
                 const point = { x: target.x + offset.x, y: target.y + offset.y }, before = { left: target.left, top: target.top };
                 await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...point });
                 await send('Input.dispatchMouseEvent', { type: 'mouseWheel', ...point, deltaX: dx ?? 0, deltaY: dy ?? 0 });
-                const observed = await afterInput(tab, target, result.url, scope);
-                const after = await settledOffset(tab, target.scroller, before, scope);
+                const observed = await afterInput(tab, target, result.url, scope, false, params.frameId);
+                const after = await settledOffset(tab, target.scroller, before, scope, params.frameId);
                 const moved = !!after && (after.left !== before.left || after.top !== before.top);
                 // A scroller's own offset is not in the page signature, so a moved carousel counts as a change.
                 return { ...result, scrolled: true, ...observed, ...(moved ? { changed: true } : {}),

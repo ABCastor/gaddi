@@ -29,7 +29,9 @@ export interface ChromeParams {
   // Internal ownership of temporary rich-editor layout during trusted append.
   appendCleanup?: string;
   // Broker-only credential actions. Public type/press never forward this authority.
-  signin?: { site: string; kind?: 'username' | 'password' | 'otp' };
+  signin?: { site: string; signup?: boolean; kind?: 'username' | 'password' | 'confirmation' | 'otp' };
+  // Internal, origin-bound interception of a page's generated download. No local path crosses this wire.
+  downloadCapture?: { id: string; site: string; index?: number };
   // A file the broker vetted, sent in base64 pieces and then attached by reference to them.
   upload?: { id: string; index?: number; data?: string; chunks?: number; name?: string; type?: string; lastModified?: number; size?: number; sha256?: string };
   file?: { name: string; type: string; lastModified: number; data: string };
@@ -38,6 +40,8 @@ export interface BrokerParams extends ChromeParams {
   lastSelfHeal?: unknown;
   caller?: string; session?: string; harness?: string; approval?: string; id?: string; proof?: SignedProof;
   kind?: string; n?: number; path?: string; item?: string;
+  signup?: boolean; create?: { title: string; username: string; vault: string };
+  download?: string;
   remember?: boolean; site?: string; reason?: string;
   // browser_grant: what to waive (`<upload|post|delete> <address prefix>`), for how long, and the agent's own words.
   rules?: string[]; minutes?: number; label?: string;
@@ -102,9 +106,13 @@ export interface FrameInfo { frameId: number; url: string; challenge?: boolean }
 export interface ScrollOffset { left: number; top: number }
 export interface ImageBox { x: number; y: number; width: number; height: number }
 export interface ApprovalCapture { data: string; mimeType: string; width: number; height: number; box: ImageBox }
-export interface SigninProbe { url: string; signature: string; username?: string; password?: string; passwordPresent?: boolean; otp?: string; challenge?: boolean }
-export interface SigninResult { outcome: 'signed_in' | 'needs_you' | 'no_login' | 'choose' | 'failed'; site: string; item_title?: string; step?: string; reason?: string }
+export interface SigninProbe { url: string; signature: string; username?: string; password?: string; confirmation?: string; passwordPresent?: boolean; otp?: string; challenge?: boolean }
+export interface SigninResult { outcome: 'signed_in' | 'filled' | 'needs_you' | 'no_login' | 'choose' | 'failed'; site: string; item_title?: string; step?: string; reason?: string }
 export interface PageResults {
+  downloadArm: { armed: boolean };
+  downloadPoll: { ready: boolean; bytes?: number; chunks?: number; error?: string };
+  downloadChunk: { data: string };
+  downloadEnd: { ended: boolean };
   signinProbe: SigninProbe;
   signinFocus: { signature: string; selector: string; combobox: false };
   signinCheck: PageResults['signinFocus'];
@@ -147,7 +155,7 @@ export interface PageResults {
   hoverPoint: PageResults['clickPoint'];
 }
 // The transport envelope may carry an error instead of the action's result.
-export type PageResult = { __gaddiError?: string; __gaddiCode?: string } & Partial<PageResults['animationSpeed']
+export type PageResult = { __gaddiError?: string; __gaddiCode?: string } & Partial<PageResults['animationSpeed'] & PageResults['downloadArm'] & PageResults['downloadPoll'] & PageResults['downloadChunk'] & PageResults['downloadEnd']
   & Omit<PageResults['describe'], 'password'> & PageResults['read'] & PageResults['html']
   & PageResults['wait'] & PageResults['captureBox'] & PageResults['scroll'] & PageResults['select'] & PageResults['clickPoint'] & PageResults['scrollPoint'] & PageResults['typeFocus'] & PageResults['settle']
   & PageResults['closeForeignFrames'] & PageResults['typeLanded'] & PageResults['upload'] & PageResults['pointTarget'] & PageResults['pressFocus'] & PageResults['viewport']
@@ -208,7 +216,7 @@ export type BrokerRPC = <M extends string>(method: M, params?: BrokerParams) => 
 // Check only the result fields a client consumes; arbitrary eval and policy payloads stay opaque.
 export function isBrokerResult<M extends string>(method: M, value: unknown): value is BrokerResult<M> {
   switch (method) {
-    case 'signin': return isRecord(value) && ['signed_in', 'needs_you', 'no_login', 'choose', 'failed'].includes(String(value.outcome))
+    case 'signin': return isRecord(value) && ['signed_in', 'filled', 'needs_you', 'no_login', 'choose', 'failed'].includes(String(value.outcome))
       && typeof value.site === 'string' && ['item_title', 'step', 'reason'].every(key => value[key] === undefined || typeof value[key] === 'string')
       && Object.keys(value).every(key => ['outcome', 'site', 'item_title', 'step', 'reason'].includes(key));
     case 'tabs': return isRecord(value) && Array.isArray(value.tabs) && value.tabs.every(isTabInfo);
@@ -259,6 +267,9 @@ export function wheelParams(params: { dx?: unknown; dy?: unknown }): { dx?: numb
 }
 
 // Shared by broker and extension, including clients that bypass MCP schemas.
+// The tools that can act inside one document of the tab, a frame `look` lists. One list, so the CLI's
+// --frame, MCP's frameId and the broker offer the same surface (tests/mcp/metadata.test.ts).
+export const FRAME_TOOLS: readonly string[] = ['look', 'screenshot', 'click', 'type', 'press', 'hover', 'select', 'scroll', 'wait', 'upload'];
 export function waitParams(params: { text?: unknown; selector?: unknown; url?: unknown; gone?: unknown; timeout?: unknown }): ChromeParams {
   const keys = (['text', 'selector', 'url'] as const).filter(key => params[key] !== undefined);
   if (keys.length !== 1) throw new Error('wait requires exactly one of text, selector or url');

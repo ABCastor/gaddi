@@ -1,6 +1,7 @@
 import type { BrowserContext, Frame } from 'playwright-core';
 import type { FakeDaemon } from './fake-daemon.ts';
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { isRecord } from '../../shared/protocol.ts';
 import { callsFor } from './extension-types.ts';
 import { waitFor } from './fake-daemon.ts';
@@ -118,6 +119,26 @@ export async function frameChecks({ context, daemon, url, inner, pass }: {
   await call('chrome.click', { tab, frameId: nestedFrame.frameId, selector: '#nested-button' });
   await waitFor(async () => (await nestedEvents()).some(event => event.type === 'click' && event.target === 'nested-button' && event.trusted),
     'ASSERT_FRAME_NESTED: a selector two documents deep takes a trusted click');
+
+  // A selector named inside a document says which document it is, so the broker judges that site.
+  const nestedDescribed = await call('chrome.describe', { tab, frameId: nestedFrame.frameId, selector: '#nested-button' }) as { frameUrl?: string };
+  assert.match(nestedDescribed.frameUrl || '', /\/nested\.html/, 'ASSERT_FRAME_DESCRIBE_URL: a selector inside a frame names that document address');
+  const topDescribed = await call('chrome.describe', { tab, selector: '#covered' }) as { frameUrl?: string };
+  assert.equal(topDescribed.frameUrl, undefined, 'ASSERT_FRAME_DESCRIBE_URL: the tab own document names no frame');
+  // A wait aimed at a document looks in that document: its heading is not the tab's text.
+  const waited = async (params: object) => (await daemon.call('chrome.wait', { tab, ...params }) as { met?: boolean }).met;
+  assert.equal(await waited({ frameId: nestedFrame.frameId, text: 'Nested heading', timeout: 1500 }), true, 'ASSERT_FRAME_WAIT: a wait inside a frame sees that document text');
+  assert.equal(await waited({ text: 'Nested heading', timeout: 300 }), false, 'ASSERT_FRAME_WAIT: the same text is not in the tab own document');
+  // A file field inside a document: the file is attached there, and the tab own page never sees it.
+  const fileBytes = Buffer.from('frame upload fixture\n'), uploadId = crypto.randomUUID();
+  assert.equal((await daemon.request('chrome.uploadChunk', { upload: { id: uploadId, index: 0, data: fileBytes.toString('base64') } })).error, undefined);
+  const framedUpload = await daemon.request('chrome.upload', { tab, frameId: nestedFrame.frameId, selector: '#nested-file',
+    upload: { id: uploadId, chunks: 1, name: 'frame.txt', type: 'text/plain', lastModified: 1700000000000, size: fileBytes.length,
+      sha256: crypto.createHash('sha256').update(fileBytes).digest('hex') } });
+  assert.equal(framedUpload.error, undefined, `ASSERT_FRAME_UPLOAD: ${JSON.stringify(framedUpload)}`);
+  assert.equal((framedUpload.result as { uploaded?: boolean }).uploaded, true, 'ASSERT_FRAME_UPLOAD: the upload is reported');
+  assert.deepEqual(await nested.evaluate(() => (window as unknown as { files: { name: string; size: number }[] }).files),
+    [{ name: 'frame.txt', size: fileBytes.length }], 'ASSERT_FRAME_UPLOAD: the file field inside the frame received the file');
 
   // The quiz radio's own name is prose about the answer, counted once: the word "post" inside a
   // sentence is what a hold once fired on, and a choice must never be read as an action.

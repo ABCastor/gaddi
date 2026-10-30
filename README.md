@@ -86,7 +86,7 @@ gaddi close <tab-id>
 
 `open` returns a tab ID; `look` returns text and control references. Keep the ID through the task. New tabs use Gaddi's own window, created minimized. You can open it from Chrome's Dock menu; Gaddi leaves its size, position and state as you set them. MCP tools use a `browser_` prefix and also support typing, scrolling (sideways too, with `dx`, and inside a carousel or grid when you name it), selection, waits and screenshots.
 
-A click can go where you point instead of at a reference: `gaddi click <tab-id> --at 120,240` (`at:{x,y}` over MCP) presses that point in the tab as your own mouse would, which is how a button under a cookie banner, or a control inside a third-party embed, is reached. `look` also lists every document inside the tab with its frame id; `--frame <id>` (`frameId`) makes `look`, `click`, `type`, `press`, `hover`, `select`, `scroll`, `wait` and `upload` work inside that document, cross-origin included, and keys go in once that document is the inspected target and holds the focus. The gates follow the click: a point is judged on the control under it, a click inside an embed is judged on that site as well as on the page, and a point over something Gaddi cannot inspect waits for you. Verification widgets are named as such in `look`; pressing their checkbox is your own click, and Gaddi never answers a puzzle. Rendering actions run in background tabs. `browser_show` selects a tab and requests your attention without taking window focus by default.
+A click can go where you point instead of at a reference: `gaddi click <tab-id> --at 120,240` (`at:{x,y}` over MCP) presses that point in the tab as your own mouse would, which is how a button under a cookie banner, or a control inside a third-party embed, is reached. `look` also lists every document inside the tab with its frame id; `--frame <id>` (`frameId`) makes `look`, `click`, `type`, `press`, `hover`, `select`, `scroll`, `wait` and `upload` work inside that document, cross-origin included, and keys go in once that document is the inspected target and holds the focus. The gates follow the click: a point is judged on the control under it, a click inside an embed is judged on that site as well as on the page, a file sent to a field inside another site's embed asks every time (a remembered upload site covers its own pages only), a wheel inside a document needs a `selector` to aim at, and a point over something Gaddi cannot inspect waits for you. Verification widgets are named as such in `look`; pressing their checkbox is your own click, and Gaddi never answers a puzzle. Rendering actions run in background tabs. `browser_show` selects a tab and requests your attention without taking window focus by default.
 
 <img src="docs/media/browser.png" width="700" alt="A disposable research-notes page in Chrome after Gaddi typed a query and clicked Search; Publish note remains unclicked.">
 
@@ -96,11 +96,17 @@ Pass the version from `look` to reject stale input. When a session ends, its bac
 
 ### Sign in with 1Password
 
-`browser_signin` uses the [1Password CLI](https://developer.1password.com/docs/cli/) and desktop-app integration. You authorize the site and Login item; Gaddi fills it. Captchas, passkeys and extra verification can need you.
+`browser_signin` uses the [1Password CLI](https://developer.1password.com/docs/cli/) and desktop-app integration, without needing the browser's password-manager extension. You authorize the site and Login item; Gaddi fills it. A locked or unavailable CLI returns an unlock/retry instruction after a five-second process budget. Agents can work through visual challenges with screenshot/click; passkeys and extra verification can need you.
 
-Credentials stay out of sign-in results and audit entries. Text output redacts exact matches for ten minutes after use; screenshots do not.
+For a new account, pass `create:{title,username,vault}`. You approve the new item and vault; `op` generates and saves its password, then Gaddi fills the signup form without submitting. Use `signup:true` with `item` to fill an already saved login. Submit with an ordinary click, keeping its existing approval rules. See [the sign-in contract](docs/authorization.md#new-accounts-and-a-locked-password-manager).
+
+Credentials stay out of sign-in results and audit entries. Text output redacts exact matches for ten minutes after use; screenshots do not. Credential-bearing URL query/fragment values are redacted independently, across results, errors, events and stored broker metadata. Navigation and signed approvals still use the original URL. Existing broker state and audit files are scrubbed at startup; client transcripts and Chrome history are not. See [URL credentials](docs/authorization.md#url-credentials).
 
 Uploads have a 20 MB limit. Protected credential paths and key files are refused; arbitrary files can still contain secrets. See [extension controls](docs/extension-controls.md). Connection recovery does not resubmit pending page actions.
+
+### When Chrome stops
+
+If Chrome has quit or crashed, the next browser call reopens it in the background with your normal profile and last session (`open -a`, never a fresh profile), waits up to 45 seconds for the extension, and tells the agent and you once (a Gaddi banner) what happened. It reopens Chrome at most once per 10 minutes and three times an hour, and never while Chrome is running: then it waits for the extension to reconnect and, if it does not, names the click (`chrome://extensions` → Gaddi → Reload). `browser_status` shows the recovery state. Nothing reopens Chrome until an agent needs it.
 
 ## Development
 
@@ -112,7 +118,9 @@ bash tests/run-all.sh
 
 Tests use isolated state and falsify gates by removing their protection. Browser tests need Chrome for Testing; Secure Enclave checks need a desktop session. Missing prerequisites are skipped. Commit regenerated extension output after changes. [Visual sources](docs/media/README.md) are included.
 
-There is no console or network inspection, download handling, browser-dialog handling or video recording. CSS and Web Animations can be slowed; JavaScript timers, canvas and video cannot.
+`browser_click` accepts `download:"/absolute/path/export.zip"` for an approved, same-origin blob/filesystem anchor export that reaches the top document. It saves a new file under Downloads or the system temporary directory, up to 20 MiB, with no overwrite. Detached anchors, other download methods and embedded documents are unsupported. See [the bounded download contract](docs/authorization.md#page-generated-downloads).
+
+There is no console or network inspection, general download manager, browser-dialog handling or video recording. CSS and Web Animations can be slowed; JavaScript timers, canvas and video cannot.
 
 Original code is licensed under [Apache-2.0](LICENSE). Bundled fonts, the Public Suffix List and dependencies keep their own licenses; see [NOTICE](NOTICE).
 

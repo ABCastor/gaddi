@@ -13,7 +13,7 @@ import { readBrowser } from './reader.ts';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js';
-import { mapGrantError, mapSocketError, pageResult, plainResult } from './map.ts';
+import { mapGrantError, mapSocketError, pageResult, plainResult, withRecovery } from './map.ts';
 
 const SOCK = process.env.GADDI_SOCKET || path.join(os.homedir(), 'Library/Application Support/Gaddi/gaddi.sock');
 const HARNESS = process.env.GADDI_HARNESS || 'unknown';
@@ -41,7 +41,7 @@ let currentContext = DEFAULT_CONTEXT;
 function rpc<M extends string>(method: M, params: BrokerParams = {}): Promise<BrokerResult<M>> {
   return socketRequest(SOCK, { id: crypto.randomUUID(), method, params: { context: currentContext, ...params, caller: HARNESS, session: SESSION } }, RPC_TIMEOUT_MS);
 }
-interface Field { type: string; description?: string; minimum?: number; maximum?: number; exclusiveMinimum?: number; enum?: string[]; items?: Field; minItems?: number; maxItems?: number; maxLength?: number; pattern?: string; properties?: Record<string, Field>; required?: string[] }
+interface Field { type: string; description?: string; minimum?: number; maximum?: number; exclusiveMinimum?: number; enum?: string[]; items?: Field; minItems?: number; maxItems?: number; maxLength?: number; pattern?: string; properties?: Record<string, Field>; required?: string[]; additionalProperties?: boolean }
 interface ToolDefinition extends Tool {
   inputSchema: { type: 'object'; properties: Record<string, Field>; required: string[]; additionalProperties: false };
   run: (args: BrokerParams) => Promise<CallToolResult>;
@@ -57,8 +57,10 @@ const approval = S;
 // The agent's one-line purpose, shown to the owner if the action is held. Only on tools that can be held.
 const why = S;
 const wheel = { type: 'number', minimum: -WHEEL_LIMIT, maximum: WHEEL_LIMIT };
-// A document inside the tab, as look lists it: actions then resolve inside that page.
-const frameId = { type: 'integer', description: 'Frame id from look.' };
+// A document inside the tab, as look lists it: actions then resolve inside that page. Every tool the
+// CLI's --frame reaches takes it (tests/mcp/metadata.test.ts); the name alone says where it comes from,
+// which keeps tools/list in budget.
+const frameId = { type: 'integer' };
 // A point the agent saw, in the tab's own viewport: what a screenshot shows. The broker bounds it.
 const at = { type: 'object' };
 const zoom = { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' },
@@ -66,51 +68,54 @@ const zoom = { type: 'object', properties: { x: { type: 'number' }, y: { type: '
 const obj = (properties: Record<string, Field>, required: string[] = []): ToolDefinition['inputSchema'] => ({ type: 'object', properties, required, additionalProperties: false });
 const tool = <M extends string>(name: string, description: string, properties: Record<string, Field> = {}, required: string[] = [], method: M = name as M, format: (result: BrokerResult<M>) => CallToolResult | Promise<CallToolResult> = plainResult): ToolDefinition => ({
   name: 'browser_' + name, description, inputSchema: obj(properties, required),
-  run: async (args: BrokerParams) => format(await rpc(method, args)),
+  run: async (args: BrokerParams) => {
+    const result = await rpc(method, args);
+    return withRecovery(await format(result), isRecord(result) ? result.recovery : undefined);
+  },
 });
 const pageJSON = (result: unknown) => pageResult(isRecord(result) ? result.url : undefined, JSON.stringify(result, null, 2));
 const line = (value: unknown) => String(value ?? '').replace(/\s+/g, ' ').trim();
 const TOOLS: ToolDefinition[] = [
-  tool('tabs', 'List tabs in Chrome.', {}, [], 'tabs', result => pageResult('Chrome tabs',
+  tool('tabs', 'Chrome tabs.', {}, [], 'tabs', result => pageResult('Chrome tabs',
     result.tabs.map(t => `${t.id}${t.active ? '*' : ''} w${t.windowId} [${line(t.group)}] ${line(t.title)} ${line(t.url)}`).join('\n'))),
-  tool('bookmarks', 'List bookmarks; filter by folder, title or URL.', { query: S }, [], 'bookmarks', result => {
+  tool('bookmarks', 'Bookmarks; query filters folder/title/URL.', { query: S }, [], 'bookmarks', result => {
     const lines = result.bookmarks.map(b => `${line(b.path)}: ${line(b.title)} — ${line(b.url)}`).join('\n');
     const note = '\n[Bookmarks truncated at 20,000 characters; narrow query.]';
     return pageResult('Chrome bookmarks', lines.length > 20000 ? lines.slice(0, 20000 - note.length) + note : lines);
   }),
-  tool('wait', 'Wait for text, a visible selector/ref or a URL part; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 } }, [], 'wait', pageJSON),
-  tool('look', 'Read text and refs, incl floating menus/suggestions; click refs. visible:true is viewport only. Lists frames.', { tab, visible: B, frameId }, [], 'look',
+  tool('wait', 'Wait for text, selector/ref or URL part; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 }, frameId }, [], 'wait', pageJSON),
+  tool('look', 'Read text/refs, floating menus/suggestions and frames; visible:true is viewport.', { tab, visible: B, frameId }, [], 'look',
     result => result?.note ? plainResult(result.note) : pageJSON(result)),
   {
-    name: 'browser_read', description: 'Readable markdown from a tab or a URL in a temporary tab.',
+    name: 'browser_read', description: 'Markdown from a tab or URL in a temporary tab.',
     inputSchema: obj({ tab, url: S, approval, why }),
     run: args => readBrowser(args, rpc),
   },
-  tool('open', 'Open a background URL in Gaddi\'s window; foreground selects it.', { url: S, group: S, foreground: B, approval, why }, ['url'], 'open', pageJSON),
+  tool('open', 'Open background URL in Gaddi; foreground selects it.', { url: S, group: S, foreground: B, approval, why }, ['url'], 'open', pageJSON),
   tool('goto', 'Navigate a tab to a URL.', { tab, url: S, approval, why }, ['url'], 'goto', pageJSON),
   tool('back', 'Go back in a tab.', { tab }, [], 'back', pageJSON),
-  tool('click', 'Click a selector, or at:{x,y} (a tab point) for a covered control. Version from look refuses stale.', { tab, version, selector: S, at, frameId, approval, why }),
-  tool('type', 'Replace text; mode:append adds at the end, preserving chips/mentions. Passwords denied.', { tab, version, selector: S, text: S, mode: { ...S, enum: ['replace', 'append'] }, frameId }, ['selector', 'text']),
-  tool('signin', 'Sign in with 1Password; secrets stay hidden. Holds for Touch ID.', { tab, item: S, approval, why }),
-  tool('press', 'Press a key; with frameId, inside that document while it holds focus. Reports changed.', { tab, version, key: S, frameId, approval, why }, ['key']),
-  tool('hover', 'Hover a CSS selector. Reports changed:true/false.', { tab, version, selector: S, frameId }, ['selector']),
-  tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector. Says changed:true/false.', { tab, version, dx: wheel, dy: wheel, selector: S }),
-  tool('select', 'Select an option by value. Reports changed.', { tab, version, selector: S, value: S }, ['selector', 'value']),
-  tool('upload', 'Attach a local file to a file field, its label or a drop zone; held.', { tab, version, selector: S, path: S, approval, why }, ['selector', 'path']),
-  tool('eval', 'Evaluate JavaScript; password reads and user policy matches are denied.', { tab, expression: S }, ['expression'], 'eval', pageJSON),
-  tool('emulate', 'Set viewport, colour scheme or animation speed; reset clears.', {
+  tool('click', 'Click selector/at:{x,y}; version guards stale. download:path captures blob to Downloads/temp (held,20MB).', { tab, version, selector: S, at, frameId, download: S, approval, why }),
+  tool('type', 'Replace text; mode:append adds, preserving chips/mentions. Passwords denied.', { tab, version, selector: S, text: S, mode: { ...S, enum: ['replace', 'append'] }, frameId }, ['selector', 'text']),
+  tool('signin', '1Password. create:{title,username,vault}: new login; signup:true: fill existing. Signup never submits.', { tab, item: S, signup: B, create: { type: 'object', properties: { title: S, username: S, vault: S }, required: ['title','username','vault'], additionalProperties: false }, approval, why }),
+  tool('press', 'Press key; frameId requires focus in that document.', { tab, version, key: S, frameId, approval, why }, ['key']),
+  tool('hover', 'Hover selector.', { tab, version, selector: S, frameId }, ['selector']),
+  tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector.', { tab, version, dx: wheel, dy: wheel, selector: S, frameId }),
+  tool('select', 'Select option by value.', { tab, version, selector: S, value: S, frameId }, ['selector', 'value']),
+  tool('upload', 'Attach local file to a field/label/drop zone; held.', { tab, version, selector: S, path: S, frameId, approval, why }, ['selector', 'path']),
+  tool('eval', 'Evaluate JS; password reads and user-policy matches denied.', { tab, expression: S }, ['expression'], 'eval', pageJSON),
+  tool('emulate', 'Set viewport, theme or animation speed; reset clears.', {
     tab, width: { type: 'integer', minimum: 1 }, height: { type: 'integer', minimum: 1 }, mobile: B,
     colorScheme: { ...S, enum: ['light', 'dark', 'no-preference'] },
     animationSpeed: { type: 'number', exclusiveMinimum: 0, maximum: 1 }, reset: B,
   }),
-  tool('screenshot', 'See a screenshot and its path. frame crops a document; zoom (x,y,w,h) closes in; press box points.', { tab, fullPage: B, frameId, zoom }, [], 'screenshot', async result => ({
+  tool('screenshot', 'Screenshot image/path; frameId crops; zoom magnifies; box locates tab points.', { tab, fullPage: B, frameId, zoom }, [], 'screenshot', async result => ({
     content: [{ type: 'text', text: result.path },
       { type: 'image', mimeType: result.mimeType, data: (await readFile(result.path)).toString('base64') }],
   })),
   tool('close', 'Close explicit tabs; report closed IDs and failures.', { tabs }, ['tabs']),
   tool('show', 'Request owner attention, without focus by default. Rendering never needs show.', { tab }, ['tab'], 'show', pageJSON),
-  tool('group', 'Move existing tabs into a task group; reuse its title.', { tabs, group: S }, ['tabs', 'group'], 'group', pageJSON),
-  tool('approvals', 'List actions waiting for user approval in the Gaddi app.', {}, [], 'approvals.list', pageJSON),
+  tool('group', 'Group existing tabs by task; reuse title.', { tabs, group: S }, ['tabs', 'group'], 'group', pageJSON),
+  tool('approvals', 'Pending actions in Gaddi.', {}, [], 'approvals.list', pageJSON),
   {
     // Kept terse: tools/list has a token budget (tests/mcp/metadata.test.ts). The instructions below say the rest,
     // including that payments, sends, sign-in and security stay held.

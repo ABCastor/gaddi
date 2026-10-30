@@ -456,6 +456,14 @@ final class BrowserModel {
     }
 }
 
+// The broker's one-per-incident note that it reopened Chrome or needs the owner (daemon/chrome-heal.ts).
+// Informational only: it carries no approval and the banner opens nothing but the panel.
+func browserNotice(_ name: String, _ data: JSONObject) -> String? {
+    guard name == "browser.notice", let text = data["text"] as? String else { return nil }
+    let line = text.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+    return line.isEmpty ? nil : String(line.prefix(400))
+}
+
 // Launch requests select an existing approval only; they never authorize a decision.
 func approvalRequestID(_ value: String) -> String? {
     guard !value.isEmpty, value.utf8.count <= 128,

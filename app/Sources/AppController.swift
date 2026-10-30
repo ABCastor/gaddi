@@ -126,6 +126,10 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         model.onPending = { [weak self] approval in
             DispatchQueue.main.async { self?.notify(approval) }
         }
+        model.onEvent = { [weak self] name, data in
+            guard let text = browserNotice(name, data) else { return }
+            DispatchQueue.main.async { self?.notifyBrowser(text) }
+        }
         model.start()
         DispatchQueue(label: "gaddi.key-setup").async { [weak self] in
             guard let self else { return }
@@ -326,6 +330,17 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         })
     }
     static func bannerID(_ who: String) -> String { "agent:" + who }
+    static let chromeBannerID = "gaddi:chrome-recovery"
+    private func notifyBrowser(_ text: String) {
+        // One banner, replaced in place: the broker already sends at most one per incident.
+        let content = UNMutableNotificationContent()
+        content.title = "Gaddi · Chrome"
+        content.body = text
+        content.sound = .default
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: Self.chromeBannerID, content: content, trigger: nil)) { error in
+            if let error { diagnostic("Chrome notice failed: \(error.localizedDescription)") }
+        }
+    }
     private func notify(_ approval: Approval) {
         // One banner per chat, replaced as its requests arrive, so a burst is one notification, not a flood.
         // Lock-screen order: who asked (title), what (subtitle), why (body). `who` is already one clean line.

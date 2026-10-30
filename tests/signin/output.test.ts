@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import vm from 'node:vm';
 import { stripTypeScriptTypes } from 'node:module';
 import { spawn } from 'node:child_process';
-import { isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, waitParams } from '../../shared/protocol.ts';
+import { isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, waitParams, FRAME_TOOLS } from '../../shared/protocol.ts';
 import type { BrokerParams, BrokerResult, Reply } from '../../shared/protocol.ts';
 import { loadPolicy, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from '../../daemon/policy.ts';
 import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail, approvalContext } from '../../daemon/approvals.ts';
@@ -19,6 +19,7 @@ import { wakeApprovalApp } from '../../daemon/approval-wake.ts';
 import { createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString } from '../../daemon/grants.ts';
 import { createRemote } from '../../daemon/remote.ts';
 import { readBrowser } from '../../mcp/reader.ts';
+import { redactURLs, redactURLText } from '../../shared/url-redaction.ts';
 
 const home = fs.mkdtempSync(path.join(os.tmpdir(), 'gaddi-signin-output-'));
 const password = 'FAKE_OUTPUT_PASSWORD_43', username = 'fake&review@example.test';
@@ -64,7 +65,7 @@ const context = vm.createContext({
   createApprovals, GateError, approvalRef, cleanURL, cleanDetail, approvalContext, createProofVerifier, approvalMessage,
   createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString, createRemote,
   readUpload, UPLOAD_CHUNK, signinSite, listLogins, chooseLogin, runSignin, createSigninSecrets,
-  createBridge: () => bridge, isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, waitParams,
+  createBridge: () => bridge, isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, waitParams, FRAME_TOOLS, redactURLs, redactURLText,
   wakeApprovalApp: (pending: readonly unknown[]) => wakeApprovalApp(pending, { launcher: '/usr/bin/true' }),
 });
 const source = stripTypeScriptTypes(fs.readFileSync(new URL('../../daemon/daemon.ts', import.meta.url), 'utf8'))

@@ -1,4 +1,4 @@
-import { isRecord } from '../../shared/protocol.ts';
+import { isRecord, FRAME_TOOLS } from '../../shared/protocol.ts';
 // MCP handshake and exact public surface require no daemon or browser.
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
@@ -82,6 +82,14 @@ try {
   assert.match(listed.tools.find(t => t.name === 'browser_scroll')!.description!, /dx\/dy wheel pixels \(over selector if given\), or to a selector/, 'ASSERT_SCROLL_SCHEMA');
   console.log('PASS ASSERT_SCROLL_SCHEMA');
   const shownTab = schema('show').properties.tab; assert.ok(isRecord(shownTab)); assert.equal(shownTab.maximum, Number.MAX_SAFE_INTEGER);
+  // A document inside the tab is reachable from MCP exactly where it is from a shell: the CLI's --frame,
+  // the broker and MCP all read one list (shared/protocol.ts), so MCP must offer frameId on each of them.
+  const mcpFrames = listed.tools.filter(tool => isRecord(tool.inputSchema.properties) && 'frameId' in tool.inputSchema.properties)
+    .map(tool => tool.name.slice(8)).sort();
+  assert.deepEqual(mcpFrames, [...FRAME_TOOLS].sort(), 'ASSERT_FRAME_PARITY: MCP offers frameId on every tool the CLI offers --frame on');
+  for (const name of mcpFrames) assert.deepEqual(schema(name).properties.frameId, { type: 'integer' }, `ASSERT_FRAME_PARITY: ${name}`);
+  assert.ok(mcpFrames.includes('select') && mcpFrames.includes('upload'), 'ASSERT_FRAME_PARITY: select and upload reach a frame');
+  console.log('PASS ASSERT_FRAME_PARITY');
   const estimate = Math.ceil(JSON.stringify(listed).length / 4);
   console.log(`MCP tools/list: ${listed.tools.length} tools, ${estimate} total estimated tokens (JSON characters / 4; limit 2500)`);
   assert.ok(estimate < 2500, 'tools/list token budget exceeded');
@@ -98,7 +106,13 @@ try {
   assert.doesNotMatch(instructions, /agents cannot grant permissions/, 'ASSERT_GRANT_GUIDANCE');
   assert.match(instructions, /ask for a session grant with browser_grant.*only the owner approves it in Gaddi/, 'ASSERT_GRANT_GUIDANCE');
   assert.match(instructions, /Payments, sends, sign-in, security stay held/, 'ASSERT_GRANT_GUIDANCE');
-  assert.deepEqual(Object.keys(schema('signin').properties).sort(), ['approval', 'item', 'tab', 'why']);
+  assert.deepEqual(Object.keys(schema('signin').properties).sort(), ['approval', 'create', 'item', 'signup', 'tab', 'why']);
+  assert.deepEqual(schema('click').properties.download,{type:'string'},'ASSERT_DOWNLOAD_SCHEMA');
+  const create=schema('signin').properties.create;assert.ok(isRecord(create)&&isRecord(create.properties));
+  assert.deepEqual(Object.keys(create.properties).sort(),['title','username','vault'],'ASSERT_CREATE_NO_SECRET_FIELD');
+  assert.deepEqual(create.required,['title','username','vault']);
+  assert.equal(create.additionalProperties,false);
+  assert.deepEqual(schema('signin').properties.signup,{type:'boolean'});
   // Every tool whose call can be held takes the agent's one-line purpose, for the owner's card; no other tool does.
   const holdable = ['read', 'open', 'goto', 'click', 'press', 'signin', 'upload', 'extensions'];
   for (const tool of listed.tools) {

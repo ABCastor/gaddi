@@ -41,6 +41,7 @@ for line in \
   'REMOTE-APPROVABLE existing' \
   'REMOTE-ANSWERED Approved from phone: Marcus task click “Post” on example.test/shop, ' \
   'EVENT approval.resolved' \
+  'NOTICE Chrome had stopped (crash or quit); Gaddi reopened it.' \
   'RESOLVED approval=a1' \
   'RESOLVED approval=existing' \
   'PASS headless-check:'; do

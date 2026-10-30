@@ -1,5 +1,6 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { isRecord } from '../shared/protocol.ts';
+import { redactURLText } from '../shared/url-redaction.ts';
 // mcp/map.ts — pure mapping helpers for the MCP server (unit-testable, no I/O).
 // Socket errors -> tool results; page data -> the untrusted wrapper.
 
@@ -23,7 +24,7 @@ export function mapSocketError(error: unknown): CallToolResult {
   if (code === 'denied') {
     return text(`DENIED: ${reason}. There is no approval path for this action.`);
   }
-  return { content: [{ type: 'text', text: `ERROR: ${e.message || 'unknown error'}` }], isError: true };
+  return { ...text(`ERROR: ${e.message || 'unknown error'}`), isError: true };
 }
 
 // A session grant is never retried: the broker acts on the owner's signed answer by itself, so the
@@ -37,14 +38,21 @@ export function mapGrantError(error: unknown): CallToolResult {
   return text(`HELD (approval ${id}): session grant. The owner decides with Touch ID in Gaddi, or by phone if enabled for this request (at most 120 minutes and 20 rules). It takes effect as soon as they approve: do not retry, just keep working. Do not ask again for more sites one by one: a new ask from this chat joins this card. browser_approvals lists the grants that are active.${expiry ? ` The request expires ${expiry}.` : ''}`);
 }
 
+// The broker's own note that it reopened Chrome or waited out a reconnect: trusted, so it goes first,
+// outside any page-content wrapper.
+export function withRecovery(result: CallToolResult, recovery: unknown): CallToolResult {
+  if (typeof recovery !== 'string' || !recovery) return result;
+  return { ...result, content: [{ type: 'text', text: `Gaddi: ${redactURLText(recovery)}` }, ...result.content] };
+}
+
 function text(s: unknown): { content: [{ type: 'text'; text: string }] } {
-  return { content: [{ type: 'text', text: String(s) }] };
+  return { content: [{ type: 'text', text: redactURLText(String(s)) }] };
 }
 
 // Always provide a complete boundary, even if page text imitates the wrapper.
 export function wrapPage(url: unknown, body: unknown) {
   const s = body == null ? '' : String(body);
-  return `${WRAP_OPEN}${url || 'unknown url'}]\n${s}\n${WRAP_CLOSE}`;
+  return `${WRAP_OPEN}${redactURLText(String(url || 'unknown url'))}]\n${redactURLText(s)}\n${WRAP_CLOSE}`;
 }
 
 export function pageResult(url: unknown, body: unknown, extra?: string) {

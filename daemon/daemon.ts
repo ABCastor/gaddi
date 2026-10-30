@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { waitParams, wheelParams } from '../shared/protocol.ts';
+import { waitParams, wheelParams, FRAME_TOOLS } from '../shared/protocol.ts';
 // Thin user-level broker: the extension operates the user's Chrome; this process gates and audits calls.
 import net from 'node:net';
 import type { Socket } from 'node:net';
@@ -26,8 +26,10 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from './policy.ts';
-import { signinSite, listLogins, chooseLogin, runSignin } from './signin.ts';
+import { signinSite, listLogins, chooseLogin, runSignin, createLogin, PASSWORD_UNAVAILABLE } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
+import { redactURLs, redactURLText } from '../shared/url-redaction.ts';
+import { downloadTarget, saveDownload, checkDownload, DOWNLOAD_LIMIT } from './downloads.ts';
 import { readUpload, UPLOAD_CHUNK } from './uploads.ts';
 import type { UploadFile } from './uploads.ts';
 import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail, approvalContext } from './approvals.ts';
@@ -39,6 +41,7 @@ import { createRemote } from './remote.ts';
 import { createBridge } from './bridge.ts';
 import { extensionCall } from './extensions.ts';
 import { wakeApprovalApp } from './approval-wake.ts';
+import { createChromeHeal, chromeControls } from './chrome-heal.ts';
 
 const home = process.env.GADDI_HOME || path.join(os.homedir(), 'Library/Application Support/Gaddi');
 const socket = process.env.GADDI_SOCKET || path.join(home, 'gaddi.sock');
@@ -47,12 +50,28 @@ const statePath = process.env.GADDI_STATE || path.join(home, 'state.json');
 const TEXT_LIMIT = 20000, HTML_LIMIT = 5 * 1024 * 1024;
 const AGENT_GROUP_PREFIX = '● ';
 const AUDIT_MAX_BYTES = 10 * 1024 * 1024;
-const log = (...args: unknown[]) => console.error(new Date().toISOString(), '[gaddi]', ...args);
+const log = (...args: unknown[]) => console.error(new Date().toISOString(), '[gaddi]', ...redactURLs(args));
 fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+// Invariant: upgrading cannot re-expose legacy URL credentials from broker-owned JSON/JSONL.
+// Rewrite privately and atomically, without retaining an unredacted backup or changing proof hashes.
+for (const file of [statePath, `${statePath}.tmp`, auditPath, `${auditPath}.1`]) {
+  let previous: string;
+  try { previous = fs.readFileSync(file, 'utf8'); }
+  catch (error) { if (hasErrorCode(error, 'ENOENT')) continue; throw error; }
+  const safe = redactURLText(previous);
+  if (safe === previous) continue;
+  const temporary = `${file}.redact-${crypto.randomUUID()}`;
+  try {
+    fs.writeFileSync(temporary, safe, { mode: 0o600, flag: 'wx' });
+    fs.renameSync(temporary, file);
+  } finally { fs.rmSync(temporary, { force: true }); }
+}
 const startedAt = Date.now();
 const policyPath = path.join(home, 'policy.json');
 let policy = loadPolicy({ overlay: policyPath, log });
 const signinSecrets = createSigninSecrets();
+// One sink for responses, errors, events and stored metadata, independent of policy or sign-in.
+const publicOutput = (value: unknown) => redactURLs(signinSecrets.redact(value, undefined, false));
 const subscribers = new Set<Socket>(), connections = new Set<Socket>();
 const nonAuditedMethods = new Set(['status', 'approvals.list', 'signin.remembered', 'sends.remembered', 'uploads.remembered', 'zones.list', 'bridge.status', 'bridge.health', 'events.subscribe', 'session.begin', 'remote.status']);
 interface Session { caller: string; owned: Set<number>; lastActivity: number; endedAt?: number }
@@ -129,17 +148,24 @@ function emit(event: string, data: unknown) {
     for (const session of sessions.values()) session.owned.clear();
     shown.clear();
     tabActivity.clear();
+    chromeHeal.attached();
   }
   if (event === 'approval.pending') {
     if (isRecord(data)) wakeApprovalApp([data.approval], { log });
   }
-  const line = JSON.stringify(signinSecrets.redact({ event, ts: new Date().toISOString(), data }, undefined, false)) + '\n';
+  const line = JSON.stringify(publicOutput({ event, ts: new Date().toISOString(), data })) + '\n';
   for (const conn of subscribers) {
     if (conn.destroyed || conn.writableLength > 1024 * 1024) { subscribers.delete(conn); conn.destroy(); }
     else conn.write(line);
   }
 }
 const bridge = createBridge({ emit });
+// A stopped Chrome is reopened when an agent next needs it (chrome-heal.ts holds the guards).
+const chromeHeal = createChromeHeal({ ...chromeControls(), log,
+  connected: () => bridge.status().connected,
+  tabCount: async () => tabList(await bridge.request('chrome.tabs', { browser: policy.browser })).length,
+  // The approval app shows this as one banner per incident.
+  notify: text => emit('browser.notice', { kind: 'chrome-recovery', text }) });
 const proofs = createProofVerifier({ publicKeyPath: process.env.GADDI_APPROVER_PUB || path.join(os.homedir(), 'Library/Application Support/Gaddi/approver.pub'),
   usedPath: path.join(home, 'used-proofs.log') });
 // Approving some holds from another device (remote.ts). Off until the owner turns it on with Touch ID; the saved
@@ -148,7 +174,7 @@ const remote = createRemote({ statePath: path.join(home, 'remote.json'),
   keyPath: process.env.GADDI_REMOTE_KEY || path.join(home, 'remote-approver.pub'), proofs, emit, log });
 const approvals = createApprovals({ waitMinutes: policy.approvals.wait_minutes, imageRoot: path.join(home, 'approvals'), log, ttlMinutes: Number(policy.approvals.ttl_minutes) > 0 ? Number(policy.approvals.ttl_minutes) : 10,
   onChange: () => {
-    fs.writeFileSync(statePath + '.tmp', JSON.stringify({ approvals: approvals.persistable() }), { mode: 0o600 });
+    fs.writeFileSync(statePath + '.tmp', JSON.stringify(publicOutput({ approvals: approvals.persistable() })), { mode: 0o600 });
     fs.renameSync(statePath + '.tmp', statePath);
   },
   // Whether the owner's other device may answer this record right now, judged from the live policy and state.
@@ -349,11 +375,15 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     zone = zoned.zone;
     return zoned;
   };
+  if (params.download !== undefined && method !== 'click') throw new Error('download applies only to click');
+  const download = params.download === undefined ? undefined : downloadTarget(params.download);
+  if (download && params.frameId !== undefined) throw new Error('Generated-download capture currently supports the top document only');
   const args: ChromeParams = { tab: resolvedTab };
   // A document inside the tab, named by what `look` listed. Every action on it then
   // resolves selectors and checks inside that document instead of the tab's own page.
   if (params.frameId !== undefined) {
-    if (!['look', 'html', 'screenshot', 'click', 'type', 'press', 'hover', 'select', 'scroll', 'wait', 'upload'].includes(method))
+    // html is the broker's own read behind browser_read; it takes a frame as look does.
+    if (![...FRAME_TOOLS, 'html'].includes(method))
       throw new Error('frameId applies only to an action inside a tab');
     // Frames are numbered by Chrome; 0 is the tab itself, which needs no frameId.
     if (typeof params.frameId !== 'number' || !Number.isSafeInteger(params.frameId) || params.frameId < 1)
@@ -385,23 +415,48 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     const finish = (result: SigninResult) => { meta.signin = result; return result; };
     try {
       site = signinSite(pageURL);
-      let logins;
-      try { logins = await listLogins(); }
-      catch { return finish({ outcome: 'needs_you', site, step: '1password', reason: '1Password is locked or did not answer: unlock it with Touch ID, then retry' }); }
-      const selection = chooseLogin(logins, site, params.item);
-      if (selection.outcome !== 'selected') return finish(selection);
-      const item = selection.item;
-      const title = cleanDetail(item.title);
+      if (params.signup !== undefined && typeof params.signup !== 'boolean') throw new Error();
+      const creating = params.create !== undefined, signup = creating || params.signup === true;
+      if (creating && (params.item !== undefined || !isRecord(params.create) || typeof params.create.title !== 'string'
+        || !params.create.title.trim() || params.create.title.length > 160 || typeof params.create.username !== 'string'
+        || !params.create.username.trim() || params.create.username.length > 320
+        || typeof params.create.vault!=='string' || !/^[a-z0-9]{26}$/.test(params.create.vault)
+        || Object.keys(params.create).some(key=>!['title','username','vault'].includes(key)))) throw new Error();
+      if (creating && checkSignin(policy,site).outcome==='deny') return finish({outcome:'failed',site,reason:'Site refused'});
+      let item;
+      if (creating) item = { id: 'new', title: String((params.create as Record<string, unknown>).title), urls: [site] };
+      else {
+        let logins;
+        try { logins = await listLogins(); }
+        catch { return finish({ outcome: 'needs_you', site, step: '1password', reason: PASSWORD_UNAVAILABLE }); }
+        const selection = chooseLogin(logins, site, params.item);
+        if (selection.outcome !== 'selected') return finish(selection);
+        item = selection.item;
+      }
+      const title = cleanDetail(creating ? `Create new login: ${item.title} (${String((params.create as Record<string, unknown>).username)}), vault ${String((params.create as Record<string, unknown>).vault)}` : item.title);
       try {
-        await gate({ kind: 'signin', meta, detail: title, check: checkSignin(policy, site), approval: params.approval,
-          action: { method: 'signin', caller: meta.caller, url: pageURL, tab: resolvedTab, item: item.id, title, site } });
+        await gate({ kind: 'signin', meta, detail: title,
+          check: creating ? { outcome: 'hold', reason: 'create and save a new 1Password login' } : checkSignin(policy, site), approval: params.approval,
+          action: { method: 'signin', caller: meta.caller, url: pageURL, tab: resolvedTab, item: item.id, title, site, signup,
+            ...(creating ? { create: params.create } : {}) } });
       } catch (error) {
         if (error instanceof GateError && error.code === 'held' && error.approval) return finish({ outcome: 'needs_you', site,
           item_title: title, step: 'approval', reason: `held: approve ${String(error.approval.id)} in Gaddi, then retry with approval=${String(error.approval.id)}` });
         return finish({ outcome: 'failed', site, item_title: title, step: 'approval', reason: 'Sign-in approval refused or invalid' });
       }
+      // Creation is a separate signed operation; refused/protected sites still win.
+      if (creating) {
+        const protection = checkSignin(policy, site);
+        if (protection.outcome === 'deny') return finish({ outcome: 'failed', site, reason: 'Site refused' });
+        const probe = await request('signinProbe', { tab: resolvedTab, signin: { site, signup: true } });
+        if (!isRecord(probe) || probe.challenge || !probe.password || signinSite(probe.url) !== site)
+          return finish({ outcome: 'needs_you', site, reason: 'No supported signup form. No item created.' });
+        try { item = await createLogin(site, params.create); }
+        catch { return finish({ outcome: 'needs_you', site, step: '1password', item_title: item.title,
+          reason: `${PASSWORD_UNAVAILABLE} Check for the new item before retrying creation; a timed-out save may have completed.` }); }
+      }
       // The bridge connection and tab remain pinned while op and the page advance.
-      return finish(await runSignin({ site, item, request: (name, values, deadline) => bridge.request('chrome.' + name, { ...values, tab: resolvedTab }, connection, deadline),
+      return finish(await runSignin({ site, item, signup, request: (name, values, deadline) => bridge.request('chrome.' + name, { ...values, tab: resolvedTab }, connection, deadline),
         remember: value => signinSecrets.remember(resolvedTab, [value]) }));
     } catch {
       return finish({ outcome: 'failed', site, step: 'signin', reason: 'Sign-in unavailable or site refused' });
@@ -425,6 +480,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     if (!isRecord(info) || typeof info.name !== 'string' || typeof info.tag !== 'string') throw new Error('bridge returned invalid element description');
     // The document that would act: the frame when the action happens inside an embedded page.
     const scopeURL = actingURL(info.frameUrl, pageURL);
+    if (download && scopeURL!==pageURL) throw new Error('Generated-download capture currently supports the top document only');
     if (method === 'click') {
       if (typeof info.href !== 'string') throw new Error('chrome.describe must return href');
       // A point click keeps its point: substituting the element's reference would click
@@ -438,7 +494,10 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       // Neither the tab's own rules nor the acting document's can be escaped: the stricter wins.
       if (info.blind !== true && scopeURL !== pageURL) check = strictest(check, checkClick(policy, hostOf(pageURL), info.name, control));
       const destination = info.href ? new URL(info.href, scopeURL).href : '';
-      if (check.outcome === 'allow' && info.href) check = checkNavigation(policy, navigationURL(destination));
+      const generated = download && /^(?:blob:|filesystem:)/.test(destination);
+      if (generated && new URL(destination.replace(/^filesystem:/, '')).origin !== new URL(scopeURL).origin)
+        throw new GateError('denied', 'Generated download belongs to a different site');
+      if (check.outcome === 'allow' && info.href && !generated) check = checkNavigation(policy, navigationURL(destination));
       if (check.outcome === 'allow' && scopeURL !== pageURL) check = checkNavigation(policy, navigationURL(scopeURL));
       check = checkRememberedSend(policy, scopeURL, method, check, info.name, destination);
       check = grantCheck(check, { kind: 'click', name: info.name, destination }, scopeURL);
@@ -488,6 +547,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     if (params.selector !== undefined) args.selector = requiredString(params.selector, 'selector');
     Object.assign(args, wheelParams(params));
     if (args.selector === undefined && args.dx === undefined && args.dy === undefined) throw new Error('scroll requires dx, dy or selector');
+    // A wheel with no selector lands at the tab's corner, on the tab's own page: it cannot scroll a document inside it.
+    if (args.frameId !== undefined && args.selector === undefined) throw new Error('scroll inside a frame needs a selector to aim at');
   } else if (method === 'screenshot') {
     if (params.fullPage !== undefined && typeof params.fullPage !== 'boolean') throw new Error('fullPage must be boolean');
     args.fullPage = params.fullPage ?? false;
@@ -496,14 +557,20 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     if (!isRecord(info) || typeof info.name !== 'string') throw new Error('bridge returned invalid element description');
     targetSelector = typeof info.selector === 'string' ? info.selector : args.selector;
     meta.upload = { name: upload.name, bytes: upload.bytes.length };
+    // The file goes to the document that holds the field, so that site is what the gates judge.
+    const scopeURL = actingURL(info.frameUrl, pageURL);
     check = checkUpload(policy);
-    check = checkRememberedUpload(policy, pageURL, check);
+    // A remembered site covers its own pages only: a file into another site's embedded document
+    // asks every time, and is never offered as remembered for the tab's site.
+    if (scopeURL === pageURL) {
+      check = checkRememberedUpload(policy, pageURL, check);
+    } else check = strictest(check, checkNavigation(policy, navigationURL(scopeURL)));
     if (check.outcome === 'allow' && !params.approval) meta.reason = check.reason;
     // readUpload already refused secret stores above, so a grant never reaches a refused file.
-    check = grantCheck(check, { kind: 'upload' });
+    check = grantCheck(check, { kind: 'upload' }, scopeURL);
     const size = upload.bytes.length < 1024 * 1024 ? `${Math.ceil(upload.bytes.length / 1024)} KB` : `${(upload.bytes.length / 1024 / 1024).toFixed(1)} MB`;
     // The approval app reads this as: <agent> wants to upload “<file> (<size>)” on <site>.
-    detail = `${cleanDetail(upload.name)} (${size})`;
+    detail = `${cleanDetail(upload.name)} (${size})${scopeURL !== pageURL ? ` in ${cleanURL(scopeURL)}` : ''}`;
   } else if (method === 'emulate') {
     for (const key of ['width', 'height'] as const) if (params[key] !== undefined) {
       if (typeof params[key] !== 'number' || !Number.isSafeInteger(params[key]) || params[key] < 1) throw new Error(`${key} must be a positive integer`);
@@ -524,12 +591,16 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   if (method === 'select') {
     if (typeof params.value !== 'string') throw new Error('value must be a string'); args.value = params.value;
   }
+  // DOWNLOAD: a capture always asks once, even on a zone or a remembered/granted click.
+  // The original action's stricter deny/hold is retained; the file path is signed too.
+  if (download) { check = strictest(check, checkDownload(policy)); detail += ` -> ${download} (up to 20 MB)`; }
   await gate({ kind: method, meta, detail, check, approval: params.approval, targetSelector, remoteScope,
     capture: targetSelector ? () => bridge.request('chrome.approvalCapture', { tab: resolvedTab,
       selector: targetSelector, checkedDescription: args._description, ...(method === 'press' ? { key: args.key } : {}) },
       connection, Math.min(deadline, Date.now() + 3000)) : undefined,
     // An approval covers this exact file: its name, size and content digest.
     action: { method, caller: meta.caller, url: pageURL, ...args,
+      ...(download ? { download } : {}),
       ...(upload ? { file: { name: upload.name, bytes: upload.bytes.length, sha256: upload.sha256 } } : {}) } });
   // A supplied approval went through consume, so only an action the grant itself waived is credited to it.
   if (grantId && !params.approval) meta.grantId = grantId;
@@ -543,6 +614,41 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     for (let index = 0; index < chunks; index++) await request('uploadChunk', { upload: { id, index,
       data: upload.bytes.subarray(index * UPLOAD_CHUNK, (index + 1) * UPLOAD_CHUNK).toString('base64') } });
     args.upload = { id, chunks, name: upload.name, type: upload.type, lastModified: upload.lastModified, size: upload.bytes.length, sha256: upload.sha256 };
+  }
+  if (download) {
+    const capture = { id: crypto.randomUUID(), site: new URL(pageURL).origin };
+    const captureArgs: ChromeParams = { tab: resolvedTab, downloadCapture: capture };
+    const until = Math.min(deadline - 1000, Date.now() + 12000);
+    try {
+      const armed = await request('downloadArm', captureArgs);
+      if (!isRecord(armed) || armed.armed !== true) throw new Error('Download capture was not armed');
+      const clicked = await request('click', args); // Exactly once, through the same checked trusted-input path.
+      let state;
+      while (Date.now() < until) {
+        state = await request('downloadPoll', captureArgs);
+        if (!isRecord(state)) throw new Error('Invalid download status');
+        if (state.error) throw new Error(String(state.error));
+        if (state.ready === true) break;
+        await new Promise(resolve => setTimeout(resolve,100));
+      }
+      if (!isRecord(state) || state.ready !== true) throw new Error('No generated anchor download captured; the click was not retried');
+      if (typeof state.bytes !== 'number' || !Number.isSafeInteger(state.bytes) || state.bytes < 0 || state.bytes > DOWNLOAD_LIMIT
+        || typeof state.chunks !== 'number' || state.chunks !== Math.max(1,Math.ceil(state.bytes/(192*1024)))) throw new Error('Invalid download size');
+      const pieces: Buffer[] = [];
+      for (let index=0;index<state.chunks;index++) {
+        const chunk = await request('downloadChunk',{...captureArgs,downloadCapture:{...capture,index}});
+        if (!isRecord(chunk) || typeof chunk.data !== 'string' || chunk.data.length>256*1024
+          || chunk.data.length%4!==0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(chunk.data)) throw new Error('Invalid download chunk');
+        pieces.push(Buffer.from(chunk.data,'base64'));
+      }
+      const bytes=Buffer.concat(pieces);
+      if (bytes.length!==state.bytes) throw new Error('Download size changed');
+      // Revalidate after the page acted; an intervening file or link must not be overwritten.
+      if (downloadTarget(download)!==download) throw new Error('Download destination changed');
+      saveDownload(download,bytes);
+      return {...(isRecord(clicked)?clicked:{}),tab:resolvedTab,url:pageURL,downloaded:true,path:download,bytes:bytes.length,
+        sha256:crypto.createHash('sha256').update(bytes).digest('hex')};
+    } finally { await request('downloadEnd',captureArgs).catch(()=>{}); }
   }
   const rawResult = await request(method === 'look' ? 'read' : method, args);
   const result = isRecord(rawResult) ? rawResult : undefined;
@@ -738,10 +844,10 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
     return {};
   }),
   status: () => ({ version: 3, pid: process.pid, uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
-    socket, audit: auditPath, bridge: bridge.status(), pendingApprovals: approvals.list().pending.length,
+    socket, audit: auditPath, bridge: { ...bridge.status(), recovery: chromeHeal.status() }, pendingApprovals: approvals.list().pending.length,
     policy: { off: policy.off, sources: policy.sources } }),
   'bridge.attach': ({ kind }, conn) => bridge.attach(conn, kind),
-  'bridge.status': () => bridge.status(),
+  'bridge.status': () => ({ ...bridge.status(), recovery: chromeHeal.status() }),
   'bridge.health': ({ lastSelfHeal }, conn) => bridge.health(conn, { lastSelfHeal }),
   extensions: (params, _conn, meta) => serial(async () => {
     const operation = params.operation ?? 'list';
@@ -855,7 +961,7 @@ function rotateAudit() {
 }
 function audit(entry: unknown) {
   rotateAudit();
-  fs.appendFileSync(auditPath, JSON.stringify(signinSecrets.redact(entry, undefined, false)) + '\n', { mode: 0o600 });
+  fs.appendFileSync(auditPath, JSON.stringify(publicOutput(entry)) + '\n', { mode: 0o600 });
 }
 // Serialize broker actions to keep tab resolution, metadata and forwarding together. Approval
 // and event calls remain independent, so a slow browser operation cannot block the approval app.
@@ -968,11 +1074,16 @@ async function handle(input: unknown, conn: Socket) {
   let result: unknown, error: (Omit<WireError, 'approval'> & { approval?: StoredApprovalRef }) | undefined;
   try {
     const methodName = typeof method === 'string' ? method : String(method);
-    if (typeof method === 'string' && browserMethods.has(method)) result = await serial(async () => {
-      const value = await browserCall(methodName, params, meta);
-      observeEffect(methodName, meta, value);
-      return value;
-    });
+    if (typeof method === 'string' && browserMethods.has(method)) {
+      // Outside the serial queue, so every waiting call shares one recovery instead of queueing behind it.
+      const recovery = await chromeHeal.ensure();
+      result = await serial(async () => {
+        const value = await browserCall(methodName, params, meta);
+        observeEffect(methodName, meta, value);
+        return value;
+      });
+      if (recovery && isRecord(result)) result = { ...result, recovery };
+    }
     else if (Object.hasOwn(methods, methodName)) {
       if (typeof method === 'string' && ['approval.grant', 'approval.deny', 'approval.cancel'].includes(method)) {
         const record = approvals.get(params.id); meta.tab = record.tab; meta.url = record.url;
@@ -1006,8 +1117,8 @@ async function handle(input: unknown, conn: Socket) {
       approval: error?.approval?.id ?? meta.decision?.approval ?? params.approval, error: error?.code, ms: Date.now() - start });
   }
   // The caller's correlation ID and wire keys are protocol, never page-derived credentials.
-  if (!conn.destroyed) conn.write(JSON.stringify(error ? { id, error: signinSecrets.redact(error, undefined, false) }
-    : { id, result: signinSecrets.redact(result, undefined, false) }) + '\n');
+  if (!conn.destroyed) conn.write(JSON.stringify(error ? { id, error: publicOutput(error) }
+    : { id, result: publicOutput(result) }) + '\n');
 }
 
 const server = net.createServer(conn => {

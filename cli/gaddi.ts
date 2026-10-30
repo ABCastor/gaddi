@@ -1,12 +1,17 @@
 #!/usr/bin/env node
 // Thin socket client. Approval launches the app's Touch ID flow; the CLI grants no authority.
 import type { BrokerParams, BrokerResult, BrokerRequest } from '../shared/protocol.ts';
-import { isRecord, parseJSON, errorMessage, waitParams } from '../shared/protocol.ts';
+import { isRecord, parseJSON, errorMessage, waitParams, FRAME_TOOLS } from '../shared/protocol.ts';
+import { redactURLText } from '../shared/url-redaction.ts';
 import net from 'node:net';
 import { socketRequest, SocketError } from '../shared/socket.ts';
 import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+
+// Invariant: locally generated errors and event/reader formatting obey the same URL rule as RPCs.
+const output = (value: string) => process.stdout.write(redactURLText(value));
+const diagnostic = (value: string) => process.stderr.write(redactURLText(value));
 
 // Drain both streams before an explicit exit: pipes may accept only part of a large write.
 const exit = async (code: number): Promise<never> => {
@@ -32,7 +37,8 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] [--why <purp
       that document to hold the focus. --at and --frame are alternatives, never both.
   scroll [tab] <dy|selector> [--dx N] [--dy N]  (wheel pixels; with a selector the wheel goes over that element)
   wait [tab] <JSON options>
-  signin [tab] [--item <title-or-id>]
+  signin [tab] [--item <title-or-id>] [--signup | --create '{"title":"...","username":"...","vault":"<vault-id>"}']
+  click [tab] <selector> --download <new-file-in-Downloads-or-temp>
   eval [tab] <expression> | emulate [tab] <JSON options>
   status | approvals | pending | cancel <id> | audit [n] | events | bridge status
   remote | remote off  (approving some holds from another device: show its state, or turn it off; turning it on needs Touch ID in the Gaddi app)
@@ -44,6 +50,7 @@ const argv = process.argv.slice(2), args: string[] = [];
 let json = false, fullPage = false, foreground = false, visible = false;
 let approval: string | undefined, tab: number | undefined, group: string | undefined, item: string | undefined, why: string | undefined;
 let mode: 'replace' | 'append' | undefined;
+let signup = false, create: BrokerParams['create'], download: string | undefined;
 let at: { x: number; y: number } | undefined, frame: number | undefined;
 let zoom: { x: number; y: number; width: number; height: number } | undefined;
 const wheel: { dx?: number; dy?: number } = {};
@@ -55,6 +62,14 @@ for (let i = 0; i < argv.length; i++) {
     if (!value?.trim() || !Number.isFinite(Number(value))) die(`${arg} needs a number`, 2);
     wheel[arg.slice(2) as 'dx' | 'dy'] = Number(value);
   }
+  else if (arg === '--signup') signup = true;
+  else if (arg === '--create') {
+    const value = parseJSON(argv[++i] || 'null');
+    if (isRecord(value) && typeof value.title === 'string' && typeof value.username === 'string'
+      && typeof value.vault==='string' && Object.keys(value).every(key=>['title','username','vault'].includes(key))) create = {title:value.title,username:value.username,vault:value.vault};
+    else die('--create needs JSON with title, username and vault ID, never a password',2);
+  }
+  else if (arg === '--download') { download = argv[++i]; if (!download) die('--download needs a new file path',2); }
   else if (arg === '--full-page') fullPage = true;
   else if (arg === '--zoom') {
     // A region of the embedded document, in that document's own pixels: x,y,width,height.
@@ -90,11 +105,13 @@ for (let i = 0; i < argv.length; i++) {
 }
 const cmd = args.shift() ?? '';
 if (mode && cmd !== 'type') die('--mode is only supported for type', 2);
+if ((signup || create) && cmd !== 'signin') die('--signup and --create apply only to signin',2);
+if (download !== undefined && cmd !== 'click') die('--download applies only to click',2);
 if (at && cmd !== 'click') die('--at applies only to click', 2);
 if (at && frame !== undefined) die('--at is a point in the tab, so it takes no --frame', 2);
 // The daemon decides what a frame means; the CLI must not narrow the surface it offers, or the
 // same capability exists through MCP and not from a shell.
-if (frame !== undefined && !['look', 'screenshot', 'click', 'type', 'press', 'hover', 'select', 'scroll', 'wait', 'upload'].includes(cmd)) die('--frame applies to look, screenshot, click, type, press, hover, select, scroll, wait or upload', 2);
+if (frame !== undefined && !FRAME_TOOLS.includes(cmd)) die(`--frame applies to ${FRAME_TOOLS.slice(0, -1).join(', ')} or ${FRAME_TOOLS.at(-1)}`, 2);
 if ((wheel.dx !== undefined || wheel.dy !== undefined) && cmd !== 'scroll') die('--dx and --dy are only supported for scroll', 2);
 if (cmd === 'approve') {
   if (args.length !== 1 || !/^[a-f0-9]+$/i.test(args[0])) die('gaddi approve <id>', 2);
@@ -105,6 +122,9 @@ if (cmd === 'approve') {
 }
 const params: BrokerParams = { caller: process.env.GADDI_CALLER || 'cli' };
 if (mode) params.mode = mode;
+if (signup) params.signup = true;
+if (create) params.create = create;
+if (download !== undefined) params.download = download;
 if (at) params.at = at;
 if (frame !== undefined) params.frameId = frame;
 if (process.env.GADDI_HARNESS) params.harness = process.env.GADDI_HARNESS;
@@ -199,17 +219,17 @@ const rpc = <M extends string>(method: M, arguments_: BrokerParams = {}): Promis
 if (cmd !== 'events') {
   try {
     const result = cmd === 'read' ? await (await import('../mcp/reader.ts')).readBrowser(params, rpc) : await rpc(method, params);
-    process.stdout.write((cmd === 'screenshot' && !json ? (isRecord(result) ? result.path : undefined)
+    output((cmd === 'screenshot' && !json ? (isRecord(result) ? result.path : undefined)
       : JSON.stringify(json ? { result } : result, null, json ? 0 : 2)) + '\n');
   } catch (error) {
     const failure = error instanceof SocketError && isRecord(error.raw) ? error.raw : { code: 'error', message: errorMessage(error) };
-    if (json) process.stdout.write(JSON.stringify({ error: failure }) + '\n'); else process.stderr.write(`gaddi: ${failure.message}\n`);
+    if (json) output(JSON.stringify({ error: failure }) + '\n'); else diagnostic(`gaddi: ${failure.message}\n`);
     await exit(failure.code === 'held' ? 4 : failure.code === 'denied' ? 5 : 1);
   }
   await exit(0);
 }
 const conn = net.connect(socket); let buffer = '';
-const fail = async (message: string) => { process.stderr.write(message + '\n'); await exit(1); };
+const fail = async (message: string) => { diagnostic(message + '\n'); await exit(1); };
 conn.setEncoding('utf8');
 conn.on('connect', () => conn.write(JSON.stringify({ id: 1, method, params } satisfies BrokerRequest) + '\n'));
 conn.on('error', error => fail(`gaddi: daemon not reachable at ${socket} (${(isRecord(error) ? error.code : undefined) || error.message})`));
@@ -219,12 +239,12 @@ conn.on('data', async data => {
     let message: Record<string, unknown>;
     try { const parsed = parseJSON(buffer.slice(0, end)); if (!isRecord(parsed)) throw new Error('malformed response'); message = parsed; } catch { return await fail('gaddi: malformed response'); }
     buffer = buffer.slice(end + 1);
-    if (!message.error) { if (message.event) process.stdout.write(JSON.stringify(message) + '\n'); continue; }
+    if (!message.error) { if (message.event) output(JSON.stringify(message) + '\n'); continue; }
     const failure = isRecord(message.error) ? message.error : {};
-    if (json) process.stdout.write(JSON.stringify({ error: message.error }) + '\n'); else process.stderr.write(`gaddi: ${failure.message}\n`);
+    if (json) output(JSON.stringify({ error: message.error }) + '\n'); else diagnostic(`gaddi: ${failure.message}\n`);
     await exit(failure.code === 'held' ? 4 : failure.code === 'denied' ? 5 : 1);
   }
 });
 conn.on('end', async () => { await exit(0); });
 }
-await main().catch(async (error: unknown) => { process.stderr.write(errorMessage(error) + '\n'); await exit(isRecord(error) && typeof error.exitCode === 'number' ? error.exitCode : 1); });
+await main().catch(async (error: unknown) => { diagnostic(errorMessage(error) + '\n'); await exit(isRecord(error) && typeof error.exitCode === 'number' ? error.exitCode : 1); });

@@ -56,7 +56,7 @@ const table = {
   AUDIT: ['ASSERT_GRANT_AUDIT', ['daemon/daemon.ts', 'if (grantId && !params.approval) meta.grantId = grantId;', '']],
   APPROVAL_CREDIT: ['ASSERT_GRANT_APPROVAL_CONSUMED', ['daemon/daemon.ts', 'if (grantId && !params.approval) meta.grantId = grantId;',
     'if (grantId) meta.grantId = grantId;']],
-  UPLOAD: ['ASSERT_GRANT_UPLOAD', ['daemon/daemon.ts', "check = grantCheck(check, { kind: 'upload' });", '']],
+  UPLOAD: ['ASSERT_GRANT_UPLOAD', ['daemon/daemon.ts', "check = grantCheck(check, { kind: 'upload' }, scopeURL);", '']],
   CLICK: ['ASSERT_GRANT_CLICK', ['daemon/daemon.ts', "check = grantCheck(check, { kind: 'click', name: info.name, destination }, scopeURL);", '']],
   ENTER: ['ASSERT_GRANT_ENTER', ['daemon/daemon.ts', "check = grantCheck(check, { kind: 'press', name: submitName }, scopeURL);", '']],
   LEAK_VIEW: ['ASSERT_GRANT_NO_SESSION_LEAK', ['daemon/approvals.ts',
