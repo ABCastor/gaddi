@@ -1,4 +1,6 @@
 import { execFile, spawn } from 'node:child_process';
+import os from 'node:os';
+import path from 'node:path';
 import { isRecord } from '../shared/protocol.ts';
 
 // Recovery when the Chrome bridge is down because the owner's Chrome stopped (crash or quit), or its
@@ -22,7 +24,13 @@ export const DEFAULT_HEAL_LIMITS: HealLimits = {
 };
 export const OWNER_RELOAD = 'Open chrome://extensions in Chrome, find Gaddi, make sure its switch is on, and press Reload (the circular arrow).';
 
+export interface HealStatus {
+  state: HealState; message?: string; since?: string; lastRelaunch?: string;
+  lastRecovery?: { at: string; action: 'reconnect' | 'relaunch'; message: string };
+}
 export interface HealDeps {
+  /** Off: ensure() never probes or launches, callers keep the plain bridge error. */
+  enabled?: boolean;
   connected(): boolean;
   chromeRunning(): Promise<boolean>;
   launch(): Promise<void>;
@@ -123,6 +131,7 @@ export function createChromeHeal(deps: HealDeps) {
   return {
     /** Resolve when the bridge is usable. Returns a recovery note when it had to recover, throws a plain instruction when it cannot. */
     ensure(): Promise<string | undefined> {
+      if (deps.enabled === false) return Promise.resolve(undefined);
       if (deps.connected()) {
         if (state !== 'connected') set('connected');
         return Promise.resolve(undefined);
@@ -141,9 +150,10 @@ export function createChromeHeal(deps: HealDeps) {
         set('connected');
       }
     },
-    status() {
+    status(): HealStatus {
       const live = deps.connected();
       const shown: HealState = live ? 'connected' : state === 'connected' ? 'disconnected' : state;
+      if (deps.enabled === false) return { state: live ? 'connected' : 'disconnected', ...(live ? {} : { message: 'Chrome bridge not connected; Chrome recovery is off for this broker.' }) };
       const text = live ? undefined : state === 'connected' || state === 'disconnected'
         ? 'Chrome bridge not connected; the next browser call checks Chrome and reopens it if it has stopped.' : message;
       return {
@@ -166,6 +176,10 @@ export function mainChromeRunning(psOutput: string, executable: string) {
   });
 }
 
+function ownHome() {
+  const home = process.env.GADDI_HOME;
+  return !home || path.resolve(home) === path.join(os.homedir(), 'Library/Application Support/Gaddi');
+}
 function argv(name: string): string[] | undefined {
   const raw = process.env[name];
   if (!raw) return undefined;
@@ -187,6 +201,10 @@ export function chromeControls() {
   const executable = `${app}/Contents/MacOS/${app.split('/').at(-1)!.replace(/\.app$/, '')}`;
   const probe = argv('GADDI_CHROME_PROBE'), launcher = argv('GADDI_CHROME_LAUNCH');
   return {
+    // Invariant: only the owner's own broker (the default Gaddi home, which the installed service names
+    // explicitly) may probe or open his Chrome. A broker with any other GADDI_HOME (every test) recovers
+    // only through an explicitly supplied probe AND launcher.
+    enabled: process.env.GADDI_CHROME_HEAL !== '0' && (probe && launcher ? true : !probe && !launcher && ownHome()),
     async chromeRunning() {
       if (probe) {
         const code = await run(probe, 5000);

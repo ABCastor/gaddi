@@ -14,6 +14,7 @@ const MUTATIONS: Record<string, [string, string]> = {
   singleflight: ['inflight ??= recover()', 'inflight = recover()'],
   profile: ['--(?:type|user-data-dir|headless)', '--(?:type|headless)'],
   bounded: ['if (await wait(limits.relaunchWaitMs)) {', 'while (!await wait(limits.relaunchWaitMs)); {'],
+  home: ["return !home || path.resolve(home) === path.join(os.homedir(), 'Library/Application Support/Gaddi');", 'return true;'],
 };
 let source = path.join(repo, 'daemon/chrome-heal.ts');
 const mutation = process.env.GADDI_HEAL_MUTATION;
@@ -28,7 +29,7 @@ if (mutation) {
   fs.writeFileSync(source, text.replace(marker, replacement));
   fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ type: 'module' }));
 }
-const { createChromeHeal, mainChromeRunning } = await import(pathToFileURL(source).href) as typeof import('../../daemon/chrome-heal.ts');
+const { createChromeHeal, mainChromeRunning, chromeControls } = await import(pathToFileURL(source).href) as typeof import('../../daemon/chrome-heal.ts');
 
 let passed = 0;
 const pass = (label: string) => { passed++; console.log(`PASS ${label}`); };
@@ -170,6 +171,31 @@ const crash = (w: ReturnType<typeof world>) => { w.connected = false; w.running 
   assert.equal(mainChromeRunning(`  100 ${exe} --restore-last-session`, exe), true);
   assert.equal(mainChromeRunning('  100 /Applications/Google Chrome Canary.app/Contents/MacOS/Google Chrome Canary', exe), false);
   pass('probe: his Chrome found; disposable, headless and helper processes ignored');
+}
+
+// 10. Only his own broker may touch his Chrome: a broker with another home (every test) is off unless it
+// brings its own probe AND launcher.
+{
+  const saved = { ...process.env };
+  const enabled = (env: Record<string, string | undefined>) => {
+    for (const key of ['GADDI_HOME', 'GADDI_CHROME_PROBE', 'GADDI_CHROME_LAUNCH', 'GADDI_CHROME_HEAL']) delete process.env[key];
+    Object.assign(process.env, Object.fromEntries(Object.entries(env).filter(([, v]) => v !== undefined)));
+    return chromeControls().enabled;
+  };
+  try {
+    assert.equal(enabled({}), true, 'default home recovers');
+    assert.equal(enabled({ GADDI_HOME: `${process.env.HOME}/Library/Application Support/Gaddi` }), true, 'installed service names the default home');
+    assert.equal(enabled({ GADDI_HOME: '/tmp/gaddi-test-home' }), false, 'ASSERT_HEAL_HOME a test broker never probes or opens his Chrome');
+    assert.equal(enabled({ GADDI_HOME: '/tmp/gaddi-test-home', GADDI_CHROME_PROBE: '["/usr/bin/false"]' }), false, 'ASSERT_HEAL_HOME a probe alone is not enough');
+    assert.equal(enabled({ GADDI_HOME: '/tmp/x', GADDI_CHROME_PROBE: '["/usr/bin/false"]', GADDI_CHROME_LAUNCH: '["/usr/bin/true"]' }), true);
+    assert.equal(enabled({ GADDI_CHROME_HEAL: '0' }), false, 'explicit off');
+  } finally { for (const key of Object.keys(process.env)) if (!(key in saved)) delete process.env[key]; Object.assign(process.env, saved); }
+  let probed = 0;
+  const off = createChromeHeal({ enabled: false, connected: () => false, chromeRunning: async () => { probed++; return false; },
+    launch: async () => { probed++; }, notify: () => { probed++; }, limits });
+  assert.equal(await off.ensure(), undefined);
+  assert.equal(probed, 0, 'ASSERT_HEAL_HOME disabled recovery touches nothing');
+  pass('recovery is off for any broker but his own, unless given a test probe and launcher');
 }
 
 console.log(`== chrome heal: ${passed} passed, 0 failed`);

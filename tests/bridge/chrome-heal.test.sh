@@ -5,7 +5,7 @@ cd "$(dirname "$0")/../.."
 mkdir -p tests/.state/logs
 node tests/bridge/chrome-heal.test.ts
 for pair in running:ASSERT_HEAL_RUNNING ratelimit:ASSERT_HEAL_RATELIMIT once:ASSERT_HEAL_ONCE probe:ASSERT_HEAL_PROBE \
-  singleflight:ASSERT_HEAL_SINGLEFLIGHT profile:ASSERT_HEAL_PROFILE bounded:ASSERT_HEAL_BOUNDED; do
+  singleflight:ASSERT_HEAL_SINGLEFLIGHT profile:ASSERT_HEAL_PROFILE bounded:ASSERT_HEAL_BOUNDED home:ASSERT_HEAL_HOME; do
   mutation="${pair%%:*}" label="${pair#*:}"
   log="tests/.state/logs/chrome-heal-falsified-${mutation}.log"
   if GADDI_HEAL_MUTATION="$mutation" node tests/bridge/chrome-heal.test.ts >"$log" 2>&1; then
