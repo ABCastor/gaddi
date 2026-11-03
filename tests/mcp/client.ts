@@ -387,7 +387,7 @@ try {
     check((await call('grant', args)).isError === true, `MCP rejects invalid browser_grant arguments ${JSON.stringify(args).slice(0, 48)}`);
   }
   check(grantRequests() === 0, 'MCP validation stops an invalid grant request before it reaches the broker');
-  // The adapter's hard ceiling is 100; the broker keeps the owner's default at 20.
+  // The adapter's hard ceiling is 100; the broker keeps the user's default at 20.
   for (const count of [21, 100]) {
     const overDefault = await call('grant', { rules: Array(count).fill('upload https://fixture.example/a'), minutes: 60 });
     check(overDefault.isError === true && /rules must list 1 to 20 rules/.test(txt(overDefault)), `MCP forwards ${count} rules for the broker to enforce its default limit`);

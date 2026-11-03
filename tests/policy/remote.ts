@@ -34,7 +34,7 @@ const pem = (key: KeyObject) => String(key.export({ type: 'spki', format: 'pem' 
 const fingerprintOf = (key: KeyObject) => crypto.createHash('sha256').update(key.export({ type: 'spki', format: 'der' })).digest('hex');
 const refusedWith = (code: string) => (error: unknown) => error instanceof GateError && error.code === code;
 
-// The owner's Touch ID proof and the single-use journal, stood in for: the proof is good only if it says `owner`.
+// The user's Touch ID proof and the single-use journal, stood in for: the proof is good only if it says `owner`.
 function fakeProofs() {
   const verified: string[] = [], journal = new Set<string>();
   return {

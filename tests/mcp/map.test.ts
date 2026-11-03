@@ -11,7 +11,7 @@ assert.match(text(held), /Expires 2099-01-01/);
 assert.match(text(mapSocketError({ code: 'denied', message: 'password' })), /^DENIED: password\. There is no approval path/);
 assert.equal(mapSocketError({ message: 'unknown tab' }).isError, true);
 console.log('PASS map: held retry, expiry, denied and ordinary errors');
-// A session grant is never retried: the broker acts on the owner's answer itself.
+// A session grant is never retried: the broker acts on the user's answer itself.
 const grantHeld = mapGrantError({ code: 'held', approval: { id: 'g7', reason: 'session grant', expires: '2099-01-01T00:00:00.000Z' } });
 assert.equal(grantHeld.isError, undefined);
 assert.match(text(grantHeld), /^HELD \(approval g7\): session grant\./);

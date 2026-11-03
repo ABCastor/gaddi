@@ -50,13 +50,13 @@ const table = {
   ENABLE_MATCH: ['ASSERT_REMOTE_ENABLE', ['daemon/remote.ts', 'if (!found || found.fingerprint !== fingerprint) {', 'if (!found) {']],
   ENABLE_SAVED: ['ASSERT_REMOTE_ENABLE', ['daemon/remote.ts', "save({ publicKey: String(found.key.export({ type: 'spki', format: 'pem' })), fingerprint, enabledAt, epoch });", '']],
   ENABLE_EVENT: ['ASSERT_REMOTE_ENABLE', ['daemon/remote.ts', "emit('remote.changed', { enabled: true, fingerprint, epoch });", '']],
-  // Once on, only the key the owner turned on counts.
+  // Once on, only the key the user turned on counts.
   STORED_ONLY: ['ASSERT_REMOTE_SWAP', ['daemon/remote.ts', 'active.key, signature)', '(candidate()?.key ?? active.key), signature)']],
   // Turning it off works at once, for anyone, and is remembered.
   DISABLE_NOOP: ['ASSERT_REMOTE_DISABLE', ['daemon/remote.ts', 'active = undefined;', 'void 0;']],
   DISABLE_FILE: ['ASSERT_REMOTE_DISABLE', ['daemon/remote.ts', 'try { fs.unlinkSync(statePath); }', 'try { void 0; }']],
   DISABLE_EVENT: ['ASSERT_REMOTE_DISABLE', ['daemon/remote.ts', "if (was || removed) emit('remote.changed', { enabled: false });", '']],
-  // The owner's choice survives a restart; a damaged file means off.
+  // The user's choice survives a restart; a damaged file means off.
   RESTART_FORGET: ['ASSERT_REMOTE_RESTART', ['daemon/remote.ts', "load(); // the owner's saved choice, read back at startup", '']],
   INVALID_LOADED: ['ASSERT_REMOTE_RESTART', ['daemon/remote.ts', "if (!key || fingerprintOf(key) !== saved.fingerprint) throw new Error('key');", "if (!key) throw new Error('key');"]],
   // A decision is signed by that key, for exactly one request, and is fresh.

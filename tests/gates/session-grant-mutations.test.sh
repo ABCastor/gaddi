@@ -93,7 +93,7 @@ const table = {
   NEEDED: ['ASSERT_GRANT_NEEDED',
     ['daemon/grants.ts', "if (check.outcome !== 'hold' || grants.length === 0) return check;", "if (check.outcome !== 'hold') return check;"],
     ['daemon/grants.ts', 'if (!grant) return check;', "if (!grant) return { outcome: 'allow', reason: 'session grant', grant: 'none' };"]],
-  // A request the owner denied can still be approved afterwards.
+  // A request the user denied can still be approved afterwards.
   DENY: ['ASSERT_GRANT_DENY',
     ['daemon/approvals.ts', "if (a.status !== 'pending') throw new GateError('approval-invalid', ", "if (false) throw new GateError('approval-invalid', "],
     ['daemon/approvals.ts', "if (get(id).status !== 'pending') throw new GateError('approval-invalid', ", "if (false) throw new GateError('approval-invalid', "]],

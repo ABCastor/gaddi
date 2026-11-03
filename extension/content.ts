@@ -313,7 +313,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
   }
   // A click that toggles a choice performs nothing: the words of a checkbox, a radio, an
   // option or the label of one describe what is being chosen, not what the page will do.
-  // A gate that reads an action verb out of that prose asks the owner about an answer.
+  // A gate that reads an action verb out of that prose asks the user about an answer.
   function isChoice(el: PageElement, interactive: PageElement) {
     for (const node of [interactive, el]) {
       const label = (node.tagName === 'LABEL' ? node : node.closest('label')) as HTMLLabelElement | null;
@@ -336,7 +336,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     while (hit?.shadowRoot?.elementFromPoint(x, y) && hit.shadowRoot.elementFromPoint(x, y) !== hit) hit = hit.shadowRoot.elementFromPoint(x, y);
     return hit && (hit === el || el.contains(hit)) ? { x, y } : null;
   }
-  // The element at a point the owner can see, looked through open shadows.
+  // The element at a point the user can see, looked through open shadows.
   function pointElement(at: { x: number; y: number }): PageElement | null {
     if (!Number.isFinite(at.x) || !Number.isFinite(at.y) || at.x < 0 || at.y < 0 || at.x > innerWidth || at.y > innerHeight) return null;
     let hit = document.elementFromPoint(at.x, at.y);
@@ -764,7 +764,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
   // The visible part of this document, so a point measured elsewhere can be held to it.
   if (action === 'viewport') return { width: innerWidth, height: innerHeight } satisfies PageResults['viewport'];
   if (action === 'pointTarget') {
-    // What the owner would be clicking at that point, in this document. When it is an
+    // What the user would be clicking at that point, in this document. When it is an
     // embedded document, its content box lets bg.ts follow the same point into it, so the
     // gate judges the control inside rather than the frame around it.
     const at = params.at;

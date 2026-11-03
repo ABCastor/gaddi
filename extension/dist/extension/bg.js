@@ -1327,7 +1327,7 @@ async function dispatchAction({ method, params = {} }, scope) {
             return emulatedFocus(() => waitOnTab(tab, params, scope));
         if (action === 'describe' || action === 'read' || action === 'html') {
             // A describe by point follows the point into embedded documents, so the gates judge the
-            // control the owner would press, not the frame element that surrounds it.
+            // control the user would press, not the frame element that surrounds it.
             if (action === 'describe' && params.at) {
                 const resolved = await (background ? rendered(() => resolvePoint(tab, params.at, check)) : resolvePoint(tab, params.at, check));
                 const target = resolved.target;
@@ -1518,7 +1518,7 @@ async function dispatchAction({ method, params = {} }, scope) {
             route.note = "Another extension's frame opened as the click went in and Chrome stopped Gaddi's debugger after both press and release were sent; look to confirm the result";
             return { ...value, clicked: true, changed: true };
         };
-        // A click at a point the owner saw: the point goes to Chrome as it is, and the element the
+        // A click at a point the user saw: the point goes to Chrome as it is, and the element the
         // gates judged is read again from that same point immediately before the press.
         if (action === 'click' && params.at)
             return trusted(async (send) => {

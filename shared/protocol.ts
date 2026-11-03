@@ -45,10 +45,10 @@ export interface BrokerParams extends ChromeParams {
   remember?: boolean; site?: string; reason?: string;
   // browser_grant: what to waive (`<upload|post|delete> <address prefix>`), for how long, and the agent's own words.
   rules?: string[]; minutes?: number; label?: string;
-  // Shown to the owner if the call is held, never acted on: the agent's one-line purpose, and its chat and project
+  // Shown to the user if the call is held, never acted on: the agent's one-line purpose, and its chat and project
   // as the harness names them (daemon/approvals.ts ApprovalContext).
   why?: string; context?: { chat?: string; project?: string };
-  // Approving from another device (the owner's phone approver; no MCP tool ever sends these): `fingerprint` names
+  // Approving from another device (the user's phone approver; no MCP tool ever sends these): `fingerprint` names
   // the key that Touch ID turns on, and one decision is `{ id, verb, nonce, ts, sig }`.
   fingerprint?: string; verb?: string; nonce?: string; ts?: number; sig?: string;
 }
@@ -101,7 +101,7 @@ export interface PointTarget {
 // Results of the extension's serialized page function, keyed by the requested action.
 // A document listed by `look`, so an agent can act inside it by name. `challenge` marks a
 // human-verification widget's own frame: never a hint to solve it, only the place to press
-// as a person would, or the moment to hand the page back to the owner.
+// as a person would, or the moment to hand the page back to the user.
 export interface FrameInfo { frameId: number; url: string; challenge?: boolean }
 export interface ScrollOffset { left: number; top: number }
 export interface ImageBox { x: number; y: number; width: number; height: number }
@@ -280,8 +280,8 @@ export function wheelParams(params: { dx?: unknown; dy?: unknown }): { dx?: numb
 // --frame, MCP's frameId and the broker offer the same surface (tests/mcp/metadata.test.ts).
 // Extensions whose companion app closes Chrome the moment they stop running. Cold Turkey quits every
 // Chrome window when its extension is switched off, and a restart here is a switch-off then on. So no
-// agent may disable, restart or remove them; the owner manages them in chrome://extensions.
-// Why: 2026-10-30, Cold Turkey closed his Chrome twice with "the extension was disabled".
+// agent may disable, restart or remove them; the user manages them in chrome://extensions.
+// Disabling the watchdog extension can close Chrome, interrupting every active tab.
 export const WATCHDOG_EXTENSIONS: Record<string, string> = {
   pganeibhckoanndahmnfggfoeofncnii: 'Cold Turkey closes Chrome when its extension stops',
 };

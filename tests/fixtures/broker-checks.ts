@@ -41,7 +41,7 @@ fs.writeFileSync(publicPath, publicKey.export({ type: 'spki', format: 'pem' }));
 fs.writeFileSync(path.join(home, 'policy.json'), JSON.stringify({ ...(scenario === 'sessions' && mode !== 'own' ? { browser: { window: 'shared', show: 'attention' } } : {}), approvals: { ...(scenario === 'approval-wait' ? { wait_minutes: 1, grant_rules_max: 100 } : {}), ttl_minutes: scenario === 'approval-wait' ? 0.1 : scenario === 'approval' ? 0.03 : scenario === 'approval-picture' ? 0.1 : 10 }, deny: { type_into: ['input[type=password]', 'input[autocomplete=current-password]', '.sensitive'] } }));
 if (scenario === 'eval-overlay') fs.copyFileSync(path.join(repo, 'tests/fixtures/eval-overlay.json'), path.join(home, 'policy.json'));
 const env = { ...process.env, GADDI_APP_LAUNCHER: launcher, OMNIREAD_BIN: path.join(home, 'missing-omniread'), GADDI_HOME: home, GADDI_SOCKET: socket, GADDI_APPROVER_PUB: publicPath,
-  // Never the owner's own drop-in file, whatever his shell has set.
+  // Never the user's own drop-in file, whatever his shell has set.
   GADDI_REMOTE_KEY: path.join(home, 'remote-approver.pub'),
   GADDI_STATE: path.join(home, 'state.json'), GADDI_AUDIT: path.join(home, 'audit.jsonl'),
   ...(scenario === 'sessions' ? { GADDI_SESSION_IDLE_MS: '4000', GADDI_SESSION_END_MS: '400', GADDI_SESSION_SWEEP_MS: '20' } : {}),
@@ -121,7 +121,7 @@ const POINTS: Record<string, { selector: string; name?: string; role?: string; t
   '13,13': { selector: '#blind', name: 'Embedded app', blind: true, frameUrl: 'https://blind.example/app' },
   '14,14': { selector: '#frame-mail', name: 'Send', frameUrl: 'https://mail.google.com/mail/u/0' },
 };
-// Independent expected broker policy: callers cannot override the owner's choice.
+// Independent expected broker policy: callers cannot override the user's choice.
 const defaultBrowser = { window: scenario === 'sessions' && mode !== 'own' ? 'shared' : 'own', show: 'attention' } as const;
 async function fakeBridge() {
   const conn = net.connect(socket); bridges.push(conn); conn.setEncoding('utf8'); conn.on('error', () => {});
@@ -333,7 +333,7 @@ async function clickVerbs(c: Client, b: Bridge) {
   const frameful = await rejected(c, 'click', { tab: 7, at: { x: 12, y: 12 } }, 'held');
   assert.match(frameful.message, /checkout/, 'the hold names the embedded address the owner is judging');
   pass('a-click-inside-an-embedded-page-is-judged-on-that-page');
-  // A document the extension cannot look inside has no name to judge, so the owner decides.
+  // A document the extension cannot look inside has no name to judge, so the user decides.
   const blind = await rejected(c, 'click', { tab: 7, at: { x: 13, y: 13 } }, 'held');
   assert.match(blind.message, /cannot inspect/, 'a blind click says why it needs the owner');
   pass('a-document-the-extension-cannot-inspect-needs-the-owner');
@@ -1515,7 +1515,7 @@ async function sessionGrant(c: Client, b: Bridge) {
     assert.equal(a.kind, 'grant'); assert.equal(a.reason, 'session grant'); assert.equal(a.tab, null); assert.equal(a.url, '');
     assert.equal(a.caller, 'grant-agent');
     assert.equal(a.detail, 'post on unseen.example/shop\nupload on unseen.example/shop\nfor 3 hours\n“Update the shop page”');
-    // What the owner signs is the text the broker built, not a cleaned copy: a bare local origin keeps no added slash.
+    // What the user signs is the text the broker built, not a cleaned copy: a bare local origin keeps no added slash.
     const local = await asked(await ask(await liveSession(), ['post http://localhost:3000'], 5));
     assert.equal(local.detail, 'post on http://localhost:3000\nfor 5 minutes');
   });
@@ -1646,7 +1646,7 @@ async function sessionGrant(c: Client, b: Bridge) {
     assert.ok(!fs.readFileSync(path.join(home, 'state.json'), 'utf8').includes(SESSION_PREFIX), 'no session id was written to disk');
   });
 }
-// What a test may bend when it builds one decision of the owner's other device (daemon/remote.ts): the key, the
+// What a test may bend when it builds one decision of the user's other device (daemon/remote.ts): the key, the
 // time, the nonce, what the signature covers, and what is sent.
 interface Tweak { key?: KeyObject; ts?: number; nonce?: string; signs?: Partial<Record<'verb' | 'id' | 'kind' | 'digest', string>>; sends?: Record<string, unknown>;
   // A field left out of the signed text altogether (what a broker that forgot to bind it would accept).
@@ -1693,7 +1693,7 @@ async function remoteApprover(c: Client, b: Bridge) {
 
   let lastStamp = 0;
   const stamp = () => (lastStamp = Math.max(Date.now(), lastStamp + 1));
-  // The owner's Touch ID answer to "turn this key on". Two of them never share a millisecond.
+  // The user's Touch ID answer to "turn this key on". Two of them never share a millisecond.
   function enableProof(fingerprint: string, options: { ts?: number; key?: KeyObject; text?: string } = {}) {
     const ts = options.ts ?? stamp();
     const message = options.text ?? `remote.enable|${fingerprint}|${ts}`;
@@ -1769,7 +1769,7 @@ async function remoteApprover(c: Client, b: Bridge) {
     for (const a of (await result(conn, 'approvals.list')).pending) await conn.call('approval.cancel', { id: a.id });
     bridge.control.extension = undefined; bridge.tabs[0].url = shopURL;
   }
-  // The bot drops its key and the owner turns it on with Touch ID (here: the test owner key signs the fingerprint).
+  // The bot drops its key and the user turns it on with Touch ID (here: the test owner key signs the fingerprint).
   async function turnOn(key: KeyObject = bot.publicKey) {
     fs.writeFileSync(dropIn, pem(key));
     const fingerprint = fingerprintOf(key);
@@ -2077,7 +2077,7 @@ async function remoteApprover(c: Client, b: Bridge) {
   await check('ASSERT_REMOTE_SIGNIN', async () => {
     await reset();
     await turnOn();
-    // A sign-in hold comes back as a result ("needs_you"), not an error, and waits for the owner at the Mac.
+    // A sign-in hold comes back as a result ("needs_you"), not an error, and waits for the user at the Mac.
     const reply = await conn.call('signin', { ...AGENT });
     assert.equal(reply.error, undefined, JSON.stringify(reply));
     assert.ok(isRecord(reply.result) && reply.result.outcome === 'needs_you', `the sign-in waits for the owner: ${JSON.stringify(reply)}`);

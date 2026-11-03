@@ -89,7 +89,7 @@ const SESSION_IDLE_MS = positiveMillis(process.env.GADDI_SESSION_IDLE_MS, 900000
 const SESSION_END_MS = positiveMillis(process.env.GADDI_SESSION_END_MS, 120000);
 const SESSION_SWEEP_MS = positiveMillis(process.env.GADDI_SESSION_SWEEP_MS, 30000);
 // Test-only: shortens the grant "minute" so expiry can be watched. It can never lengthen a grant
-// past what the owner saw on the card (60 s per minute is the ceiling).
+// past what the user saw on the card (60 s per minute is the ceiling).
 const GRANT_MINUTE_MS = Math.min(60000, positiveMillis(process.env.GADDI_GRANT_MINUTE_MS, 60000));
 function validSession(value: unknown): string | undefined {
   return typeof value === 'string' && value.length >= 1 && value.length <= 64
@@ -168,7 +168,7 @@ const chromeHeal = createChromeHeal({ ...chromeControls(), log,
   notify: text => emit('browser.notice', { kind: 'chrome-recovery', text }) });
 const proofs = createProofVerifier({ publicKeyPath: process.env.GADDI_APPROVER_PUB || path.join(os.homedir(), 'Library/Application Support/Gaddi/approver.pub'),
   usedPath: path.join(home, 'used-proofs.log') });
-// Approving some holds from another device (remote.ts). Off until the owner turns it on with Touch ID; the saved
+// Approving some holds from another device (remote.ts). Off until the user turns it on with Touch ID; the saved
 // choice is read back here. The drop-in file is only a candidate key: it authorizes nothing by itself.
 const remote = createRemote({ statePath: path.join(home, 'remote.json'),
   keyPath: process.env.GADDI_REMOTE_KEY || path.join(home, 'remote-approver.pub'), proofs, emit, log });
@@ -177,7 +177,7 @@ const approvals = createApprovals({ waitMinutes: policy.approvals.wait_minutes, 
     fs.writeFileSync(statePath + '.tmp', JSON.stringify(publicOutput({ approvals: approvals.persistable() })), { mode: 0o600 });
     fs.renameSync(statePath + '.tmp', statePath);
   },
-  // Whether the owner's other device may answer this record right now, judged from the live policy and state.
+  // Whether the user's other device may answer this record right now, judged from the live policy and state.
   remote: (a, facts) => remote.eligible(a, facts, policy), remoteEpoch: remote.epoch, emit });
 try {
   const state = parseJSON(fs.readFileSync(statePath, 'utf8'));
@@ -370,7 +370,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     grantId = decision.grant;
     remoteScope = { pageURL: scopeURL, scope };
     if (decision.outcome !== 'hold') return decision;
-    // TEST-ZONE: the owner's standing choice for a whole site, for every caller (a CLI call included).
+    // TEST-ZONE: the user's standing choice for a whole site, for every caller (a CLI call included).
     const zoned = checkZone(policy, scopeURL, held, scope);
     zone = zoned.zone;
     return zoned;
@@ -402,7 +402,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       throw new Error('zoom must be a region at least 8 by 8 and at most 4000 by 4000, inside the document');
     args.zoom = area;
   }
-  // A point in the tab's own viewport, as a screenshot shows it: the place the owner would
+  // A point in the tab's own viewport, as a screenshot shows it: the place the user would
   // click. It is never combined with frameId, because the extension follows it into whichever
   // document it falls in; naming a frame as well could only disagree with that.
   const at = method === 'click' && params.at !== undefined ? pointParam(params.at) : undefined;
@@ -718,7 +718,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
 }
 
 // ---------------------------------------------------------------- session grants
-// A chat asks once. The owner answers in Gaddi with Touch ID. The broker acts on his signed answer
+// A chat asks once. The user answers in Gaddi with Touch ID. The broker acts on his signed answer
 // itself, so the agent never retries and never holds a token that could be replayed.
 // TEST-ZONE: opening a zone's own account or security page is not held there (grants.ts:checkZone).
 function zoneNavigation(check: PolicyCheck, url: string, meta: CallMeta) {
@@ -750,7 +750,7 @@ function requestGrant(params: IncomingParams) {
   }
   // GRANT-FOLD (replaces BR-GADDI-QUEUE, owner feedback 19 October: one card per chat, not a flood). A chat's new
   // request folds into the one it already has waiting: the card shows every rule it asked for and the longest time.
-  // Nothing it asked for is dropped, the owner still signs exactly what the card shows, and a fold that would pass
+  // Nothing it asked for is dropped, the user still signs exactly what the card shows, and a fold that would pass
   // the card limit queues as its own request instead.
   const max = policy.approvals.grant_rules_max ?? 20;
   const waiting = pendingGrantsOf(session);
@@ -775,7 +775,7 @@ function requestGrant(params: IncomingParams) {
       reason: 'session grant', action, extendedWait: true, grant: { session, rules, minutes: time, ...(label ? { label } : {}) },
       context: approvalContext(caller, { context: params.context, why: label ?? params.why }) });
   }
-  // The folded requests are now inside the new one: they leave the owner's list.
+  // The folded requests are now inside the new one: they leave the user's list.
   if (folded) for (const older of waiting) if (older.id !== request.id) approvals.cancel(older.id);
   throw new GateError('held', `held: session grant; approve ${String(request.id)} in Gaddi. It takes effect as soon as the owner approves: do not retry. Ask once per chat with every rule you need: a later request from this chat joins this one`, approvalRef(request));
 }
@@ -789,7 +789,7 @@ function activateGrant(id: unknown, proof: unknown, remember: unknown) {
   approvals.signed(id, 'grant', proof, proofs, approvalMessage, { remember });
   return startGrant(id, record);
 }
-// The record is "granted" now, by a Touch ID signature or by the owner's remote approver (remote.ts, which may
+// The record is "granted" now, by a Touch ID signature or by the user's remote approver (remote.ts, which may
 // approve only a request of two hours or less). Everything below is synchronous: nothing can slip in between.
 function startGrant(id: unknown, record: StoredApproval, approver?: 'remote') {
   const spec = record.grant;
@@ -813,7 +813,7 @@ function releaseSession(key: string) {
 }
 
 // ---------------------------------------------------------------- approving from another device
-// The owner's phone approver (remote.ts) answers a request this broker says it may answer: an upload, post or delete
+// The user's phone approver (remote.ts) answers a request this broker says it may answer: an upload, post or delete
 // on a page a session grant could cover, or a session-grant request of two hours or less. Everything from the first
 // check to the decision runs without an await, so nothing can change in between.
 function remoteDecision(params: IncomingParams, meta: CallMeta) {
@@ -893,7 +893,7 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
     });
   },
   'approval.deny': ({ id, proof, remember }) => approvals.signed(id, 'deny', proof, proofs, approvalMessage, { remember }),
-  // Approving from another device. Status is read-only; turning ON needs the owner's Touch ID signature over the
+  // Approving from another device. Status is read-only; turning ON needs the user's Touch ID signature over the
   // key's fingerprint; turning OFF only removes authority, so it needs no proof and any client may do it.
   'remote.status': () => remote.status(),
   'remote.enable': ({ fingerprint, proof }, _conn, meta) => {
@@ -934,7 +934,7 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
     emit('sends.remembered', { rules: policy.sends?.remember ?? [] });
     return { rules: policy.sends?.remember ?? [] };
   },
-  // TEST-ZONE. Adding needs the owner's signature; removing only takes authority away. A waiting grant request
+  // TEST-ZONE. Adding needs the user's signature; removing only takes authority away. A waiting grant request
   // that asks only for what the zones now give is closed: the chat already has it.
   'zones.list': () => ({ sites: policy.zones?.sites ?? [] }),
   'zones.add': ({ site, proof }) => {

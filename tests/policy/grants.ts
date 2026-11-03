@@ -71,7 +71,7 @@ check('ASSERT_GRANT_PROTECTED_RULE', () => {
     'https://shop.example/delete-account', 'https://accounts.google.com/x/password', 'https://shop.example/unsubscribe']) {
     assert.throws(() => parseGrantRules([`post ${address}`], policy), /protected/, address);
   }
-  // The owner's own protected address counts too, and an overlay that replaces the list cannot drop the built-in ones.
+  // The user's own protected address counts too, and an overlay that replaces the list cannot drop the built-in ones.
   const mine: Policy = { ...policy, hold: { ...policy.hold, url_patterns: ['/private'] } };
   assert.throws(() => parseGrantRules(['upload https://shop.example/private'], mine), /protected/);
   assert.throws(() => parseGrantRules(['upload https://shop.example/checkout'], mine), /protected/);
@@ -238,7 +238,7 @@ check('ASSERT_GRANT_FINAL', () => {
 });
 
 // ---------------------------------------------------------------- remote approval asks the same question
-// daemon/remote.ts lets the owner's other device answer a hold only if a session grant covering the whole site
+// daemon/remote.ts lets the user's other device answer a hold only if a session grant covering the whole site
 // could waive it. It shares the scan with checkGrant, so the answer cannot be wider.
 check('ASSERT_GRANT_REMOTE', () => {
   const ask = (page: string, reason: string, scope: GrantScope, using: Policy = policy) => remoteWaivable(using, page, hold(reason), scope);

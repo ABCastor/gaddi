@@ -26,7 +26,7 @@ const mutations: Mutation[] = [
   { name: 'ENABLE_FORMAT', assertion: 'ASSERT_REMOTE_KEYS',
     old: "if (typeof fingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(fingerprint)) {", replacement: "if (typeof fingerprint !== 'string') {" },
   { name: 'SAVE_MODE', assertion: 'ASSERT_REMOTE_KEYS', old: "fs.openSync(temporary, 'wx', 0o600)", replacement: "fs.openSync(temporary, 'wx', 0o777)" },
-  { name: 'LOAD_FORGET', assertion: 'ASSERT_REMOTE_KEYS', old: "load(); // the owner's saved choice, read back at startup", replacement: '' },
+  { name: 'LOAD_FORGET', assertion: 'ASSERT_REMOTE_KEYS', old: "load(); // the user's saved choice, read back at startup", replacement: '' },
   { name: 'LOAD_FINGERPRINT', assertion: 'ASSERT_REMOTE_KEYS',
     old: "if (!key || fingerprintOf(key) !== saved.fingerprint) throw new Error('key');", replacement: "if (!key) throw new Error('key');" },
   { name: 'LOAD_DATE', assertion: 'ASSERT_REMOTE_KEYS', old: ' || !Number.isFinite(Date.parse(saved.enabledAt))', replacement: '' },

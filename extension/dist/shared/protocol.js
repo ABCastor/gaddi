@@ -99,7 +99,7 @@ export function wheelParams(params) {
 // --frame, MCP's frameId and the broker offer the same surface (tests/mcp/metadata.test.ts).
 // Extensions whose companion app closes Chrome the moment they stop running. Cold Turkey quits every
 // Chrome window when its extension is switched off, and a restart here is a switch-off then on. So no
-// agent may disable, restart or remove them; the owner manages them in chrome://extensions.
+// agent may disable, restart or remove them; the user manages them in chrome://extensions.
 // Why: 2026-10-30, Cold Turkey closed his Chrome twice with "the extension was disabled".
 export const WATCHDOG_EXTENSIONS = {
     pganeibhckoanndahmnfggfoeofncnii: 'Cold Turkey closes Chrome when its extension stops',

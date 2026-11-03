@@ -14,7 +14,7 @@ interface PolicyData {
  signin?: { remember: string[] };
  sends?: { remember: SendRule[] };
  uploads?: { remember: string[] };
- // Test zones: sites the owner marked as his own test ground (TEST-ZONE in docs/authorization.md).
+ // Test zones: sites the user marked as his own test ground (TEST-ZONE in docs/authorization.md).
  zones?: { sites: string[] };
  browser: { window: 'own' | 'shared'; show: 'attention' | 'front' };
 }
@@ -133,7 +133,7 @@ export function loadPolicy({ overlay = path.join(process.env.GADDI_HOME || path.
   return { ...policy, off: !!off, sources };
 }
 
-// Called only after the daemon verifies an app decision. Preserve the owner's other rules.
+// Called only after the daemon verifies an app decision. Preserve the user's other rules.
 export function setSigninRemember(overlay: string, site: unknown, remember: boolean, off = false): Policy {
   validate({ signin: { remember: [site] } });
   const current = loadPolicy({ overlay, off });
@@ -160,7 +160,7 @@ function saveRememberedPolicy(overlay: string, updated: unknown, off: boolean): 
   return loadPolicy({ overlay, off });
 }
 
-// The same private atomic overlay writer serves the owner-signed remember choices.
+// The same private atomic overlay writer serves the user-signed remember choices.
 export function setSendRemember(overlay: string, rule: SendRule, remember: boolean, off = false): Policy {
   validate({ sends: { remember: [rule] } });
   if (!sendRule(rule.site, rule.kind, rule.reason)) throw new Error('policy.sends.remember: invalid value');
@@ -186,7 +186,7 @@ export function setUploadRemember(overlay: string, site: unknown, remember: bool
   return saveRememberedPolicy(overlay, { ...local, uploads: { remember: [...sites] } }, off);
 }
 
-// TEST-ZONE: called only after the daemon verifies the owner's Touch ID signature (adding) or for removal,
+// TEST-ZONE: called only after the daemon verifies the user's Touch ID signature (adding) or for removal,
 // which only takes authority away. Same private atomic overlay writer as the remembered choices.
 export function setZone(overlay: string, site: unknown, on: boolean, off = false): Policy {
   validate({ zones: { sites: [site] } });
@@ -203,7 +203,7 @@ export function setZone(overlay: string, site: unknown, on: boolean, off = false
 // Reject refused hosts and protected pages even when an overlay loosens ordinary holds.
 const builtInPolicy: PolicyData = JSON.parse(fs.readFileSync(DEFAULT_POLICY, 'utf8'));
 // Invariant: the built-in refused hosts, protected addresses and hold verbs always apply on top of
-// the owner's overlay, which replaces arrays rather than extending them. Session grants read this
+// the user's overlay, which replaces arrays rather than extending them. Session grants read this
 // so that loosening an ordinary hold can never widen what a grant may waive.
 export function protections(policy: Policy) {
   return {
@@ -254,7 +254,7 @@ export function uploadSite(url: unknown): string | undefined {
 
 // A test zone is a whole site (exact origin) that a session grant could name: https or local http, never a refused
 // host (Gmail), never an address on the built-in protected list, and never an identity provider: a zone allows
-// sign-in and security changes, and on these sites that would be the owner's real identity, not a test account.
+// sign-in and security changes, and on these sites that would be the user's real identity, not a test account.
 const IDENTITY_HOSTS = /(^|\.)(google\.com|apple\.com|icloud\.com|live\.com|microsoft\.com|microsoftonline\.com|1password\.com|1password\.eu|okta\.com|auth0\.com|github\.com)$/i;
 export function zoneSite(url: unknown): string | undefined {
   const site = uploadSite(url);
@@ -279,10 +279,10 @@ export function checkRememberedUpload(policy: Policy, url: string, check: Policy
 }
 
 // ---------------------------------------------------------------- helpers
-// Only the owner's policy can remember a site; POLICY_OFF grants no sign-in authority.
+// Only the user's policy can remember a site; POLICY_OFF grants no sign-in authority.
 export function checkSignin(policy: Policy, site: string): PolicyCheck {
-  // TEST-ZONE: a test zone signs in by itself, with the login the owner stored in 1Password for that site.
-  // The owner's own refused hosts and protected addresses still win over the zone.
+  // TEST-ZONE: a test zone signs in by itself, with the login the user stored in 1Password for that site.
+  // The user's own refused hosts and protected addresses still win over the zone.
   if (policy.zones?.sites.includes(site) && zoneSite(site) === site
     && !protections(policy).hosts.some(host => rx(host)?.test(hostOf(site)))
     && !policy.hold.url_patterns.some(pattern => rx(pattern)?.test(site + '/'))) return ALLOW('test zone');

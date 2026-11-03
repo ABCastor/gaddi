@@ -63,7 +63,7 @@ try {
   const agent=await call('chrome.open',{url,group:'● Rendering',browser:{window:'own',show:'attention'}});
   assert.notEqual(agent.windowId,ownerTab.windowId,'ASSERT_RENDER_OWN_WINDOW');
   // Gaddi's placeholder stays the active tab of its window, so the agent tab is behind it.
-  // A tab added there by anyone else is moved to the owner's window, so none is created here.
+  // A tab added there by anyone else is moved to the user's window, so none is created here.
   assert.equal(agent.active,false,'ASSERT_RENDER_BEHIND_ACTIVE_TAB');
   const sample=()=>worker.evaluate(async tab=>(await chrome.scripting.executeScript({target:{tabId:tab},world:'MAIN',func:()=>({visibility:document.visibilityState,focus:document.hasFocus(),frames:(globalThis as unknown as {renderFrames:number}).renderFrames})}))[0].result!,agent.id);
   const windows=()=>worker.evaluate(async()=> (await chrome.windows.getAll()).map(w=>({id:w.id,focused:w.focused,state:w.state})));

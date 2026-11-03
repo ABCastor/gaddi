@@ -1,4 +1,4 @@
-// APPROVAL-CONTEXT: who asked and why is shown on every card, and is never part of what the owner signs.
+// APPROVAL-CONTEXT: who asked and why is shown on every card, and is never part of what the user signs.
 import assert from 'node:assert/strict';
 import { approvalContext, contextText, harnessName, createApprovals, remoteDigest } from '../../daemon/approvals.ts';
 import { approvalMessage } from '../../daemon/proof.ts';

@@ -196,7 +196,7 @@ switch (cmd) {
   case 'events': method = 'events.subscribe'; break;
   case 'bridge': if (take('status') !== 'status') die('gaddi bridge status', 2); method = 'bridge.status'; break;
   case 'remote': {
-    // Status, or off. There is no `on`: turning it on is the owner's Touch ID in the Gaddi app, never a command.
+    // Status, or off. There is no `on`: turning it on is the user's Touch ID in the Gaddi app, never a command.
     const action = args.length ? take('off') : '';
     if (action === 'off') method = 'remote.disable';
     else if (action === '') method = 'remote.status';

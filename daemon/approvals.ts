@@ -11,7 +11,7 @@ import type { GrantScope, GrantSpec } from './grants.ts';
 import { durationText } from './grants.ts';
 
 export interface ApprovalRecord { id: string; kind: string; tab: number | null; caller: string; url: string; detail: string; reason: string; actionHash: string; status: string; createdAt: string; expiresAt: string; resolvedAt?: string; by?: string; decidedAt?: string; usedAt?: string; imagePath?: string; box?: ImageBox; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; context?: ApprovalContext }
-// Who asked and why, as the owner reads it on every card: the agent harness, its chat's title, the project and the
+// Who asked and why, as the user reads it on every card: the agent harness, its chat's title, the project and the
 // agent's one-line purpose. Invariant: display only. It is not part of the action hash, the remote digest or any
 // signed message, so these words can explain a request but never change what an approval allows. Everything but
 // `agent` comes from the agent or its harness, so the cards present it as their words, not as a checked fact.
@@ -70,7 +70,7 @@ export function cleanDetail(value: unknown) {
 }
 // Invariant: a session grant request names its chat by session key. That key is the only thing
 // that ties the grant to one chat, so it never leaves the broker: not in lists, events or state.
-// The owner sees and signs the request's `detail` text, which carries everything he decides on.
+// The user sees and signs the request's `detail` text, which carries everything he decides on.
 export function publicView({ actionHash, targetSelector, grant, ...record }: StoredApproval): StoredApproval & { site?: string } {
   const site = record.kind === 'signin' ? signinSite(record.url)
     : record.rememberable === true ? record.kind === 'upload' && record.reason === UPLOAD_HOLD
@@ -78,7 +78,7 @@ export function publicView({ actionHash, targetSelector, grant, ...record }: Sto
   return site ? { ...record, site } : record;
 }
 export function approvalRef(a: StoredApproval) { return { id: a.id, reason: a.reason, expires: a.expiresAt }; }
-// What a remote approver signs for one request: kind, id and the detail text the owner reads, so a decision
+// What a remote approver signs for one request: kind, id and the detail text the user reads, so a decision
 // cannot be moved to another request or to a request whose text changed.
 export function remoteDigest(a: { kind?: unknown; id?: unknown; detail?: unknown }) {
   return crypto.createHash('sha256').update(`${String(a.kind)}|${String(a.id)}|${String(a.detail)}`, 'utf8').digest('hex');
@@ -87,7 +87,7 @@ function actionHash(action: ApprovalAction) { return crypto.createHash('sha256')
 
 export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onChange = () => {}, emit = () => {}, imageRoot, log = () => {}, remote = () => false, remoteEpoch = () => undefined }:
   { ttlMinutes?: number; waitMinutes?: number; onChange?: () => void; emit?: Emit; imageRoot?: string; log?: (...args: unknown[]) => void;
-    // Whether the owner's other device may answer this record right now (remote.ts decides, from live state).
+    // Whether the user's other device may answer this record right now (remote.ts decides, from live state).
     remote?: (a: StoredApproval, facts: RemoteFacts | undefined) => boolean; remoteEpoch?: () => string | undefined }) {
   const entries = new Map<unknown, StoredApproval>();
   // Invariant: remote approval's facts live here and nowhere else (see RemoteFacts). A record restored after a
@@ -96,7 +96,7 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
   // AUTH-WAIT: monotonic deadlines prevent a backward wall-clock correction extending authority.
   const deadlines = new WeakMap<StoredApproval, number>();
   const activeCount = () => [...entries.values()].filter(a => a.status === 'pending' || a.status === 'granted').length;
-  // Every record that leaves this module goes through here: what publicView shows, plus, while the owner's other
+  // Every record that leaves this module goes through here: what publicView shows, plus, while the user's other
   // device may answer it, `remote: true` and the digest that device signs. Computed on every call from the live
   // state, never remembered, so turning the feature off removes the flag from the next list and event.
   // `allows` says in plain words what approving gives, so every surface (the Mac card, banners, the phone) says the same.
@@ -177,7 +177,7 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
     }
   }
   function resolve(a: StoredApproval, status: string, extra: Partial<ApprovalRecord> = {}) {
-    // AUTH-WAIT: waiting for the owner never extends usable authority beyond the original TTL.
+    // AUTH-WAIT: waiting for the user never extends usable authority beyond the original TTL.
     if (status === 'granted') {
       a.expiresAt = new Date(Math.min(Date.parse(String(a.expiresAt)), Date.now() + ttlMinutes * 60000)).toISOString();
       deadlines.set(a, Math.min(deadlines.get(a) ?? Infinity, performance.now() + ttlMinutes * 60000));
@@ -203,7 +203,7 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
     const hash = actionHash(action);
     const existing = pendingFor(action, targetSelector);
     if (existing) return existing;
-    // AUTH-WAIT: cap live records and their <=1 MB pictures without evicting an owner's request.
+    // AUTH-WAIT: cap live records and their <=1 MB pictures without evicting a user's request.
     if (activeCount() >= 100) throw new GateError('approval-capacity', '100 requests are waiting; resolve existing requests before adding more');
     const now = Date.now();
     const a = { id: crypto.randomBytes(8).toString('hex'), kind, tab, caller, url: cleanURL(url),
@@ -211,7 +211,7 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
       // Set once, from the request that created the record; a later identical request does not rewrite it.
       context: Object.freeze({ ...(context ?? { agent: harnessName(caller) }) }),
       // A session grant's text is built by the broker from validated parts (no queries; its label is cleaned
-      // first) and is exactly what the owner signs, so it is stored as built and never rewritten.
+      // first) and is exactly what the user signs, so it is stored as built and never rewritten.
       detail: kind === 'grant' ? detail : cleanDetail(detail), reason: cleanDetail(reason), actionHash: hash, status: 'pending',
       createdAt: new Date(now).toISOString(), expiresAt: new Date(now + (extendedWait ? waitMinutes : ttlMinutes) * 60000).toISOString() };
     savePicture(a, picture);
@@ -227,7 +227,7 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
   }
   // The agent asked again for a request that is still waiting: the verdict is a function of the action the
   // hash binds, so the facts are simply refreshed. This is also how a record restored after a restart gets them
-  // back; if that makes it answerable from the owner's other device, it is announced again, so a listener that
+  // back; if that makes it answerable from the user's other device, it is announced again, so a listener that
   // only watches events learns of it.
   function attach(a: StoredApproval, remoteFacts: RemoteFacts | undefined) {
     const before = remote(a, facts.get(a));
@@ -273,7 +273,7 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
     resolve(a, verb === 'grant' ? 'granted' : 'denied', { by: 'signed-proof' });
     return view(a);
   }
-  // The owner's other device answered. Its signature was checked and spent by remote.ts before this runs.
+  // The user's other device answered. Its signature was checked and spent by remote.ts before this runs.
   // Invariant: only a pending record is resolved, and `by` says who decided, so the record, the events and the
   // owner's panel can always tell a Touch ID answer from a remote one.
   function resolveRemote(id: unknown, verb: 'grant' | 'deny') {
@@ -307,7 +307,7 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
     resolve(a, 'used', { usedAt: new Date().toISOString() });
     return view(a);
   }
-  // Whether the owner's other device may answer this record right now. The very call that decides the `remote`
+  // Whether the user's other device may answer this record right now. The very call that decides the `remote`
   // flag in every list and event, so what the device is shown and what the broker accepts cannot disagree.
   function remotable(a: StoredApproval) { return remote(a, facts.get(a)); }
   function pendingMatching(test: (a: StoredApproval) => boolean) {

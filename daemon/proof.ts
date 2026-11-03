@@ -29,7 +29,7 @@ export function uploadRevokeMessage(site: string, ts: unknown) {
   return `uploads.revoke|${site}|${ts}`;
 }
 
-// TEST-ZONE: adding a site needs the owner's Touch ID signature over exactly this text. Removing one only takes
+// TEST-ZONE: adding a site needs the user's Touch ID signature over exactly this text. Removing one only takes
 // authority away, so it is unsigned.
 export function zoneAddMessage(site: string, ts: unknown) {
   if (zoneSite(site) !== site) throw new GateError('approval-invalid', 'exact test zone origin required');

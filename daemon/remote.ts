@@ -1,19 +1,19 @@
-// daemon/remote.ts — the owner answers some holds from another device (a local bot, for instance a Telegram bot).
+// daemon/remote.ts — the user answers some holds from another device (a local bot, for instance a Telegram bot).
 //
-// It is OFF by default, it is switched ON only by the owner's Touch ID at the Mac, and anyone who can reach the
+// It is OFF by default, it is switched ON only by the user's Touch ID at the Mac, and anyone who can reach the
 // socket may switch it OFF, because switching off only removes authority. Only the holds a session grant may
 // waive (grants.ts) can be answered this way: uploads, posts and deletes on pages that are not protected, and a
 // session-grant request of two hours or less. Everything else stays Touch ID only.
 //
 // Invariants (each is falsified by a mutation in tests/gates/remote-approver-mutations.test.sh):
-//  1. Trust is ONE Ed25519 public key that the owner enabled with a Touch ID signature over that key's fingerprint
+//  1. Trust is ONE Ed25519 public key that the user enabled with a Touch ID signature over that key's fingerprint
 //     (`remote.enable`). The drop-in file the bot writes is only a candidate: inert until enabled, and once
-//     enabled, changing it does nothing until the owner enables again. Verification uses the stored key only.
+//     enabled, changing it does nothing until the user enables again. Verification uses the stored key only.
 //  2. What may be answered remotely is computed by the broker, from facts it kept when it held the request,
 //     through the very scan a session grant uses (grants.ts `remoteWaivable`). Payments, purchases, sends,
 //     sign-in, security and protected pages, key holds, navigation, extension operations and eval are never
 //     remotely approvable, whatever a signature says. Unknown means no.
-//  3. A decision is bound to one enrollment and request (epoch, verb, id, kind and a digest of the text the owner reads), carries a nonce
+//  3. A decision is bound to one enrollment and request (epoch, verb, id, kind and a digest of the text the user reads), carries a nonce
 //     and a timestamp, and is single use: its signature and its nonce are written to the durable journal BEFORE the
 //     broker acts, so a replay fails, also after a restart.
 //  4. HONEST LIMIT: the remote approver's key is a file readable by any process running as the same macOS user,
@@ -39,7 +39,7 @@ const NONCE = /^[A-Za-z0-9_-]{16,128}$/;
 const KEY_FILE_MAX = 4096;
 
 export const enableMessage = (fingerprint: string, ts: unknown) => `remote.enable|${fingerprint}|${ts}`;
-// The text the remote approver signs. `digest` is remoteDigest(record): kind, id and the detail the owner reads.
+// The text the remote approver signs. `digest` is remoteDigest(record): kind, id and the detail the user reads.
 export function decisionMessage(verb: string, a: { id?: unknown; kind?: unknown; detail?: unknown }, nonce: string, ts: number, epoch: string) {
   return `gaddi-remote-v2|${epoch}|${verb}|${String(a.id)}|${String(a.kind)}|${remoteDigest(a)}|${nonce}|${ts}`;
 }
@@ -60,10 +60,10 @@ export function createRemote({ statePath, keyPath, proofs, emit = () => {}, log 
   statePath: string; keyPath: string; proofs: Pick<ReturnType<typeof createProofVerifier>, 'verify' | 'spend'>;
   emit?: (event: string, data: unknown) => void; log?: (...args: unknown[]) => void;
 }) {
-  // The one key that may answer, with when the owner turned it on. Absent means off.
+  // The one key that may answer, with when the user turned it on. Absent means off.
   let active: { key: KeyObject; fingerprint: string; enabledAt: string; epoch: string } | undefined;
 
-  // Enablement survives a restart, like a remembered sign-in: it is the owner's standing choice. But only a file
+  // Enablement survives a restart, like a remembered sign-in: it is the user's standing choice. But only a file
   // that is exactly what enable() wrote is believed; a key that is not Ed25519, a fingerprint that does not match
   // its key, or a missing field means off.
   function load() {
@@ -87,7 +87,7 @@ export function createRemote({ statePath, keyPath, proofs, emit = () => {}, log 
       log(`remote approval is on (key ${saved.fingerprint.slice(0, 16)})`);
     } catch { log('remote approval state is invalid: it stays off'); }
   }
-  load(); // the owner's saved choice, read back at startup
+  load(); // the user's saved choice, read back at startup
 
   // The key the bot dropped, read afresh on every call. It authorizes nothing by itself.
   function candidate(): { key: KeyObject; fingerprint: string } | undefined {
@@ -117,7 +117,7 @@ export function createRemote({ statePath, keyPath, proofs, emit = () => {}, log 
     }
   }
 
-  // Invariant 1. The owner's signature names the fingerprint he was shown. The key stored is the one in the drop-in
+  // Invariant 1. The user's signature names the fingerprint he was shown. The key stored is the one in the drop-in
   // file as it is NOW, and only if it has exactly that fingerprint: a file swapped after he looked is refused. A
   // refusal after the proof was checked has still spent that proof; he simply asks again.
   function enable(fingerprint: unknown, proof: unknown) {

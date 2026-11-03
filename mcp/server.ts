@@ -19,7 +19,7 @@ const SOCK = process.env.GADDI_SOCKET || path.join(os.homedir(), 'Library/Applic
 const HARNESS = process.env.GADDI_HARNESS || 'unknown';
 const SESSION = crypto.randomUUID();
 const RPC_TIMEOUT_MS = Number(process.env.GADDI_RPC_TIMEOUT_MS || 120000);
-// Which chat and project this adapter works for, shown to the owner on any card it causes. A harness can name them
+// Which chat and project this adapter works for, shown to the user on any card it causes. A harness can name them
 // once (GADDI_CHAT, GADDI_PROJECT) or per call with the `_context` argument, which tools/list does not advertise
 // because agents never need to fill it: a harness extension does (Pi: gaddi-context). Without either, the project is
 // the git repository the chat runs in. Display only: the broker never acts on it.
@@ -54,7 +54,7 @@ const tabs = { type: 'array', items: tab, minItems: 1, maxItems: 100 };
 const version = { ...S, maxLength: 128, pattern: '^[A-Za-z0-9_.:-]*$' };
 // The HELD id to retry with; the instructions and every HELD reply say so, which keeps tools/list in budget.
 const approval = S;
-// The agent's one-line purpose, shown to the owner if the action is held. Only on tools that can be held.
+// The agent's one-line purpose, shown to the user if the action is held. Only on tools that can be held.
 const why = S;
 const wheel = { type: 'number', minimum: -WHEEL_LIMIT, maximum: WHEEL_LIMIT };
 // A document inside the tab, as look lists it: actions then resolve inside that page. Every tool the

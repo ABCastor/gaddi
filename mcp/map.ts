@@ -27,7 +27,7 @@ export function mapSocketError(error: unknown): CallToolResult {
   return { ...text(`ERROR: ${e.message || 'unknown error'}`), isError: true };
 }
 
-// A session grant is never retried: the broker acts on the owner's signed answer by itself, so the
+// A session grant is never retried: the broker acts on the user's signed answer by itself, so the
 // generic "retry with approval=<id>" advice would be wrong here. Everything else maps as usual.
 export function mapGrantError(error: unknown): CallToolResult {
   const e: Record<string, unknown> = isRecord(error) ? error : {};

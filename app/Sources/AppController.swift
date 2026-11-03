@@ -3,7 +3,7 @@ import UserNotifications
 import LocalAuthentication
 
 // Keep the same menu and rows while it is tracking. Replacing statusItem.menu on
-// every broker snapshot can dismiss the owner's open menu.
+// every broker snapshot can dismiss the user's open menu.
 final class ApprovalMenu {
     let menu = NSMenu()
     private let waiting = NSMenuItem(title: "", action: nil, keyEquivalent: "")
@@ -14,7 +14,7 @@ final class ApprovalMenu {
 
     init(target: AnyObject, open: Selector, remembered: Selector, quit: Selector) {
         review = NSMenuItem(title: "Open Gaddi…", action: open, keyEquivalent: "")
-        // "1 action is waiting for you" is what the owner clicks: it opens the review, like the row below it.
+        // "1 action is waiting for you" is what the user clicks: it opens the review, like the row below it.
         waiting.action = open; waiting.target = target
         let signins = NSMenuItem(title: "Remembered sign-ins…", action: remembered, keyEquivalent: "")
         let exit = NSMenuItem(title: "Quit Gaddi", action: quit, keyEquivalent: "")
@@ -69,7 +69,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     private var timer: Timer?
     private var requestedID: String?
     private var launchRequestID: String?
-    /// The owner clicked a banner: whatever is waiting opens, even if that one request has gone since.
+    /// The user clicked a banner: whatever is waiting opens, even if that one request has gone since.
     private var ownerAsked = false
     private var visibility = PendingApprovalVisibility()
     static let approvalNotification = Notification.Name("com.abcastor.gaddi.show-approval")
@@ -211,7 +211,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     @objc private func openApprovals() {
         visibility.opened(snapshot.approvals)
         showApprovals()
-        // The owner asked for it (menu, banner, Dock): a real app window that stays above his other windows until he
+        // A user-opened review (menu, banner, Dock) is: a real app window that stays above his other windows until he
         // closes it, so the activation that macOS hands back to the previous app cannot bury it.
         NSApp.setActivationPolicy(.regular)
         approvalsPanel?.level = .floating
@@ -476,7 +476,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
                     _ = try model.client.call("zones.add", ["site": site, "proof": ["ts": ts, "sig": signed.signature.base64EncodedString()]])
                 } catch { refused.append(ApprovalWords.host(site)) }
             }
-            // Fail first: the owner chose standing test authority, so a one-time action is approved only when every
+            // Fail first: the user chose standing test authority, so a one-time action is approved only when every
             // site really became a zone.
             if !refused.isEmpty { throw AppError("\(refused.joined(separator: ", ")) cannot be a test zone (a protected site, or not a whole https site); nothing was approved") }
             // A grant request the zones now cover is closed by the broker. A one-time action is approved too, so the
@@ -505,7 +505,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     }
     private func endGrant(_ grant: SessionGrant) {
         // Ending a grant only removes authority, so it asks for no Touch ID. A grant that has
-        // already ended is the outcome the owner wanted, not an error.
+        // an ended grant is a successful result, not an error.
         guard connected, !busy else { return }
         model.queue.async { [self] in
             do {
@@ -520,7 +520,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     }
     private func turnOnRemote() {
         guard let candidate = snapshot.remote.candidate, connected, keyReady, !busy else { return }
-        // The fingerprint is put in front of the owner before anything is signed, so he can compare it with the one
+        // The fingerprint is put in front of the user before anything is signed, so he can compare it with the one
         // his phone approver shows. Touch ID then signs that exact fingerprint. The button he pressed is in Gaddi's
         // own front panel, so the alert needs no activation of its own (only openApprovals ever takes focus).
         let alert = NSAlert()
@@ -543,7 +543,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         }
     }
     private func turnOffRemote() {
-        // Ending it only removes authority, so it asks for no Touch ID. Already off is the outcome the owner wanted.
+        // Ending it only removes authority, so it asks for no Touch ID. Already off is a successful result.
         guard connected, !busy else { return }
         model.queue.async { [self] in
             do {

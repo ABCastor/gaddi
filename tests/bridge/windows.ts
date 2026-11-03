@@ -383,7 +383,7 @@ try {
       await call('chrome.open',{url:'http://localhost/owner-bounds',group:'● Owner bounds'});
       assert.deepEqual(windows.get(opened.windowId),before);assert.equal(windowUpdates.length,count);
     }
-    // A worker reload retains the owner's expanded placement.
+    // A worker reload retains the user's expanded placement.
     windows.get(opened.windowId).state='maximized';worker();
     await call('chrome.open',{url:'http://localhost/owner-reload',group:'● Owner reload'});
     assert.equal(windows.get(opened.windowId).state,'maximized');
@@ -428,7 +428,7 @@ try {
     assert.ok(!(await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===1));
     const result=await call('chrome.cleanup',{tabs:[1],cleanup:'close'});
     assert.equal(result.closed.length,0);assert.ok(tabs.has(1));
-    // Agent markers in the owner's other windows are recognisable orphans too.
+    // Agent markers in the user's other windows are recognisable orphans too.
     const marked=++nextTab;tabs.set(marked,{id:marked,windowId:1,active:false,groupId:++nextGroup,url:'http://localhost/orphan'});
     groups.set(nextGroup,{id:nextGroup,windowId:1,title:'● Orphan'});
     assert.ok((await call('chrome.cleanup')).tabs.some((tab:any)=>tab.id===marked));

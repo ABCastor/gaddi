@@ -58,7 +58,7 @@ function world(opts: { running?: boolean; probeFails?: boolean; attachAfterLaunc
 }
 const crash = (w: ReturnType<typeof world>) => { w.connected = false; w.running = false; };
 
-// 1. Chrome gone: one relaunch, bounded wait, a clear note for the agent, one banner for the owner.
+// 1. Chrome gone: one relaunch, bounded wait, a clear note for the agent, one banner for the user.
 {
   const w = world({ tabs: 7 });
   const note = await w.heal.ensure();

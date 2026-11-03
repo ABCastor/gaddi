@@ -45,7 +45,7 @@ try {
   pass('overlay-adds-expression-denies-and-preserves-default-gates');
 
   // Italian 'Ordina' on its own is a sort button ('Ordina per: Ora di partenza'), not an order.
-  // Real orders still hold. Why: 2026-10-30, Italo's results-sort click needed Touch ID.
+  // Real orders still hold. Results-sort controls do not place orders.
   const italo = 'Ritorno Ordina per: Ora di partenza Filtra per orario: Mostra tutti Ordina Filtra';
   assert.equal(checkClick(base, 'biglietti.italotreno.com', italo).outcome, 'allow', 'ASSERT_SORT_NOT_ORDER');
   assert.equal(checkClick(base, 'biglietti.italotreno.com', 'Ordina').outcome, 'allow', 'ASSERT_SORT_NOT_ORDER');

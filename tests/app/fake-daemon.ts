@@ -15,7 +15,7 @@ const connections = new Set<net.Socket>();
 const approval = (id: string, caller = 'Café task', remote = false) => ({ id, kind: 'click', tab: 42, caller,
   url: 'https://example.test/cart', detail: 'click Pay café', reason: 'checkout action',
   status: 'pending', expiresAt: new Date(Date.now() + 600_000).toISOString(), ...(remote ? { remote: true } : {}) });
-// The first waiting request is one the owner's other device may also answer, as the real broker flags it.
+// The first waiting request is one the user's other device may also answer, as the real broker flags it.
 const pending = [approval('existing', 'Already pending', true)];
 // Phone approval: off, with a key waiting; and one request it answered earlier.
 const fingerprint = 'abcdef0123456789'.repeat(4);

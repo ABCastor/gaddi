@@ -29,7 +29,7 @@ export async function extensionCall(params: IncomingParams, caller: string, poli
     const action = { method: 'extensions', caller, url: meta.url, operation: 'install', path: source.path, fingerprint: source.fingerprint };
     await gate({ kind: 'extension.install', meta, detail: `${source.name} (${source.version}) from ${source.path}`, action,
       check: checkExtension(policy, 'install', source.trusted), approval: params.approval });
-    // A signed decision cannot authorize code changed while the owner reviewed it.
+    // A signed decision cannot authorize code changed while the user reviewed it.
     const current = await validateUnpackedExtension(source.path);
     if (current.fingerprint !== source.fingerprint) throw new GateError('approval-invalid', 'extension folder changed; request installation again');
     return installUnpackedExtension(current);

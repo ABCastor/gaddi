@@ -3,16 +3,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { isRecord } from '../shared/protocol.ts';
 
-// Recovery when the Chrome bridge is down because the owner's Chrome stopped (crash or quit), or its
+// Recovery when the Chrome bridge is down because the user's Chrome stopped (crash or quit), or its
 // extension/native host died. It runs only when an agent asks for the browser, never on its own timer,
-// so a Chrome the owner quit stays closed until something needs it.
+// so a Chrome the user quit stays closed until something needs it.
 // Invariants:
 // - Chrome is only ever OPENED (LaunchServices `open -a`, his normal profile, last session restored).
 //   Nothing here kills, quits or signals any Chrome, and nothing passes a profile directory.
 // - A relaunch happens only when the probe says Chrome is not running; if Chrome is running, the extension's
-//   own reconnect is awaited and the owner is told what to click. `open -a` on a running Chrome only focuses it.
+//   own reconnect is awaited and the user is told what to click. `open -a` on a running Chrome only focuses it.
 // - Relaunches are rate-limited (cooldown + hourly cap) and recorded BEFORE launching, so no failure loops.
-// - The owner is told once per incident (disconnect until the next attach).
+// - The user is told once per incident (disconnect until the next attach).
 export type HealState = 'connected' | 'disconnected' | 'waiting-extension' | 'relaunching' | 'needs-owner';
 export interface HealLimits {
   extensionWaitMs: number; relaunchWaitMs: number; cooldownMs: number; windowMs: number;
@@ -80,7 +80,7 @@ export function createChromeHeal(deps: HealDeps) {
   function recovered(action: 'reconnect' | 'relaunch', text: string) {
     lastRecovery = { at: now(), action, message: text };
     set('connected');
-    // A self-reconnected extension is routine; a reopened Chrome is news to the owner.
+    // A self-reconnected extension is routine; a reopened Chrome is news to the user.
     if (action === 'relaunch') notifyOnce(text);
     log('chrome recovery:', action);
     return text;
@@ -201,7 +201,7 @@ export function chromeControls() {
   const executable = `${app}/Contents/MacOS/${app.split('/').at(-1)!.replace(/\.app$/, '')}`;
   const probe = argv('GADDI_CHROME_PROBE'), launcher = argv('GADDI_CHROME_LAUNCH');
   return {
-    // Invariant: only the owner's own broker (the default Gaddi home, which the installed service names
+    // Invariant: only the user's own broker (the default Gaddi home, which the installed service names
     // explicitly) may probe or open his Chrome. A broker with any other GADDI_HOME (every test) recovers
     // only through an explicitly supplied probe AND launcher.
     enabled: process.env.GADDI_CHROME_HEAL !== '0' && (probe && launcher ? true : !probe && !launcher && ownHome()),

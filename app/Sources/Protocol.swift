@@ -226,7 +226,7 @@ struct SessionGrant: Equatable {
     /// Canonical rules, e.g. "upload https://github.com/settings".
     let rules: [String]
     let expiresAt: Date
-    /// "remote" when the owner's other device approved it; nil when he did with Touch ID.
+    /// "remote" when the user's other device approved it; nil when he did with Touch ID.
     let approver: String?
     init?(_ object: JSONObject) {
         guard let id = string(object["id"]), !id.isEmpty, let rules = object["rules"] as? [String], !rules.isEmpty,
@@ -243,7 +243,7 @@ struct SessionGrant: Equatable {
 func isKeyFingerprint(_ value: String) -> Bool {
     value.utf8.count == 64 && value.utf8.allSatisfy { (48...57).contains($0) || (97...102).contains($0) }
 }
-/// The first sixteen digits in groups of four: what the owner compares with what his phone approver shows him.
+/// The first sixteen digits in groups of four: what the user compares with what his phone approver shows him.
 func shortFingerprint(_ value: String) -> String {
     let digits = Array(value.prefix(16))
     return stride(from: 0, to: digits.count, by: 4).map { String(digits[$0..<min($0 + 4, digits.count)]) }.joined(separator: " ")
@@ -254,7 +254,7 @@ func remoteEnableMessage(fingerprint: String, timestamp: Int64) throws -> String
     return "remote.enable|\(fingerprint)|\(timestamp)"
 }
 
-/// Approving some requests from the owner's other device (a program of his, such as a Telegram bot). Off unless he
+/// Approving some requests from the user's other device (a program of his, such as a Telegram bot). Off unless he
 /// turned it on here with Touch ID. `candidate` is the key that program left for Gaddi: it authorizes nothing until
 /// he turns it on.
 struct RemoteStatus: Equatable {
@@ -273,7 +273,7 @@ struct RemoteStatus: Equatable {
     }
 }
 
-/// One request the owner's other device answered, as the panel lists it.
+/// One request the user's other device answered, as the panel lists it.
 struct RemoteDecision: Equatable {
     let approval: Approval
     let approved: Bool
@@ -291,18 +291,18 @@ struct Snapshot: Equatable {
     var rememberedSignins: [String] = []
     var rememberedSends: [SendPermission] = []
     var rememberedUploads: [String] = []
-    /// Sites the owner made test zones: uploads, posts and deletes there run without asking, for every agent.
+    /// Sites the user made test zones: uploads, posts and deletes there run without asking, for every agent.
     var zones: [String] = []
     var grants: [SessionGrant] = []
     var remote = RemoteStatus()
-    /// The waiting approvals the owner's other device may also answer.
+    /// The waiting approvals the user's other device may also answer.
     var remoteApprovable = Set<String>()
     /// The last answers that device gave, newest first.
     var remoteDecisions: [RemoteDecision] = []
 }
 
 /// Visibility follows authoritative pending snapshots, never notification delivery.
-/// An unchanged poll cannot reopen the panel after the owner closes it.
+/// An unchanged poll cannot reopen the panel after the user closes it.
 struct PendingApprovalVisibility {
     private var presented = Set<String>()
     private var reviewing = false
@@ -326,7 +326,7 @@ struct PendingApprovalVisibility {
     }
 }
 
-/// The review window the owner opens floats above other apps only until he moves on. Right
+/// The review window the user opens floats above other apps only until he moves on. Right
 /// after a banner opens it macOS may hand activation back to the previous app, which must not
 /// bury it; a click in another app, or switching apps after that moment, is his choice.
 struct ReviewWindowFloat {
@@ -400,7 +400,7 @@ final class BrowserModel {
             var next = Snapshot()
             next.rememberedUploads = uploadSites.sorted()
             // A broker that does not know test zones is simply older; a malformed list is an error, because a zone
-            // the owner cannot see is authority he cannot end.
+            // the user cannot see is authority he cannot end.
             do {
                 let answer = try client.call("zones.list")
                 guard let zoneSites = answer["sites"] as? [String] else { throw AppError("Daemon returned an invalid test zone list") }
@@ -411,14 +411,14 @@ final class BrowserModel {
             next.rememberedSends = sendPermissions.sorted { ($0.site, $0.kind, $0.reason) < ($1.site, $1.kind, $1.reason) }
             next.rememberedSignins = sites.sorted()
             // Session grants arrive with the approvals. A broker without them is simply older; a malformed
-            // list is an error, because a grant the owner cannot see is authority he cannot end.
+            // list is an error, because a grant the user cannot see is authority he cannot end.
             if let rows = approvals["grants"] {
                 guard let objects = rows as? [JSONObject] else { throw AppError("Daemon returned an invalid session grant list") }
                 let parsed = objects.compactMap(SessionGrant.init)
                 guard parsed.count == objects.count else { throw AppError("Daemon returned an invalid session grant") }
                 next.grants = parsed.filter { !$0.expired }.sorted { ($0.expiresAt, $0.id) < ($1.expiresAt, $1.id) }
             }
-            // Approving from the owner's other device has its own status. A broker that does not know the call is
+            // Approving from the user's other device has its own status. A broker that does not know the call is
             // simply older, and nothing is on. Any other failure, and a malformed answer, is an error: a switch the
             // owner cannot see is authority he cannot end, so the panel must not guess "off".
             do {
@@ -456,7 +456,7 @@ final class BrowserModel {
     }
 }
 
-// The broker's one-per-incident note that it reopened Chrome or needs the owner (daemon/chrome-heal.ts).
+// The broker's one-per-incident note that it reopened Chrome or needs the user (daemon/chrome-heal.ts).
 // Informational only: it carries no approval and the banner opens nothing but the panel.
 func browserNotice(_ name: String, _ data: JSONObject) -> String? {
     guard name == "browser.notice", let text = data["text"] as? String else { return nil }

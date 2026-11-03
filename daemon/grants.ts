@@ -1,4 +1,4 @@
-// daemon/grants.ts — session grants: the owner lets ONE chat skip a few holds, for a while.
+// daemon/grants.ts — session grants: the user lets ONE chat skip a few holds, for a while.
 //
 // Invariants (each is falsified by a mutation in tests/gates/session-grant-mutations.test.sh):
 //  1. Only three permissions exist: upload, post and delete. A hold whose reason is not in the tables
@@ -6,13 +6,13 @@
 //     extension operations and any verb an overlay adds are not listed, so they can never be waived.
 //     Unknown means held.
 //  2. A grant is created only by the broker, after a signed owner decision, from the exact request
-//     the owner saw. Nothing an agent or a page says can create one.
+//     the user saw. Nothing an agent or a page says can create one.
 //  3. A grant belongs to one chat (its session key). A CLI call or another chat never uses it.
 //  4. Grants live in memory only. A restart ends them all: authority is never read back from disk.
-//  5. Remote approval (remote.ts) asks the owner's other device the same question a grant answers, through
+//  5. Remote approval (remote.ts) asks the user's other device the same question a grant answers, through
 //     the same scan (`waive` below), so it can never waive more than a grant could. It only ever adds a
-//     decision on one request the owner could have approved himself; it creates no standing authority
-//     except through the owner's own grant request, which it may approve for at most two hours.
+//     decision on one request the user could have approved himself; it creates no standing authority
+//     except through the user's own grant request, which it may approve for at most two hours.
 import crypto from 'node:crypto';
 import { isRecord } from '../shared/protocol.ts';
 import { UPLOAD_HOLD, fold, hostOf, phraseIn, protections, rx } from './policy.ts';
@@ -21,7 +21,7 @@ import type { Policy, PolicyCheck } from './policy.ts';
 export type GrantPermission = 'upload' | 'post' | 'delete';
 export interface GrantRule { permission: GrantPermission; origin: string; path: string }
 export interface GrantSpec { session: string; rules: GrantRule[]; minutes: number; label?: string }
-// `approver` is set only when the owner answered from another device (remote.ts); a Touch ID grant has none.
+// `approver` is set only when the user answered from another device (remote.ts); a Touch ID grant has none.
 export interface Grant extends GrantSpec { id: string; caller: string; createdAt: number; expiresAt: number; approver?: 'remote' }
 export type GrantCheck = PolicyCheck & { grant?: string };
 export interface GrantScope { kind: 'click' | 'press' | 'upload'; name?: string; destination?: string }
@@ -85,7 +85,7 @@ function parseRule(input: unknown, policy: Policy): GrantRule {
 }
 
 export function parseGrantRules(input: unknown, policy: Policy): GrantRule[] {
-  // AUTH-LARGE-GRANT: the owner opts into a larger card; every rule still crosses the same validation.
+  // AUTH-LARGE-GRANT: the user opts into a larger card; every rule still crosses the same validation.
   const max = policy.approvals.grant_rules_max ?? 20;
   if (!Array.isArray(input) || input.length < 1 || input.length > max) throw new Error(`rules must list 1 to ${max} rules`);
   const unique = new Map<string, GrantRule>();
@@ -97,7 +97,7 @@ export function parseGrantRules(input: unknown, policy: Policy): GrantRule[] {
   return [...unique].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([, rule]) => rule);
 }
 
-// The label is an agent's own words, shown to the owner as such. No control, format or line characters.
+// The label is an agent's own words, shown to the user as such. No control, format or line characters.
 const UNSAFE_LABEL = /[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
 export function parseGrantRequest(params: { rules?: unknown; minutes?: unknown; label?: unknown }, policy: Policy) {
   const rules = parseGrantRules(params.rules, policy);
@@ -120,7 +120,7 @@ export function isGrantSpec(value: unknown): value is GrantSpec {
     && (value.label === undefined || typeof value.label === 'string');
 }
 
-// ---------------------------------------------------------------- the text the owner signs
+// ---------------------------------------------------------------- the text the user signs
 export function ruleLine(rule: GrantRule) {
   const url = new URL(rule.origin);
   return `${rule.permission} on ${url.protocol === 'http:' ? 'http://' : ''}${url.host}${rule.path === '/' ? '' : rule.path}`;
@@ -130,7 +130,7 @@ export function durationText(minutes: number) {
   const hours = Math.floor(minutes / 60), rest = minutes % 60;
   return `${hours} ${hours === 1 ? 'hour' : 'hours'}${rest ? ` ${rest} minutes` : ''}`;
 }
-// Invariant 2: the owner's signature covers a digest of exactly this text (proof.ts binds `detail`),
+// Invariant 2: the user's signature covers a digest of exactly this text (proof.ts binds `detail`),
 // and a pending record never changes. So what he reads is what he approves.
 export function grantDetail(rules: readonly GrantRule[], minutes: number, label?: string) {
   return [...rules.map(ruleLine), `for ${durationText(minutes)}`, ...(label ? [`“${label}”`] : [])].join('\n');
@@ -151,7 +151,7 @@ function protectedAddress(policy: Policy, url: URL) {
 }
 
 // Which rule set, if any, covers `needed` at `target`. A session grant answers from its own rules; remote
-// approval (below) answers "yes, anywhere" because the owner decides that one request by hand.
+// approval (below) answers "yes, anywhere" because the user decides that one request by hand.
 type Cover = (needed: GrantPermission, target: URL) => { id: string } | undefined;
 
 // Turns a hold into an allow only when every one of these holds; otherwise the hold is returned untouched.
@@ -190,16 +190,16 @@ export function checkGrant(grants: readonly Grant[], policy: Policy, pageURL: st
     grants.find(grant => grant.rules.some(rule => rule.permission === needed && covers(rule, target))), policy, pageURL, check, scope);
 }
 
-// TEST-ZONE: a site the owner marked as his own test ground. On it, for every caller and until he removes it, the
+// TEST-ZONE: a site the user marked as his own test ground. On it, for every caller and until he removes it, the
 // broker waives holds on uploads, posts, deletes and account or security changes (passwords, two-step, recovery,
 // closing the account, unsubscribing, and the security and account-closure pages). Sign-in is answered in
 // policy.ts:checkSignin. Invariants (each falsified by a mutation in tests/gates/session-grant-mutations.test.sh):
 //  1. Only these hold reasons are waived. Money (pay, buy, order, transfer, top up and their pages) and sends stay held
 //     every time; a sent message may reach a real person and a payment page can claim to be a test, so neither is ever
-//     proven fake here. A send the owner remembered for a site still runs through its own rule.
+//     proven fake here. A send the user remembered for a site still runs through its own rule.
 //  2. A name that also holds a verb outside the zone set ("Post and pay") stays held, as does a link leaving the zone
-//     or reaching a payment page, a refused host (Gmail) or an address the owner added to his own protected list.
-//  3. Only the owner's signed choice puts a site in the list; identity providers can never be zones (policy.ts:zoneSite).
+//     or reaching a payment page, a refused host (Gmail) or an address the user added to his own protected list.
+//  3. Only the user's signed choice puts a site in the list; identity providers can never be zones (policy.ts:zoneSite).
 const ZONE_VERBS = ['post', 'publish', 'pubblica', 'share', 'condividi',
   'delete', 'delete forever', 'delete permanently', 'remove', 'elimina', 'elimina definitivamente', 'cancella', 'rimuovi',
   'close account', 'delete account', 'chiudi conto', 'chiudi account', 'elimina account',

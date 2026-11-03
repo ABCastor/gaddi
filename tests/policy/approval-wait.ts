@@ -132,6 +132,6 @@ try {
   if (perfDescriptor) Object.defineProperty(performance, 'now', perfDescriptor);
   else Reflect.deleteProperty(performance, 'now');
   for (const a of stores) a.stop();
-  // Only this process-created scratch directory, outside the owner folders.
+  // Only this process-created scratch directory, outside the user folders.
   fs.rmSync(dir, { recursive: true, force: true });
 }

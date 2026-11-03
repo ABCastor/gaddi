@@ -449,7 +449,7 @@ import AppKit
         let frozenGrants = SessionGrantList(activeGrants, enabled: false) { _ in fatalError("disabled end ran") }
         check(descendants(frozenGrants).compactMap { $0 as? PanelButton }.allSatisfy { !$0.isEnabled }, "a disconnected panel cannot end a grant")
 
-        // Approving from the owner's other device: the switch, what it allows and never allows, the honest limit, the
+        // Approving from the user's other device: the switch, what it allows and never allows, the honest limit, the
         // answers it gave, and the cards it may also answer.
         let phoneKey = String(repeating: "0123456789abcdef", count: 4)
         let phoneOffStatus = RemoteStatus(["enabled": false, "candidate": ["fingerprint": phoneKey]])!

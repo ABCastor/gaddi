@@ -190,9 +190,9 @@ enum ApprovalWords {
         if detail.hasPrefix("-> ") { return ("", String(detail.dropFirst(3))) }
         return (detail.trimmingCharacters(in: .whitespacesAndNewlines), nil)
     }
-    /// A session grant's `detail` is the text the owner signs: one line per rule, then "for 3 hours",
+    /// A session grant's `detail` is the text the user signs: one line per rule, then "for 3 hours",
     /// then, if the agent wrote one, its own description in quotes. The card is drawn from that text
-    /// alone, so what the owner reads is exactly what his signature covers.
+    /// alone, so what the user reads is exactly what his signature covers.
     static func grantParts(_ detail: String) -> (rules: [String], duration: String?, label: String?) {
         var rules: [String] = []
         var duration: String?
@@ -266,7 +266,7 @@ enum ApprovalWords {
 
 /// One held action: what the agent wants, where, what it looks like, and the decision.
 final class ApprovalCard: NSStackView {
-    /// `remote` is true while the owner's other device may also answer this request; the card then says so.
+    /// `remote` is true while the user's other device may also answer this request; the card then says so.
     /// `zone`, when given, makes the request's sites test zones (and answers it) with one Touch ID.
     init(_ approval: Approval, enabled: Bool, remote: Bool = false, zone: (() -> Void)? = nil, decide: @escaping (String) -> Void) {
         super.init(frame: .zero)
@@ -429,7 +429,7 @@ extension SessionGrant {
     }
 }
 extension RememberedPermissionList where Item == SessionGrant {
-    /// Always shown, even when empty, so the owner can see that nothing is running unattended.
+    /// Always shown, even when empty, so the user can see that nothing is running unattended.
     /// Ending a grant only removes authority, which is why this list asks for no Touch ID.
     convenience init(_ grants: [SessionGrant], enabled: Bool, end: @escaping (SessionGrant) -> Void) {
         self.init(grants, title: "Session grants", explanation: grants.isEmpty
@@ -494,7 +494,7 @@ final class RemotePanel: NSStackView {
 
 /// The same pending-action body serves the live panel and the offscreen harness.
 final class ApprovalList: NSStackView {
-    /// `remote` holds the ids of the waiting requests the owner's other device may also answer.
+    /// `remote` holds the ids of the waiting requests the user's other device may also answer.
     init(_ approvals: [Approval], enabled: Bool, remote: Set<String> = [], zone: ((Approval) -> Void)? = nil,
          decide: @escaping (Approval, String) -> Void) {
         super.init(frame: .zero)
@@ -516,7 +516,7 @@ final class ApprovalList: NSStackView {
     required init?(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 }
 
-/// TEST-ZONE: the owner's standing test ground. Always shown, even empty. Adding needs Touch ID; removing only
+/// TEST-ZONE: the user's standing test ground. Always shown, even empty. Adding needs Touch ID; removing only
 /// takes authority away, so it asks for none.
 final class ZoneList: NSStackView {
     private let field = NSTextField()

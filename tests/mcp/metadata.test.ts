@@ -11,7 +11,7 @@ try {
     // Startup now registers a lifetime socket; metadata checks must never reach the live broker.
     env: { GADDI_SOCKET: `/tmp/gaddi-metadata-${crypto.randomUUID()}.sock` } }));
   const listed = await client.listTools();
-  // Agents never decide: no tool reaches approval.remote or a remote.* method (the owner's other device,
+  // Agents never decide: no tool reaches approval.remote or a remote.* method (the user's other device,
   // daemon/remote.ts). Help may explain owner phone approval without exposing a signing endpoint.
   for (const tool of listed.tools) {
     assert.ok(!/remote|phone|another device/i.test(tool.name), `ASSERT_REMOTE_NO_MCP: ${tool.name}`);
@@ -113,7 +113,7 @@ try {
   assert.deepEqual(create.required,['title','username','vault']);
   assert.equal(create.additionalProperties,false);
   assert.deepEqual(schema('signin').properties.signup,{type:'boolean'});
-  // Every tool whose call can be held takes the agent's one-line purpose, for the owner's card; no other tool does.
+  // Every tool whose call can be held takes the agent's one-line purpose, for the user's card; no other tool does.
   const holdable = ['read', 'open', 'goto', 'click', 'press', 'signin', 'upload', 'extensions'];
   for (const tool of listed.tools) {
     const why = isRecord(tool.inputSchema.properties) ? tool.inputSchema.properties.why : undefined;

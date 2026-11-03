@@ -76,7 +76,7 @@ import CryptoKit
         allVectors["uploadApproval"] = uploadObject
         allVectors["uploadGrant"] = ["ts": ts, "sig": try key.signature(for: Data(uploadAlways.utf8)).derRepresentation.base64EncodedString()]
         allVectors["uploadRevoke"] = ["ts": ts, "sig": try key.signature(for: Data(uploadRevokeMessage(site: upload.site!, timestamp: ts).utf8)).derRepresentation.base64EncodedString()]
-        // A session grant is signed like any other hold: id, kind, empty tab, and a digest of the multi-line text the owner read.
+        // A session grant is signed like any other hold: id, kind, empty tab, and a digest of the multi-line text the user read.
         let grantObject: JSONObject = ["id": "grant1", "kind": "grant", "tab": NSNull(), "caller": "codex", "url": "", "reason": "session grant",
             "detail": "post on www.linkedin.com/company\nupload on github.com/settings\nfor 3 hours\n“Update the profile”"]
         let sessionGrant = Approval(grantObject)!

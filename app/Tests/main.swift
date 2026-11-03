@@ -106,7 +106,7 @@ check(ApprovalWords.rule("upload https://github.com/settings") == "upload on git
 check(!grantApproval.canRemember, "a session grant never offers Always allow")
 check(try! grantApproval.signingMessage(verb: "grant", timestamp: 1).hasPrefix("grant|grant1|grant||"), "a session grant signs the ordinary tuple with an empty tab")
 rejects("a session grant cannot sign a remember choice") { _ = try grantApproval.signingMessage(verb: "grant", timestamp: 1, remember: true) }
-// Approving from the owner's other device: the status the broker reports, the fingerprint the owner compares with his
+// Approving from the user's other device: the status the broker reports, the fingerprint the user compares with his
 // phone approver's, the text Touch ID signs to turn it on, and the requests it answered.
 let sampleFingerprint = String(repeating: "0123456789abcdef", count: 4)
 check(isKeyFingerprint(sampleFingerprint), "a sha256 hex fingerprint is accepted")

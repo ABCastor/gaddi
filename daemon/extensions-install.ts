@@ -409,7 +409,7 @@ export async function installUnpackedExtension(extension: UnpackedExtension, opt
     }
     async function opened() {
       try {
-        // The owner may take time to approve Chrome's dialog. Bind the eventual load
+        // The user may take time to approve Chrome's dialog. Bind the eventual load
         // to the exact approved bytes, checking again after that wait, before send.
         const current = await validateUnpackedExtension(extension.path, options);
         if (!sameExtension(current, extension)) throw new GateError('approval-invalid', 'extension folder changed while Chrome approval was pending; request installation again');
