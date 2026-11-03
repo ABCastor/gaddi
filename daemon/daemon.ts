@@ -748,7 +748,7 @@ function requestGrant(params: IncomingParams) {
   if (needed.length === 0) {
     return { granted: true, waiting: false, message: 'already allowed: every rule is covered by a test zone or by a grant this chat already has. Keep working.' };
   }
-  // GRANT-FOLD (replaces BR-GADDI-QUEUE, owner feedback 19 October: one card per chat, not a flood). A chat's new
+  // GRANT-FOLD: one pending card per chat bounds notification volume. A chat's new
   // request folds into the one it already has waiting: the card shows every rule it asked for and the longest time.
   // Nothing it asked for is dropped, the user still signs exactly what the card shows, and a fold that would pass
   // the card limit queues as its own request instead.
