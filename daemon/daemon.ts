@@ -141,6 +141,8 @@ function forgetClosed(tabs: unknown[]) {
   }
 }
 function emit(event: string, data: unknown) {
+  if (event === 'bridge.detach') chromeHeal.detached();
+  if (event === 'bridge.outcome' && isRecord(data)) { chromeHeal.outcome(data.ok === true); return; }
   if (event === 'bridge.attach') {
     // Chrome hands out tab ids per browser run, so a restart can reuse an id we still hold.
     // A reattach is the only moment that can follow such a restart: forget which tabs are ours
@@ -163,9 +165,14 @@ const bridge = createBridge({ emit });
 // A stopped Chrome is reopened when an agent next needs it (chrome-heal.ts holds the guards).
 const chromeHeal = createChromeHeal({ ...chromeControls(), log,
   connected: () => bridge.status().connected,
+  auditRestart: (at, reason) => audit({ ts: new Date(at).toISOString(), method: 'chrome.restart', reason, action: 'graceful-quit-relaunch' }),
   tabCount: async () => tabList(await bridge.request('chrome.tabs', { browser: policy.browser })).length,
   // The approval app shows this as one banner per incident.
   notify: text => emit('browser.notice', { kind: 'chrome-recovery', text }) });
+function browserBridgeStatus() {
+  const recovery = chromeHeal.status();
+  return { ...bridge.status(), connected: recovery.state === 'connected', recovery };
+}
 const proofs = createProofVerifier({ publicKeyPath: process.env.GADDI_APPROVER_PUB || path.join(os.homedir(), 'Library/Application Support/Gaddi/approver.pub'),
   usedPath: path.join(home, 'used-proofs.log') });
 // Approving some holds from another device (remote.ts). Off until the user turns it on with Touch ID; the saved
@@ -856,10 +863,10 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
     return {};
   }),
   status: () => ({ version: 3, pid: process.pid, uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
-    socket, audit: auditPath, bridge: { ...bridge.status(), recovery: chromeHeal.status() }, pendingApprovals: approvals.list().pending.length,
+    socket, audit: auditPath, bridge: browserBridgeStatus(), pendingApprovals: approvals.list().pending.length,
     policy: { off: policy.off, sources: policy.sources } }),
   'bridge.attach': ({ kind }, conn) => bridge.attach(conn, kind),
-  'bridge.status': () => ({ ...bridge.status(), recovery: chromeHeal.status() }),
+  'bridge.status': () => browserBridgeStatus(),
   'bridge.health': ({ lastSelfHeal }, conn) => bridge.health(conn, { lastSelfHeal }),
   extensions: (params, _conn, meta) => serial(async () => {
     const operation = params.operation ?? 'list';

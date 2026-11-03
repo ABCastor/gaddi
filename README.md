@@ -108,7 +108,7 @@ Uploads have a 20 MB limit. Protected credential paths and key files are refused
 
 ### When Chrome stops
 
-If Chrome has quit or crashed, the next browser call reopens it in the background with your normal profile and last session (`open -a`, never a fresh profile), waits up to 45 seconds for the extension, and tells the agent and you once (a Gaddi banner) what happened. It reopens Chrome at most once per 10 minutes and three times an hour, and never while Chrome is running: then it waits for the extension to reconnect and, if it does not, names the click (`chrome://extensions` → Gaddi → Reload). `browser_status` shows the recovery state. Nothing reopens Chrome until an agent needs it.
+If Chrome has quit or crashed, the next browser call reopens it in the background with your normal profile and last session (`open -a`, never a fresh profile), waits up to 45 seconds for the extension, and tells the agent and you once (a Gaddi banner) what happened. It reopens Chrome at most once per 10 minutes and three times an hour, for a stopped browser. If three consecutive bridge requests time out within five minutes, or the native host disconnects for at least 15 seconds, `browser_status` reports `stalled`. On the next browser call, Gaddi asks Chrome to quit gracefully, waits up to 20 seconds for it to exit, then reopens your normal profile and last session. If Chrome refuses to quit, recovery stops without force-killing it. The extension must reconnect and answer a tabs request before recovery succeeds. Gaddi attempts this restart at most once per 30 minutes, remembers the limit across broker restarts, records the reason in its audit, and shows the outcome in status and a Gaddi banner. Nothing reopens Chrome until an agent needs it.
 
 ## Development
 

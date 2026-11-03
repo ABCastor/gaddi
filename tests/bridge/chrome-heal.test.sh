@@ -4,7 +4,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 mkdir -p tests/.state/logs
 node tests/bridge/chrome-heal.test.ts
-for pair in running:ASSERT_HEAL_RUNNING ratelimit:ASSERT_HEAL_RATELIMIT once:ASSERT_HEAL_ONCE probe:ASSERT_HEAL_PROBE \
+for pair in stall:ASSERT_HEAL_STALL quit:ASSERT_HEAL_QUIT refuse:ASSERT_HEAL_REFUSE restartloop:ASSERT_HEAL_RESTARTLOOP tabs:ASSERT_HEAL_TABS host:ASSERT_HEAL_HOST running:ASSERT_HEAL_RUNNING ratelimit:ASSERT_HEAL_RATELIMIT once:ASSERT_HEAL_ONCE probe:ASSERT_HEAL_PROBE \
   singleflight:ASSERT_HEAL_SINGLEFLIGHT profile:ASSERT_HEAL_PROFILE bounded:ASSERT_HEAL_BOUNDED home:ASSERT_HEAL_HOME; do
   mutation="${pair%%:*}" label="${pair#*:}"
   log="tests/.state/logs/chrome-heal-falsified-${mutation}.log"

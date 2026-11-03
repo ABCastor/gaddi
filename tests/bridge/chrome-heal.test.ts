@@ -1,12 +1,21 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
+import { EventEmitter } from 'node:events';
+import type { Socket } from 'node:net';
+import { createBridge } from '../../daemon/bridge.ts';
 import { pathToFileURL } from 'node:url';
 
 // Fake-only: no Chrome, no `open`, no ps. Every dependency of the recovery state machine is a stand-in.
 // GADDI_HEAL_MUTATION=<name> runs the same assertions against a copy with one guard removed.
 const repo = path.resolve(import.meta.dirname, '../..');
 const MUTATIONS: Record<string, [string, string]> = {
+  stall: ['if (failures.length >= limits.stallCount)', 'if (false)'],
+  quit: ['await deps.quit();', '/* broken: quit omitted */'],
+  refuse: ["if (now() >= deadline) return owner('Chrome did not quit", "if (false) return owner('Chrome did not quit"],
+  restartloop: ['if (lastRestart !== undefined && at - lastRestart < limits.restartCooldownMs)', 'if (false)'],
+  tabs: ['const tabs = await deps.tabCount();', 'const tabs = await deps.tabCount().catch(() => 0);'],
+  host: ['now() - detachedAt >= limits.hostGraceMs', 'false'],
   running: ['if (running) {', 'if (false) {'],
   ratelimit: ['if (last !== undefined && (at - last < limits.cooldownMs || relaunches.length >= limits.maxRelaunches))', 'if (false)'],
   once: ['if (notified === incident) return;', ''],
@@ -198,4 +207,105 @@ const crash = (w: ReturnType<typeof world>) => { w.connected = false; w.running 
   pass('recovery is off for any broker but his own, unless given a test probe and launcher');
 }
 
+
+function stalledWorld(refuses = false) {
+  const w = { connected: true, running: true, events: [] as string[], skew: 0, tabsFail: false };
+  const heal = createChromeHeal({
+    connected: () => w.connected, chromeRunning: async () => w.running,
+    quit: async () => { w.events.push('quit'); if (!refuses) { w.running = false; w.connected = false; } },
+    launch: async () => { w.events.push('launch'); w.running = true; w.connected = true; heal.attached(); },
+    tabCount: async () => { w.events.push('tabs'); if (w.tabsFail) throw new Error('tabs timeout'); return 7; },
+    auditRestart: (_at, reason) => { assert.match(reason, /timed out|native host/); w.events.push('audit'); },
+    notify: text => { w.events.push('notice'); assert.match(text, /Chrome/); },
+    now: () => Date.now() + w.skew,
+    limits: { ...limits, quitWaitMs: 30, hostGraceMs: 25 },
+  });
+  return { w, heal, stall() { for (let n = 0; n < 3; n++) heal.outcome(false); } };
+}
+{
+  const { w, heal, stall } = stalledWorld();
+  heal.outcome(false); heal.outcome(false);
+  assert.equal(heal.status().state, 'connected');
+  heal.outcome(true); heal.outcome(false);
+  assert.equal(heal.status().state, 'connected', 'success resets the streak');
+  w.skew += 5 * 60 * 1000 + 1;
+  heal.outcome(false); heal.outcome(false);
+  assert.equal(heal.status().state, 'connected', 'old failures expire');
+  stall();
+  assert.equal(heal.status().state, 'stalled', 'ASSERT_HEAL_STALL socket alive but unusable');
+  pass('timeout streak, success reset and rolling window distinguish a stalled socket');
+}
+{
+  const { w, heal, stall } = stalledWorld(); stall();
+  let note: string | undefined;
+  await assert.doesNotReject(async () => { note = await heal.ensure(); }, 'ASSERT_HEAL_QUIT graceful restart succeeds');
+  assert.match(String(note), /gracefully restarted.*tabs check answered/);
+  assert.deepEqual(w.events, ['audit', 'quit', 'launch', 'tabs', 'notice'], 'ASSERT_HEAL_QUIT audit, quit, exit, launch, tabs proof, user notice');
+  assert.equal(heal.status().state, 'connected');
+  stall();
+  await assert.rejects(heal.ensure(), /within 30 minutes/, 'ASSERT_HEAL_RESTARTLOOP no second restart');
+  assert.equal(w.events.filter(x => x === 'quit').length, 1);
+  await assert.rejects(heal.ensure(), /within 30 minutes/, 'live socket cannot erase a stalled needs-owner state');
+  pass('graceful sequence and thirty-minute restart guard');
+}
+{
+  const { w, heal, stall } = stalledWorld(true); stall();
+  const result = await Promise.race([heal.ensure().then(() => 'unexpected', e => String(e)),
+    new Promise(resolve => setTimeout(() => { w.running = false; resolve('unbounded'); }, 150))]);
+  assert.match(String(result), /did not quit within.*never force-kill/, 'ASSERT_HEAL_REFUSE bounded refusal');
+  assert.equal(w.events.includes('launch'), false, 'ASSERT_HEAL_REFUSE never launches over Chrome');
+  pass('Chrome refuses to exit: bounded stop, no force-kill or relaunch');
+}
+{
+  const { w, heal, stall } = stalledWorld(); w.tabsFail = true; stall();
+  await assert.rejects(heal.ensure(), /tabs check/, 'ASSERT_HEAL_TABS reconnect alone cannot prove recovery');
+  assert.equal(heal.status().state, 'needs-owner');
+  pass('recovery requires an answering tabs probe');
+}
+{
+  const { w, heal } = stalledWorld(); w.connected = false; heal.detached();
+  assert.equal(heal.status().state, 'disconnected');
+  w.skew += 30;
+  assert.equal(heal.status().state, 'stalled', 'ASSERT_HEAL_HOST absent host after grace');
+  await heal.ensure();
+  assert.ok(w.events.includes('quit'));
+  pass('native host without respawn becomes stalled and recovers');
+}
+
+{
+  const { heal } = stalledWorld();
+  let wire = '';
+  const emitter = new EventEmitter();
+  const socket = Object.assign(emitter, { destroyed: false,
+    write(line: string) { wire = line; }, destroy() { this.destroyed = true; emitter.emit('close'); } }) as unknown as Socket;
+  const bridge = createBridge({ emit(event, data) {
+    if (event === 'bridge.outcome') heal.outcome((data as { ok: boolean }).ok);
+    if (event === 'bridge.detach') heal.detached();
+  } });
+  bridge.attach(socket, 'chrome');
+  for (let n = 0; n < 3; n++) {
+    const pending = bridge.request('chrome.tabs', {});
+    const { id } = JSON.parse(wire);
+    bridge.receive(socket, { id, error: { message: 'Chrome action timed out; inspect the page before retrying' } });
+    await assert.rejects(pending, /timed out/);
+  }
+  assert.equal(heal.status().state, 'stalled', 'ASSERT_HEAL_STALL real native-host errors feed detection');
+  assert.equal(bridge.status().connected, true, 'transport is alive while recovery reports stalled');
+  pass('bridge maps native-host request-expired replies into stalled detection');
+}
+{
+  const saved = process.env.GADDI_HOME;
+  const home = fs.mkdtempSync(path.join(repo, 'tests/.state/restart-reservation-'));
+  try {
+    process.env.GADDI_HOME = home;
+    assert.equal(chromeControls().reserveRestart(1000, 1800000), true);
+    assert.equal(chromeControls().reserveRestart(2000, 1800000), false, 'fresh controller retains restart guard');
+    assert.equal(chromeControls().reserveRestart(1801000, 1800000), true);
+    await assert.rejects(chromeControls().quit(), /owner broker/, 'test broker cannot quit real Chrome');
+    pass('durable restart guard survives new controller; test broker cannot quit owner Chrome');
+  } finally {
+    if (saved === undefined) delete process.env.GADDI_HOME; else process.env.GADDI_HOME = saved;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
 console.log(`== chrome heal: ${passed} passed, 0 failed`);

@@ -1,24 +1,23 @@
 import { execFile, spawn } from 'node:child_process';
 import os from 'node:os';
+import fs from 'node:fs';
 import path from 'node:path';
 import { isRecord } from '../shared/protocol.ts';
 
 // Recovery when the Chrome bridge is down because the user's Chrome stopped (crash or quit), or its
 // extension/native host died. It runs only when an agent asks for the browser, never on its own timer,
 // so a Chrome the user quit stays closed until something needs it.
-// Invariants:
-// - Chrome is only ever OPENED (LaunchServices `open -a`, his normal profile, last session restored).
-//   Nothing here kills, quits or signals any Chrome, and nothing passes a profile directory.
-// - A relaunch happens only when the probe says Chrome is not running; if Chrome is running, the extension's
-//   own reconnect is awaited and the user is told what to click. `open -a` on a running Chrome only focuses it.
-// - Relaunches are rate-limited (cooldown + hourly cap) and recorded BEFORE launching, so no failure loops.
-// - The user is told once per incident (disconnect until the next attach).
-export type HealState = 'connected' | 'disconnected' | 'waiting-extension' | 'relaunching' | 'needs-owner';
+// Stalls are established by repeated bridge timeouts or a host that does not respawn. Recovery
+// gracefully quits Chrome, never signals it, and proves the restored bridge with a tabs request.
+// Restart attempts are reserved durably before quitting, so failures cannot create restart loops.
+export type HealState = 'stalled' | 'connected' | 'disconnected' | 'waiting-extension' | 'relaunching' | 'needs-owner';
 export interface HealLimits {
+  stallCount: number; stallWindowMs: number; hostGraceMs: number; quitWaitMs: number; restartCooldownMs: number;
   extensionWaitMs: number; relaunchWaitMs: number; cooldownMs: number; windowMs: number;
   maxRelaunches: number; ownerRecheckMs: number; reportedWaitMs: number; pollMs: number; maxPollMs: number;
 }
 export const DEFAULT_HEAL_LIMITS: HealLimits = {
+  stallCount: 3, stallWindowMs: 5 * 60 * 1000, hostGraceMs: 15000, quitWaitMs: 20000, restartCooldownMs: 30 * 60 * 1000,
   extensionWaitMs: 15000, relaunchWaitMs: 45000, cooldownMs: 10 * 60 * 1000, windowMs: 60 * 60 * 1000,
   maxRelaunches: 3, ownerRecheckMs: 2 * 60 * 1000, reportedWaitMs: 1000, pollMs: 250, maxPollMs: 2000,
 };
@@ -34,6 +33,9 @@ export interface HealDeps {
   connected(): boolean;
   chromeRunning(): Promise<boolean>;
   launch(): Promise<void>;
+  quit?(): Promise<void>;
+  reserveRestart?(at: number, cooldownMs: number): boolean;
+  auditRestart?(at: number, reason: string): void;
   tabCount?(): Promise<number>;
   notify(text: string): void;
   log?(...args: unknown[]): void;
@@ -45,6 +47,18 @@ export function createChromeHeal(deps: HealDeps) {
   const limits = { ...DEFAULT_HEAL_LIMITS, ...deps.limits };
   const now = deps.now ?? Date.now, log = deps.log ?? (() => {});
   let state: HealState = 'connected', message: string | undefined, since: number | undefined;
+  let stalled = false, stallReason = '', failures: number[] = [], detachedAt: number | undefined;
+  let lastRestart: number | undefined;
+  function detectStall() {
+    if (detachedAt !== undefined && !deps.connected() && now() - detachedAt >= limits.hostGraceMs)
+      markStalled('The Chrome native host disconnected and did not respawn.');
+  }
+  function markStalled(reason: string) {
+    if (stalled) return;
+    incident++; since = now();
+    stalled = true; stallReason = reason;
+    if (!inflight) set('stalled', reason);
+  }
   let incident = 0, notified = 0, recheckAt = 0;
   let relaunches: number[] = [];
   let lastRecovery: { at: number; action: 'reconnect' | 'relaunch'; message: string } | undefined;
@@ -92,19 +106,56 @@ export function createChromeHeal(deps: HealDeps) {
     log('chrome recovery needs the owner');
     throw new Error(`chrome bridge not connected: ${text}`);
   }
+  async function restartStalled(): Promise<string> {
+    const at = now();
+    if (lastRestart !== undefined && at - lastRestart < limits.restartCooldownMs)
+      return owner('Chrome is stalled. Gaddi already attempted a graceful restart within 30 minutes; no further restart will be attempted yet.');
+    let reserved = true;
+    try { reserved = deps.reserveRestart?.(at, limits.restartCooldownMs) ?? true; }
+    catch { return owner('Gaddi could not safely record a Chrome restart; Chrome was left untouched.'); }
+    if (!reserved)
+      return owner('Chrome is stalled. A graceful restart was already attempted within 30 minutes; no further restart will be attempted yet.');
+    lastRestart = at;
+    try { deps.auditRestart?.(at, stallReason); }
+    catch { return owner('Gaddi could not audit the Chrome restart; Chrome was left untouched.'); }
+    set('relaunching', 'Chrome stopped answering Gaddi. Gaddi is gracefully restarting Chrome with your profile and last session.');
+    try {
+      if (await deps.chromeRunning()) {
+        if (!deps.quit) throw new Error('graceful quit unavailable');
+        await deps.quit();
+      }
+      const deadline = now() + limits.quitWaitMs;
+      while (await deps.chromeRunning()) {
+        if (now() >= deadline) return owner('Chrome did not quit within the time limit. Gaddi stopped recovery and will never force-kill Chrome. Please quit and reopen Chrome yourself.');
+        await new Promise(resolve => setTimeout(resolve, limits.pollMs));
+      }
+      await deps.launch();
+      if (!await wait(limits.relaunchWaitMs)) return owner(`Gaddi gracefully restarted Chrome but the extension did not reconnect. ${OWNER_RELOAD}`);
+      if (!deps.tabCount) throw new Error('tabs probe unavailable');
+      const tabs = await deps.tabCount();
+      stalled = false; failures = []; detachedAt = undefined;
+      return recovered('relaunch', `Chrome stopped answering Gaddi; Gaddi gracefully restarted it with your profile and last session. The tabs check answered (${tabs} tabs).`);
+    } catch (error) {
+      if (state === 'needs-owner') throw error;
+      return owner('Chrome recovery could not complete the graceful restart and tabs check. Gaddi will never force-kill Chrome. Please check Chrome.');
+    }
+  }
   async function recover(): Promise<string | undefined> {
     if (state === 'connected' || state === 'disconnected') { incident++; since = now(); }
     if (state === 'needs-owner' && now() < recheckAt) {
       // Already reported: answer fast instead of making every call wait out the full budget again.
-      if (await wait(limits.reportedWaitMs)) return recovered('reconnect', 'The Gaddi extension reconnected to Chrome.');
+      if (!stalled && await wait(limits.reportedWaitMs)) return recovered('reconnect', 'The Gaddi extension reconnected to Chrome.');
       throw new Error(`chrome bridge not connected: ${message}`);
     }
+    if (stalled) return restartStalled();
     let running: boolean;
     try { running = await deps.chromeRunning(); }
     catch { return owner(`Gaddi cannot tell whether Chrome is running. Open Google Chrome; if it is already open, ${OWNER_RELOAD.charAt(0).toLowerCase()}${OWNER_RELOAD.slice(1)}`); }
     if (running) {
       set('waiting-extension', 'Chrome is open; waiting for the Gaddi extension to reconnect.');
       if (await wait(limits.extensionWaitMs)) return recovered('reconnect', 'The Gaddi extension reconnected to Chrome.');
+      detectStall();
+      if (stalled) return restartStalled();
       return owner(`Chrome is open but the Gaddi extension is not connected. ${OWNER_RELOAD}`);
     }
     const at = now();
@@ -132,27 +183,38 @@ export function createChromeHeal(deps: HealDeps) {
     /** Resolve when the bridge is usable. Returns a recovery note when it had to recover, throws a plain instruction when it cannot. */
     ensure(): Promise<string | undefined> {
       if (deps.enabled === false) return Promise.resolve(undefined);
-      if (deps.connected()) {
+      detectStall();
+      if (deps.connected() && !stalled) {
         if (state !== 'connected') set('connected');
         return Promise.resolve(undefined);
       }
       inflight ??= recover().finally(() => { inflight = undefined; });
       return inflight;
     },
+    outcome(ok: boolean) {
+      if (deps.enabled === false) return;
+      if (ok) { failures = []; return; }
+      failures = failures.filter(at => now() - at <= limits.stallWindowMs);
+      failures.push(now());
+      if (failures.length >= limits.stallCount) markStalled(`${failures.length} consecutive Chrome bridge requests timed out within five minutes.`);
+    },
+    detached() { detachedAt ??= now(); },
     /** The bridge attached: end the incident and release anyone waiting. */
     attached() {
+      detachedAt = undefined;
       // Called inside bridge.attach, before its reply is written; the native host drops any request that
       // overtakes that reply. Wake waiters on the next macrotask so their first request follows it.
       const woken = [...waiters];
       setImmediate(() => { for (const wake of woken) wake(); });
-      if (!inflight && state !== 'connected') {
+      if (!inflight && !stalled && state !== 'connected') {
         if (state === 'needs-owner') lastRecovery = { at: now(), action: 'reconnect', message: 'The Gaddi extension reconnected to Chrome.' };
         set('connected');
       }
     },
     status(): HealStatus {
-      const live = deps.connected();
-      const shown: HealState = live ? 'connected' : state === 'connected' ? 'disconnected' : state;
+      detectStall();
+      const live = deps.connected() && !stalled;
+      const shown: HealState = stalled && state !== 'relaunching' && state !== 'needs-owner' ? 'stalled' : live ? 'connected' : state === 'connected' ? 'disconnected' : state;
       if (deps.enabled === false) return { state: live ? 'connected' : 'disconnected', ...(live ? {} : { message: 'Chrome bridge not connected; Chrome recovery is off for this broker.' }) };
       const text = live ? undefined : state === 'connected' || state === 'disconnected'
         ? 'Chrome bridge not connected; the next browser call checks Chrome and reopens it if it has stopped.' : message;
@@ -200,6 +262,7 @@ export function chromeControls() {
   const app = process.env.GADDI_CHROME_APP || '/Applications/Google Chrome.app';
   const executable = `${app}/Contents/MacOS/${app.split('/').at(-1)!.replace(/\.app$/, '')}`;
   const probe = argv('GADDI_CHROME_PROBE'), launcher = argv('GADDI_CHROME_LAUNCH');
+  const restartPath = path.join(process.env.GADDI_HOME || path.join(os.homedir(), 'Library/Application Support/Gaddi'), 'chrome-restart.json');
   return {
     // Invariant: only the user's own broker (the default Gaddi home, which the installed service names
     // explicitly) may probe or open his Chrome. A broker with any other GADDI_HOME (every test) recovers
@@ -216,6 +279,21 @@ export function chromeControls() {
         execFile('/bin/ps', ['-axww', '-o', 'pid=,command='], { timeout: 5000, maxBuffer: 16 * 1024 * 1024 },
           (error, stdout) => error ? reject(error) : resolve(stdout)));
       return mainChromeRunning(output, executable);
+    },
+    reserveRestart(at: number, cooldownMs: number) {
+      try {
+        const saved = JSON.parse(fs.readFileSync(restartPath, 'utf8'));
+        if (!Number.isFinite(saved.at) || at - saved.at < cooldownMs) return false;
+      } catch (error) { if (!isRecord(error) || error.code !== 'ENOENT') return false; }
+      fs.writeFileSync(restartPath + '.tmp', JSON.stringify({ at }), { mode: 0o600 });
+      fs.renameSync(restartPath + '.tmp', restartPath);
+      return true;
+    },
+    async quit() {
+      // Test brokers must never quit the owner's Chrome, even with a fake launcher.
+      if (probe || launcher || !ownHome()) throw new Error('graceful quit requires the owner broker');
+      const code = await run(['/usr/bin/osascript', '-e', 'quit app "Google Chrome"'], 20000);
+      if (code !== 0) throw new Error('Chrome refused graceful quit');
     },
     async launch() {
       // -g: reopen in the background; --restore-last-session reopens the tabs he had. `open` passes

@@ -10,7 +10,7 @@ import type { SelfHeal } from '../shared/protocol.ts';
 export function createBridge({ emit = () => {} }: { emit?: Emit } = {}) {
   let current: Socket | null = null;
   let lastSelfHeal: SelfHeal | undefined;
-  const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout }>();
+  const pending = new Map<string, { resolve: (value: unknown) => void; reject: (error: Error) => void; timer: NodeJS.Timeout; method: string }>();
   function detach(conn: Socket, reason = 'disconnected') {
     if (current !== conn) return;
     current = null;
@@ -53,8 +53,8 @@ export function createBridge({ emit = () => {} }: { emit?: Emit } = {}) {
     const id = `bridge-${crypto.randomUUID()}`;
     return new Promise<unknown>((resolve, reject) => {
       const wait = Math.min(30000, Math.max(0, deadline - Date.now()) + (method === 'chrome.approvalCapture' ? 0 : 5000));
-      const timer = setTimeout(() => { pending.delete(id); reject(new Error(method === 'chrome.approvalCapture' ? 'approval capture deadline exceeded' : `${method}: bridge timeout after 30 seconds`)); }, wait);
-      pending.set(id, { resolve, reject, timer });
+      const timer = setTimeout(() => { pending.delete(id); if (method !== 'chrome.approvalCapture') emit('bridge.outcome', { ok: false }); reject(new Error(method === 'chrome.approvalCapture' ? 'approval capture deadline exceeded' : `${method}: bridge timeout after 30 seconds`)); }, wait);
+      pending.set(id, { resolve, reject, timer, method });
       // Invariant: time spent reaching/restarting Chrome consumes the action budget.
       try {
         conn.write(JSON.stringify({ id, method, params, deadline } satisfies ChromeRequest) + '\n', error => {
@@ -69,6 +69,8 @@ export function createBridge({ emit = () => {} }: { emit?: Emit } = {}) {
     const p = pending.get(typeof msg.id === 'string' ? msg.id : '');
     if (!p) return true;
     pending.delete(typeof msg.id === 'string' ? msg.id : ''); clearTimeout(p.timer);
+    const errorText = typeof msg.error === 'string' ? msg.error : isRecord(msg.error) ? String(msg.error.message ?? '') : '';
+    if (p.method !== 'chrome.approvalCapture') emit('bridge.outcome', { ok: !/request.expired|extension.*timeout|timed out|bridge timeout/i.test(errorText) });
     if (msg.error !== undefined) {
       const message = typeof msg.error === 'string' ? msg.error : isRecord(msg.error) ? msg.error.message || 'chrome bridge error' : 'chrome bridge error';
       p.reject(Object.assign(new Error(String(message)),
