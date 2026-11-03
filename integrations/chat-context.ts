@@ -3,12 +3,12 @@
 import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-const record = value => value !== null && typeof value === 'object' && !Array.isArray(value);
-const title = value => typeof value === 'string' && value.trim() ? value.trim().slice(0, 400) : undefined;
+const record = (value: unknown): value is Record<string, unknown> => value !== null && typeof value === 'object' && !Array.isArray(value);
+const title = (value: unknown): string | undefined => typeof value === 'string' && value.trim() ? value.trim().slice(0, 400) : undefined;
 
-export function transcriptTitle(file) {
+export function transcriptTitle(file: unknown): string | undefined {
   if (typeof file !== 'string' || !file) return undefined;
-  let fd;
+  let fd: number | undefined;
   try {
     fd = fs.openSync(file, fs.constants.O_RDONLY | fs.constants.O_NONBLOCK);
     const stat = fs.fstatSync(fd);
@@ -19,9 +19,9 @@ export function transcriptTitle(file) {
     fs.readSync(fd, bytes, 0, bytes.length, start);
     const lines = bytes.toString('utf8').split('\n');
     if (start) lines.shift();
-    let custom, summary;
+    let custom: string | undefined, summary: string | undefined;
     for (const line of lines) {
-      let entry;
+      let entry: unknown;
       try { entry = JSON.parse(line); } catch { continue; }
       if (!record(entry)) continue;
       if (entry.type === 'custom-title') custom = title(entry.customTitle) ?? custom;
@@ -32,9 +32,9 @@ export function transcriptTitle(file) {
   finally { if (fd !== undefined) fs.closeSync(fd); }
 }
 
-export function hookOutput(event, env = process.env, harness = 'claude-code') {
+export function hookOutput(event: unknown, env: Record<string, string | undefined> = process.env, harness = 'claude-code') {
   if (!record(event) || event.hook_event_name !== 'PreToolUse'
-    || !/^mcp__gaddi__browser_[a-z_]+$/.test(event.tool_name ?? '') || !record(event.tool_input)) return undefined;
+    || typeof event.tool_name !== 'string' || !/^mcp__gaddi__browser_[a-z_]+$/.test(event.tool_name) || !record(event.tool_input)) return undefined;
   // Codex transcripts have no stable title field. A launcher can supply GADDI_CHAT instead.
   const chat = title(env.GADDI_CHAT) ?? (harness === 'claude-code' ? transcriptTitle(event.transcript_path) : undefined);
   if (!chat) return undefined;

@@ -26,7 +26,7 @@ function checkSources(directory: string): void {
     else if (/\.(?:m?js)$/.test(entry.name)) assert(entryFiles.has(relative), `${relative} must be TypeScript`);
   }
 }
-for (const directory of ['bridge', 'cli', 'daemon', 'extension', 'install', 'mcp', 'shared', 'tests']) checkSources(directory);
+for (const directory of ['bridge', 'cli', 'daemon', 'extension', 'install', 'integrations', 'mcp', 'shared', 'tests']) checkSources(directory);
 try {
   execFileSync(path.join(repo, 'node_modules/.bin/tsc'), [
     '-p', path.join(repo, 'extension/tsconfig.json'), '--outDir', temporary,

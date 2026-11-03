@@ -13,7 +13,7 @@ Merge this object into `~/.claude/settings.json`, keeping existing hook entries.
       "matcher": "^mcp__gaddi__browser_.*$",
       "hooks": [{
         "type": "command",
-        "command": "node /absolute/path/to/gaddi/integrations/chat-context.mjs claude-code",
+        "command": "node /absolute/path/to/gaddi/integrations/chat-context.ts claude-code",
         "timeout": 5
       }]
     }]
