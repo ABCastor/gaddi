@@ -57,7 +57,7 @@ const table = {
   DISABLE_FILE: ['ASSERT_REMOTE_DISABLE', ['daemon/remote.ts', 'try { fs.unlinkSync(statePath); }', 'try { void 0; }']],
   DISABLE_EVENT: ['ASSERT_REMOTE_DISABLE', ['daemon/remote.ts', "if (was || removed) emit('remote.changed', { enabled: false });", '']],
   // The user's choice survives a restart; a damaged file means off.
-  RESTART_FORGET: ['ASSERT_REMOTE_RESTART', ['daemon/remote.ts', "load(); // the owner's saved choice, read back at startup", '']],
+  RESTART_FORGET: ['ASSERT_REMOTE_RESTART', ['daemon/remote.ts', "load();", '']],
   INVALID_LOADED: ['ASSERT_REMOTE_RESTART', ['daemon/remote.ts', "if (!key || fingerprintOf(key) !== saved.fingerprint) throw new Error('key');", "if (!key) throw new Error('key');"]],
   // A decision is signed by that key, for exactly one request, and is fresh.
   SIG_UNCHECKED: ['ASSERT_REMOTE_SIGNER', ['daemon/remote.ts', "if (!valid) return invalid('decision signature verification failed');", '']],
