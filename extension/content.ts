@@ -765,20 +765,14 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
   if (action === 'viewport') return { width: innerWidth, height: innerHeight } satisfies PageResults['viewport'];
   if (action === 'pointTarget') {
     // What the user would be clicking at that point, in this document. When it is an
-    // embedded document, its content box lets bg.ts follow the same point into it, so the
-    // gate judges the control inside rather than the frame around it.
+    // embedded document, bg.ts follows the same point into it, so the gate judges the
+    // control inside rather than the frame around it.
     const at = params.at;
     if (!at || !Number.isFinite(at.x) || !Number.isFinite(at.y)) throw new Error('A point is required');
     const hit = pointElement(at);
     if (!hit) throw new Error('Nothing is at that point');
     const described = describe(hit);
     const frame = ['IFRAME', 'FRAME'].includes(hit.tagName);
-    const source = frame ? (hit as HTMLIFrameElement).src : '';
-    let frameUrl = '';
-    try { frameUrl = source ? new URL(source, location.href).href : ''; } catch { /* A frame with no readable address is named by its box alone. */ }
-    const rect = hit.getBoundingClientRect(), style = getComputedStyle(hit);
-    const left = (parseFloat(style.borderLeftWidth) || 0) + (parseFloat(style.paddingLeft) || 0);
-    const top = (parseFloat(style.borderTopWidth) || 0) + (parseFloat(style.paddingTop) || 0);
     // The hit and its ancestors, so a caller can tell "the control I measured" from "something
     // else now sitting at that point"; document references keep this check inside one document.
     const chain: string[] = [];
@@ -788,9 +782,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     return { selector: described.selector, name: described.name as string, tag: described.tag, role: described.role,
       choice: described.choice === true, href: described.href, type: described.type, autocomplete: described.autocomplete,
       submitName: described.submitName as string, secret: described.password, disabled: described.disabled,
-      signature: signature(), chain, frame, frameUrl, x: rect.left + left, y: rect.top + top,
-      width: Math.max(0, rect.width - left - (parseFloat(style.borderRightWidth) || 0) - (parseFloat(style.paddingRight) || 0)),
-      height: Math.max(0, rect.height - top - (parseFloat(style.borderBottomWidth) || 0) - (parseFloat(style.paddingBottom) || 0)) } satisfies PageResults['pointTarget'];
+      signature: signature(), chain, frame } satisfies PageResults['pointTarget'];
   }
   const el = resolve(params.selector);
   // Whether a type whose session Chrome cut mid-insert left the field holding the text.

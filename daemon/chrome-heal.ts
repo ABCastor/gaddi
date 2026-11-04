@@ -141,7 +141,7 @@ export function createChromeHeal(deps: HealDeps) {
     }
   }
   async function recover(): Promise<string | undefined> {
-    if (state === 'connected' || state === 'disconnected') { incident++; since = now(); }
+    if (state === 'connected') { incident++; since = now(); }
     if (state === 'needs-owner' && now() < recheckAt) {
       // Already reported: answer fast instead of making every call wait out the full budget again.
       if (!stalled && await wait(limits.reportedWaitMs)) return recovered('reconnect', 'The Gaddi extension reconnected to Chrome.');
@@ -216,7 +216,7 @@ export function createChromeHeal(deps: HealDeps) {
       const live = deps.connected() && !stalled;
       const shown: HealState = stalled && state !== 'relaunching' && state !== 'needs-owner' ? 'stalled' : live ? 'connected' : state === 'connected' ? 'disconnected' : state;
       if (deps.enabled === false) return { state: live ? 'connected' : 'disconnected', ...(live ? {} : { message: 'Chrome bridge not connected; Chrome recovery is off for this broker.' }) };
-      const text = live ? undefined : state === 'connected' || state === 'disconnected'
+      const text = live ? undefined : state === 'connected'
         ? 'Chrome bridge not connected; the next browser call checks Chrome and reopens it if it has stopped.' : message;
       return {
         state: shown, ...(text ? { message: text } : {}),

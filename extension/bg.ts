@@ -1273,10 +1273,10 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
       handed = halves.every(half => half.status === 'fulfilled' || !unsent(half.reason));
       throw failed.reason;
     };
-    const handedNote = <T>(value: T) => (error: unknown) => {
+    const handedNote = (error: unknown) => {
       if (!handed || !isForeignFrameError(error)) throw error;
       route.note = "Another extension's frame opened as the click went in and Chrome stopped Gaddi's debugger after both press and release were sent; look to confirm the result";
-      return { ...(value as object), clicked: true, changed: true } as T;
+      return { ...result, clicked: true, changed: true };
     };
     // A click at a point the user saw: the point goes to Chrome as it is, and the element the
     // gates judged is read again from that same point immediately before the press.
@@ -1296,7 +1296,7 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
       const nestedAfter = nestedBefore === undefined ? undefined
         : await onPage(tab, 'snapshot', { frameId: target.frameId }, check).then(after => after.signature).catch(() => undefined);
       return { ...result, clicked: true, ...observed, ...(nestedAfter !== undefined && nestedAfter !== nestedBefore ? { changed: true } : {}) };
-    }).catch(handedNote({ ...result }));
+    }).catch(handedNote);
     if (action === 'click' || action === 'hover') return trusted(async send => {
       const measured = await onPage(tab, action === 'hover' ? 'hoverPoint' : 'clickPoint', params, check);
       // Trusted input goes to the tab's own viewport, so a point measured inside an embedded
@@ -1315,7 +1315,7 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
       }
       return { ...result, [action === 'click' ? 'clicked' : 'hovered']: true,
         ...await afterInput(tab, measured, result.url, scope, false, params.frameId) };
-    }).catch(handedNote({ ...result }));
+    }).catch(handedNote);
     if (action === 'type') {
       if (typeof params.text !== 'string') throw new Error('text must be a string');
       if (params.mode !== undefined && params.mode !== 'replace' && params.mode !== 'append') throw new Error('mode must be replace or append');

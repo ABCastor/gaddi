@@ -87,8 +87,8 @@ export interface ElementDescription {
   // so a gate must not read an action verb out of that prose (policy.ts:checkClick).
   choice?: boolean;
 }
-// What a point lands on, measured inside one document. `frame`/`x`/`y`/`width`/`height`
-// describe an embedded document's content box, which is how the point is followed into it.
+// What a point lands on, measured inside one document. `frame` says it is an embedded document;
+// bg.ts then follows the point into it through that document's own frame probe.
 export interface PointTarget {
   selector: string; name: string; tag: string; role: string; choice: boolean; href: string;
   type: string; autocomplete: string; submitName: string; secret: boolean; disabled: boolean;
@@ -96,7 +96,7 @@ export interface PointTarget {
   // The point's element and its ancestors, as document references: a caller can tell whether the
   // point is the control it measured or sits inside it (an icon inside a button).
   chain: string[];
-  frame: boolean; frameUrl: string; x: number; y: number; width: number; height: number;
+  frame: boolean;
 }
 // Results of the extension's serialized page function, keyed by the requested action.
 // A document listed by `look`, so an agent can act inside it by name. `challenge` marks a

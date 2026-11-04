@@ -1512,11 +1512,11 @@ async function dispatchAction({ method, params = {} }, scope) {
             handed = halves.every(half => half.status === 'fulfilled' || !unsent(half.reason));
             throw failed.reason;
         };
-        const handedNote = (value) => (error) => {
+        const handedNote = (error) => {
             if (!handed || !isForeignFrameError(error))
                 throw error;
             route.note = "Another extension's frame opened as the click went in and Chrome stopped Gaddi's debugger after both press and release were sent; look to confirm the result";
-            return { ...value, clicked: true, changed: true };
+            return { ...result, clicked: true, changed: true };
         };
         // A click at a point the user saw: the point goes to Chrome as it is, and the element the
         // gates judged is read again from that same point immediately before the press.
@@ -1537,7 +1537,7 @@ async function dispatchAction({ method, params = {} }, scope) {
                 const nestedAfter = nestedBefore === undefined ? undefined
                     : await onPage(tab, 'snapshot', { frameId: target.frameId }, check).then(after => after.signature).catch(() => undefined);
                 return { ...result, clicked: true, ...observed, ...(nestedAfter !== undefined && nestedAfter !== nestedBefore ? { changed: true } : {}) };
-            }).catch(handedNote({ ...result }));
+            }).catch(handedNote);
         if (action === 'click' || action === 'hover')
             return trusted(async (send) => {
                 const measured = await onPage(tab, action === 'hover' ? 'hoverPoint' : 'clickPoint', params, check);
@@ -1557,7 +1557,7 @@ async function dispatchAction({ method, params = {} }, scope) {
                 }
                 return { ...result, [action === 'click' ? 'clicked' : 'hovered']: true,
                     ...await afterInput(tab, measured, result.url, scope, false, params.frameId) };
-            }).catch(handedNote({ ...result }));
+            }).catch(handedNote);
         if (action === 'type') {
             if (typeof params.text !== 'string')
                 throw new Error('text must be a string');

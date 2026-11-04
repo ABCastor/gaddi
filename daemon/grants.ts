@@ -35,6 +35,8 @@ export const isPermission = (value: unknown): value is GrantPermission => typeof
 // Invariant 1: these two lists are the whole of what a grant can waive, in folded spelling.
 const POST_VERBS = ['post', 'publish', 'pubblica', 'share', 'condividi'];
 const DELETE_VERBS = ['delete', 'delete forever', 'delete permanently', 'remove', 'elimina', 'elimina definitivamente', 'cancella', 'rimuovi'];
+// Enter submits a form whose destination the broker cannot see, so it keeps grant parity: post and delete only.
+const ENTER_VERBS = [...POST_VERBS, ...DELETE_VERBS];
 function verbPermission(verb: string): GrantPermission | undefined {
   const folded = fold(verb);
   return POST_VERBS.includes(folded) ? 'post' : DELETE_VERBS.includes(folded) ? 'delete' : undefined;
@@ -200,8 +202,7 @@ export function checkGrant(grants: readonly Grant[], policy: Policy, pageURL: st
 //  2. A name that also holds a verb outside the zone set ("Post and pay") stays held, as does a link leaving the zone
 //     or reaching a payment page, a refused host (Gmail) or an address the user added to his own protected list.
 //  3. Only the user's signed choice puts a site in the list; identity providers can never be zones (policy.ts:zoneSite).
-const ZONE_VERBS = ['post', 'publish', 'pubblica', 'share', 'condividi',
-  'delete', 'delete forever', 'delete permanently', 'remove', 'elimina', 'elimina definitivamente', 'cancella', 'rimuovi',
+const ZONE_VERBS = [...ENTER_VERBS,
   'close account', 'delete account', 'chiudi conto', 'chiudi account', 'elimina account',
   'change password', 'update password', 'reset password', 'cambia password', 'modifica password', 'reimposta password',
   'turn off 2-step verification', 'remove phone', 'add recovery', 'disattiva verifica in due passaggi',
@@ -210,8 +211,6 @@ const ZONE_VERBS = ['post', 'publish', 'pubblica', 'share', 'condividi',
 const ZONE_PAGES = ['/settings/security', '/security', '/sicurezza', '/delete-account', '/close-account', '/elimina-account',
   '/chiudi-conto', '/unsubscribe', '/disdett'];
 const zoneVerb = (verb: string) => ZONE_VERBS.includes(fold(verb));
-// Enter submits a form whose destination the broker cannot see, so it keeps grant parity: post and delete only.
-const ENTER_VERBS = ZONE_VERBS.slice(0, 13);
 function zoneBlocked(policy: Policy, url: URL) {
   const { hosts, patterns } = protections(policy);
   return hosts.some(host => rx(host)?.test(hostOf(url.href))) || patterns.some(pattern => !ZONE_PAGES.includes(pattern) && rx(pattern)?.test(url.href));
