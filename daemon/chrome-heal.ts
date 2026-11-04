@@ -290,7 +290,7 @@ export function chromeControls() {
       return true;
     },
     async quit() {
-      // Test brokers must never quit the owner's Chrome, even with a fake launcher.
+      // Test brokers must never quit the normal Chrome profile, even with a fake launcher.
       if (probe || launcher || !ownHome()) throw new Error('graceful quit requires the owner broker');
       const code = await run(['/usr/bin/osascript', '-e', 'quit app "Google Chrome"'], 20000);
       if (code !== 0) throw new Error('Chrome refused graceful quit');
