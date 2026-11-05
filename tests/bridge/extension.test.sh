@@ -7,7 +7,7 @@ export GADDI_BRIDGE_BREAK_CAPTURE_SCROLL=0 GADDI_BRIDGE_BREAK_CAPTURE_BOX=0
 export GADDI_BRIDGE_BREAK_SCREENSHOT=0
 export GADDI_BRIDGE_BREAK_TYPE_REPLACEMENT=0 GADDI_BRIDGE_BREAK_INPUT_FOCUS=0
 export GADDI_BRIDGE_BREAK_OUTLINE_STATE=0 GADDI_BRIDGE_BREAK_CHANGED=0 GADDI_BRIDGE_BREAK_CHECKED_DESCRIPTION=0
-export GADDI_BRIDGE_BREAK_PRE_SCROLL_SIGNATURE=0
+export GADDI_BRIDGE_BREAK_PRE_SCROLL_SIGNATURE=0 GADDI_BRIDGE_BREAK_NEW_CONTEXT=0
 export GADDI_BRIDGE_BREAK_FOREIGN_REMOVE=0 GADDI_BRIDGE_BREAK_FOREIGN_SHADOW=0 GADDI_BRIDGE_BREAK_HSCROLL=0
 # A new fact for the gates must be able to fail: forgetting that a radio is a choice.
 export GADDI_BRIDGE_BREAK_CHOICE=0
@@ -192,4 +192,10 @@ if GADDI_BRIDGE_BREAK_HSCROLL=1 node tests/bridge/extension.ts >"$LOG" 2>&1; the
 fi
 if ! rg -q 'AssertionError.*ASSERT_HSCROLL_PAGE' "$LOG"; then cat "$LOG"; echo 'FAIL horizontal scroll falsification failed for an unrelated reason'; exit 1; fi
 echo 'FALSIFIED horizontal scroll: a wheel that sends deltaX 0 fails ASSERT_HSCROLL_PAGE'
+LOG=tests/.state/logs/bridge-new-context-falsified.log
+if GADDI_BRIDGE_BREAK_NEW_CONTEXT=1 node tests/bridge/extension.ts >"$LOG" 2>&1; then
+  echo 'FAIL new-context mutation passed'; exit 1
+fi
+if ! rg -q 'AssertionError.*ASSERT_POPUP_BACKGROUND' "$LOG"; then cat "$LOG"; echo 'FAIL new-context falsification failed for an unrelated reason'; exit 1; fi
+echo 'FALSIFIED new tabs: a background click that lets the page open its own tab fails ASSERT_POPUP_BACKGROUND'
 echo 'PASS bridge extension suite: baseline and all mutation checks passed'

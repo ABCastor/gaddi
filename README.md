@@ -122,6 +122,8 @@ Tests use isolated state and falsify gates by removing their protection. Browser
 
 `browser_click` accepts `download:"/absolute/path/export.zip"` for an approved, same-origin blob/filesystem anchor export that reaches the top document. It saves a new file under Downloads or the system temporary directory, up to 20 MiB, with no overwrite. Detached anchors, other download methods and embedded documents are unsupported. See [the bounded download contract](docs/authorization.md#page-generated-downloads).
 
+When an agent's click or Enter in a tab you are not looking at makes the page open a new tab or popup, Gaddi opens that address itself as a background tab, because Chrome brings its window in front of your work for any tab a page opens. A page that needs its real popup (a sign-in window that reports back to it) gets one when that tab is in front of you.
+
 There is no console or network inspection, general download manager, browser-dialog handling or video recording. CSS and Web Animations can be slowed; JavaScript timers, canvas and video cannot.
 
 Original code is licensed under [Apache-2.0](LICENSE). Bundled fonts, the Public Suffix List and dependencies keep their own licenses; see [NOTICE](NOTICE).

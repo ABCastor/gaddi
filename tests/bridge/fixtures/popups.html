@@ -1,0 +1,11 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Popups fixture</title>
+<main>
+  <a id="blank-link" href="next.html?from=link" target="_blank">Open in a new tab</a>
+  <button id="open-button" onclick="window.openResult = typeof window.open('next.html?from=open', 'docs', 'popup,width=400,height=300')">Open a popup</button>
+  <button id="second-open" onclick="window.openResults = [typeof window.open('next.html?from=first'), String(window.open('next.html?from=second'))]">Open two</button>
+  <a id="download-link" href="/attachment" target="_blank">Download a file</a>
+  <a id="handled-link" href="next.html?from=handled" target="_blank" onclick="event.preventDefault(); window.handled = true">Handled by the page</a>
+  <a id="self-link" href="next.html?from=self">Same tab</a>
+</main>

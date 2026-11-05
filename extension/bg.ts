@@ -22,6 +22,7 @@ import { pageTask } from './content.ts';
 import { manageExtensions } from './extensions.ts';
 import { createRecovery, RECOVERY_KEY } from './recovery.ts';
 import { createAgentWindow } from './windows.ts';
+import { armNewContexts, collectNewContexts, hookWindowOpen } from './popups.ts';
 
 const NATIVE_HOST = 'com.abcastor.gaddi.bridge';
 let nativePort: chrome.runtime.Port | undefined, reconnectTimer: ReturnType<typeof setTimeout> | undefined, retryDelay = 250, nextConnect = 0;
@@ -457,6 +458,44 @@ async function resolvePoint(tab: number, at: { x: number; y: number }, check: Ch
     frameUrl = child.url || here.frameUrl;
   }
   throw new Error('That point is inside more than four nested documents; click it with a selector inside the frame instead');
+}
+// While an agent's input runs in a tab the owner is not looking at, a tab the page asks
+// for opens behind his work instead of bringing Chrome to the front (popups.ts).
+const NEW_CONTEXT_MS = 10000, NEW_CONTEXT_WAIT_MS = 500;
+// A frame that never answers (still loading, or a busy renderer) must not hold up the input.
+const bounded = <T>(work: Promise<T>, fallback: T) => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([work.catch(() => fallback), new Promise<T>(resolve => { timer = setTimeout(() => resolve(fallback), NEW_CONTEXT_WAIT_MS); })])
+    .finally(() => clearTimeout(timer));
+};
+async function catchNewContexts(tab: number) {
+  const nonce = crypto.randomUUID(), target = { tabId: tab, allFrames: true };
+  await bounded(Promise.all([
+    chrome.scripting.executeScript({ target, injectImmediately: true, world: 'MAIN', func: hookWindowOpen, args: [nonce, NEW_CONTEXT_MS] }),
+    chrome.scripting.executeScript({ target, injectImmediately: true, world: 'ISOLATED', func: armNewContexts, args: [nonce, NEW_CONTEXT_MS] }),
+  ]).then(() => true), false);
+  return nonce;
+}
+// Runs after the input reached the page, so it never fails the action: a failed action
+// invites a retry, and a retried click would land twice.
+async function openCaughtContexts(tab: number, nonce: string): Promise<{ tab: number; url: string }[]> {
+  try { return await openCaught(tab, nonce); } catch { return []; }
+}
+async function openCaught(tab: number, nonce: string) {
+  const target = { tabId: tab, allFrames: true };
+  const frames = await bounded(chrome.scripting.executeScript({ target, injectImmediately: true, world: 'ISOLATED', func: collectNewContexts, args: [nonce] }), []);
+  const url = frames.flatMap(frame => Array.isArray(frame.result) ? frame.result : []).find((value): value is string => typeof value === 'string' && /^https?:/i.test(value));
+  if (!url) return [];
+  const opener = await chrome.tabs.get(tab).catch(() => undefined);
+  const opened = await agentWindow.createTab({ url, active: false, openerTabId: tab,
+    ...(opener ? { windowId: opener.windowId, index: opener.index + 1 } : {}) });
+  if (opened.id === undefined) return [];
+  if (opener && opener.groupId !== chrome.tabGroups.TAB_GROUP_ID_NONE) await chrome.tabs.group({ groupId: opener.groupId, tabIds: [opened.id] }).catch(() => {});
+  return [{ tab: opened.id, url }];
+}
+function withOpened<T extends { changed: boolean }>(value: T, opened: { tab: number; url: string }[]) {
+  if (!opened.length) return value;
+  return { ...value, changed: true, opened, note: `The page opened ${opened[0].url}; Gaddi opened it as background tab ${opened[0].tab} so Chrome stayed behind the owner's work (a download closes that tab by itself). If the page needs its own popup, such as a sign-in window that reports back, show this tab and click again once the owner has it in front.` };
 }
 async function waitOnTab(tab: number, params: ChromeParams, scope: Deadline) {
   const args = waitParams(params), start = Date.now(), end = start + args.timeout!;
@@ -1264,8 +1303,12 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
     });
     // Set when a click's press and release both reached Chrome before a session ended.
     let handed = false;
+    // Set when a background click is armed to catch a tab the page asks for (popups.ts).
+    let caught: string | undefined;
+    const opened = async <T extends { changed: boolean }>(value: T) => caught ? withOpened(value, await openCaughtContexts(tab, caught)) : value;
     // A click is delivered as a person's own: pointer move, press, release, in one breath.
     const press = async (send: CDPSend, point: { x: number; y: number }) => {
+      if (background /* NEW_CONTEXT_GUARD_TEST_POINT */) caught = await catchNewContexts(tab);
       const halves = await Promise.allSettled((['mousePressed', 'mouseReleased'] as const)
         .map(type => send('Input.dispatchMouseEvent', { type, ...point, button: 'left', clickCount: 1 })));
       const failed = halves.find(half => half.status === 'rejected');
@@ -1273,10 +1316,10 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
       handed = halves.every(half => half.status === 'fulfilled' || !unsent(half.reason));
       throw failed.reason;
     };
-    const handedNote = (error: unknown) => {
+    const handedNote = async (error: unknown) => {
       if (!handed || !isForeignFrameError(error)) throw error;
       route.note = "Another extension's frame opened as the click went in and Chrome stopped Gaddi's debugger after both press and release were sent; look to confirm the result";
-      return { ...result, clicked: true, changed: true };
+      return opened({ ...result, clicked: true, changed: true });
     };
     // A click at a point the user saw: the point goes to Chrome as it is, and the element the
     // gates judged is read again from that same point immediately before the press.
@@ -1295,7 +1338,7 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
       const nestedBefore = target.frameId === undefined ? undefined : target.target.signature;
       const nestedAfter = nestedBefore === undefined ? undefined
         : await onPage(tab, 'snapshot', { frameId: target.frameId }, check).then(after => after.signature).catch(() => undefined);
-      return { ...result, clicked: true, ...observed, ...(nestedAfter !== undefined && nestedAfter !== nestedBefore ? { changed: true } : {}) };
+      return opened({ ...result, clicked: true, ...observed, ...(nestedAfter !== undefined && nestedAfter !== nestedBefore ? { changed: true } : {}) });
     }).catch(handedNote);
     if (action === 'click' || action === 'hover') return trusted(async send => {
       const measured = await onPage(tab, action === 'hover' ? 'hoverPoint' : 'clickPoint', params, check);
@@ -1313,8 +1356,8 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
         }
         await press(send, point);
       }
-      return { ...result, [action === 'click' ? 'clicked' : 'hovered']: true,
-        ...await afterInput(tab, measured, result.url, scope, false, params.frameId) };
+      return opened({ ...result, [action === 'click' ? 'clicked' : 'hovered']: true,
+        ...await afterInput(tab, measured, result.url, scope, false, params.frameId) });
     }).catch(handedNote);
     if (action === 'type') {
       if (typeof params.text !== 'string') throw new Error('text must be a string');
@@ -1355,10 +1398,12 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
         if (params.frameId !== undefined && !(await onPage(tab, 'pressFocus', {}, check)).embedded)
           throw new Error('That embedded document does not hold the focus; type into it or click inside it first, then press');
         const before = await onPage(tab, 'pressCheck', params, check);
+        const caught = background ? await catchNewContexts(tab) : undefined;
         await send('Input.dispatchKeyEvent', { type: 'keyDown', ...event });
         const { text, unmodifiedText, ...up } = event;
         await send('Input.dispatchKeyEvent', { type: 'keyUp', ...up });
-        return { ...result, pressed: true, ...await afterInput(tab, before, result.url, scope, false, params.frameId) };
+        const observed = { ...result, pressed: true, ...await afterInput(tab, before, result.url, scope, false, params.frameId) };
+        return caught ? withOpened(observed, await openCaughtContexts(tab, caught)) : observed;
       });
     }
   });

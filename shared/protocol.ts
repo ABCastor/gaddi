@@ -210,9 +210,10 @@ export interface BrokerResults {
   look: TextPage;
   close: CloseResult;
   screenshot: ScreenshotResult;
-  click: InputResult & { clicked: boolean };
+  // opened: a tab the page asked for during a background click, opened behind the owner's work.
+  click: InputResult & { clicked: boolean; opened?: { tab: number; url: string }[] };
   type: InputResult & { typed: boolean };
-  press: InputResult & { pressed: boolean };
+  press: InputResult & { pressed: boolean; opened?: { tab: number; url: string }[] };
   select: InputResult & { selected: boolean };
   scroll: InputResult & { scrolled: boolean; position?: { before: ScrollOffset; after: ScrollOffset } };
   hover: InputResult & { hovered: boolean };

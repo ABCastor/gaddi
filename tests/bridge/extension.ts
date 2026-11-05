@@ -30,6 +30,7 @@ import { versionPage, instrumentVersion } from './version-page.ts';
 import { pageStateRead, pageStateInput } from './page-state.ts';
 import { pageRecovery } from './page-recovery.ts';
 import { nativeInput, typeReplacement } from './native-input.ts';
+import { newContexts } from './popups.ts';
 import { largeFixture, largePage, instrumentLargeSignature, guardedBenchmark } from './large-page.ts';
 import { restartDeadline, restartInstrumentation } from './restart-deadline.ts';
 import { requireHeadless, watchHeadless } from './background.ts';
@@ -130,6 +131,13 @@ try {
     assert.equal(source.split(wheel).length, 3, 'the page wheel and the element wheel both send dx');
     fs.writeFileSync(bg, source.replaceAll(wheel, 'deltaX: 0'));
   }
+  if (process.env.GADDI_BRIDGE_BREAK_NEW_CONTEXT === '1') {
+    // Disposable copy only: background clicks stop catching the tabs pages open.
+    const source = fs.readFileSync(bg, 'utf8');
+    const marker = 'background /* NEW_CONTEXT_GUARD_TEST_POINT */';
+    assert.equal(source.split(marker).length, 2, 'one new-context guard in the click path');
+    fs.writeFileSync(bg, source.replace(marker, 'false'));
+  }
   if (brokenInputFocus) {
     const source = fs.readFileSync(bg, 'utf8');
     // Input actions only: reads and eval share the same switch to draw a hidden tab,
@@ -218,6 +226,9 @@ try {
       res.setHeader('Content-Type', 'text/html; charset=utf-8'); res.end(largeFixture()); return;
     }
     if (req.url === '/blocked-started') { blocked++; res.writeHead(204); res.end(); return; }
+    if (req.url === '/attachment') {
+      res.setHeader('Content-Type', 'application/octet-stream'); res.setHeader('Content-Disposition', 'attachment; filename="gaddi-fixture.bin"'); res.end('fixture'); return;
+    }
     if (req.url === '/redirect') { res.writeHead(302, { Location: '/slow' }); res.end(); return; }
     if (req.url === '/fail') { req.socket.destroy(); return; }
     if (req.url === '/stall') { stalled++; return; }
@@ -231,7 +242,7 @@ try {
       return;
     }
     const file = (req.url?.split(/[?#]/)[0] || '').replace(/^\//, '');
-    const filename = ['autonomy.html', 'foreign.html', 'upload.html', 'version.html', 'approval.html', 'state.html', 'actions.html', 'hscroll.html', 'frames.html', 'input.html', 'busy.html', 'bands.html', 'next.html'].includes(file)
+    const filename = ['autonomy.html', 'foreign.html', 'upload.html', 'version.html', 'approval.html', 'state.html', 'actions.html', 'hscroll.html', 'frames.html', 'input.html', 'popups.html', 'busy.html', 'bands.html', 'next.html'].includes(file)
       ? file : req.url === '/' ? 'index.html' : null;
     if (!filename) { res.writeHead(404); res.end(); return; }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -719,6 +730,7 @@ try {
     await typeReplacement({ context, daemon, url, pass });
     await autonomousSetup({ context, daemon, url, pass });
     await nativeInput({ context, worker, daemon, url, pass });
+    await newContexts({ context, worker, daemon, url, pass });
     await pageStateInput({ context, worker, daemon, url, pass });
     await largePage({ context, worker, daemon, url, pass });
     await versionPage({ context, worker, daemon, url, pass });
