@@ -598,7 +598,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   if (method === 'select') {
     if (typeof params.value !== 'string') throw new Error('value must be a string'); args.value = params.value;
   }
-  // DOWNLOAD: the capture adds a hold only when the owner's policy sets hold.downloads (default off).
+  // DOWNLOAD: the capture adds a hold only when policy sets hold.downloads (default off).
   // The original action's stricter deny/hold is always retained; a held click signs the file path too.
   if (download) { check = strictest(check, checkDownload(policy)); detail += ` -> ${download} (up to 20 MB)`; }
   await gate({ kind: method, meta, detail, check, approval: params.approval, targetSelector, remoteScope,

@@ -4,7 +4,7 @@ import path from 'node:path';
 import { GateError } from './approvals.ts';
 import type { PolicyCheck } from './policy.ts';
 
-// DOWNLOAD-CAPTURE: capturing a page's own export adds no hold unless the owner's policy sets
+// DOWNLOAD-CAPTURE: capturing a page's own export adds no hold unless policy sets
 // hold.downloads to true. This only decides whether the capture itself asks; the click keeps its
 // own deny/hold, and downloadTarget, the size cap, the same-site and top-document checks always apply.
 export function checkDownload(policy: {off:boolean; hold:{downloads?:boolean}}): PolicyCheck {

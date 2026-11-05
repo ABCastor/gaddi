@@ -13,7 +13,7 @@ import type { FakeDaemon } from '../bridge/fake-daemon.ts';
 
 // Production broker -> native transport relay -> real extension -> local HTTP fixture.
 // Only op and owner authentication are stand-ins. No installed service, vault or real account.
-// downloadHold: start the broker with the owner's opt-in hold.downloads overlay and exercise only
+// downloadHold: start the broker with an opt-in hold.downloads overlay and exercise only
 // the held capture path. Without it, the default policy is exercised: captures do not ask.
 export async function exerciseHelperBroker({site,daemon,state,username,password,reset,downloadHold=false}: {
   site:string; daemon:Pick<FakeDaemon,'request'>; state:string; username:string; password:string; reset:()=>void; downloadHold?:boolean;
@@ -125,7 +125,7 @@ else console.log(${JSON.stringify(JSON.stringify([{label:'username',value:userna
     reset();const exportTab=await action('open',{url:site+'/download'});assert.ok(isRecord(exportTab)&&typeof exportTab.id==='number');
     const request={tab:exportTab.id,selector:'#export',download:output};
     if(downloadHold) {
-      // The owner's opt-in hold: the capture asks, and the signed card binds the exact path.
+      // Opt-in hold: the capture asks, and the signed card binds the exact path.
       const captureHeld=await call('click',request);assert.equal(captureHeld.error?.code,'held','ASSERT_DOWNLOAD_HOLD');assert.equal(fs.existsSync(output),false);
       const captureId=captureHeld.error!.approval!.id;await approve(captureId);
       // An approved path cannot be swapped to a different local target.
