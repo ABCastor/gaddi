@@ -35,6 +35,11 @@ try {
   // DOWNLOAD-CAPTURE: no hold by default; the owner can turn the hold back on in policy.json.
   fs.rmSync(overlay, { force: true });
   assert.equal(checkDownload(loadPolicy({ overlay, off: false })).outcome, 'allow', 'ASSERT_DOWNLOAD_DEFAULT_NO_HOLD');
+  // An existing owner overlay written before the switch (no hold section) gets the new default.
+  write({ deny: { type_into: [] }, uploads: { remember: [] }, zones: { sites: [] }, approvals: { ttl_minutes: 10 } });
+  const existing = loadPolicy({ overlay, off: false });
+  assert.equal(existing.sources.at(-1), overlay);
+  assert.equal(checkDownload(existing).outcome, 'allow', 'ASSERT_DOWNLOAD_EXISTING_OVERLAY_NO_HOLD');
   write({ hold: { downloads: true } });
   const holding = loadPolicy({ overlay, off: false });
   assert.equal(checkDownload(holding).outcome, 'hold', 'ASSERT_DOWNLOAD_OPT_IN_HOLD');
