@@ -1,10 +1,10 @@
 // Tabs and popups a page opens from an agent's click in a background tab.
 // Chrome brings its window to the front for every tab a page opens, background
-// dispositions included (measured 27 Oct on Chrome 153), which pulls the owner
-// out of the app he is using. A tab the extension creates with active:false
-// does not. So while an agent's click or key is in flight, the page's request
-// for a new tab is caught and handed to the extension, which opens the same
-// address behind the owner's tab.
+// dispositions included (Chrome 153 and later), which pulls the user out of
+// the app in use. A tab the extension creates with active:false does not.
+// So while an agent's click or key is in flight, the page's request for a new
+// tab is caught and handed to the extension, which opens the same address
+// behind the user's tab.
 //
 // Each function below is injected with chrome.scripting.executeScript, so it
 // must stay self-contained: no imports, no module-level names.

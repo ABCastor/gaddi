@@ -459,8 +459,8 @@ async function resolvePoint(tab: number, at: { x: number; y: number }, check: Ch
   }
   throw new Error('That point is inside more than four nested documents; click it with a selector inside the frame instead');
 }
-// While an agent's input runs in a tab the owner is not looking at, a tab the page asks
-// for opens behind his work instead of bringing Chrome to the front (popups.ts).
+// While an agent's input runs in a tab the user is not looking at, a tab the page asks
+// for opens behind their work instead of bringing Chrome to the front (popups.ts).
 const NEW_CONTEXT_MS = 10000, NEW_CONTEXT_WAIT_MS = 500;
 // A frame that never answers (still loading, or a busy renderer) must not hold up the input.
 const bounded = <T>(work: Promise<T>, fallback: T) => {
@@ -495,7 +495,7 @@ async function openCaught(tab: number, nonce: string) {
 }
 function withOpened<T extends { changed: boolean }>(value: T, opened: { tab: number; url: string }[]) {
   if (!opened.length) return value;
-  return { ...value, changed: true, opened, note: `The page opened ${opened[0].url}; Gaddi opened it as background tab ${opened[0].tab} so Chrome stayed behind the owner's work (a download closes that tab by itself). If the page needs its own popup, such as a sign-in window that reports back, show this tab and click again once the owner has it in front.` };
+  return { ...value, changed: true, opened, note: `The page opened ${opened[0].url}; Gaddi opened it as background tab ${opened[0].tab} so Chrome stayed behind the user's work (a download closes that tab by itself). If the page needs its own popup, such as a sign-in window that reports back, show this tab and click again once the user has it in front.` };
 }
 async function waitOnTab(tab: number, params: ChromeParams, scope: Deadline) {
   const args = waitParams(params), start = Date.now(), end = start + args.timeout!;

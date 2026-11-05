@@ -210,7 +210,7 @@ export interface BrokerResults {
   look: TextPage;
   close: CloseResult;
   screenshot: ScreenshotResult;
-  // opened: a tab the page asked for during a background click, opened behind the owner's work.
+  // opened: a tab the page asked for during a background click, opened behind the user's work.
   click: InputResult & { clicked: boolean; opened?: { tab: number; url: string }[] };
   type: InputResult & { typed: boolean };
   press: InputResult & { pressed: boolean; opened?: { tab: number; url: string }[] };

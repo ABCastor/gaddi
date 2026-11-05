@@ -8,7 +8,7 @@ import { callsFor } from './extension-types.ts';
 import { waitFor } from './fake-daemon.ts';
 
 // Chrome raises its window for any tab a page opens, so a background agent click
-// must open the page's new tab itself, behind the owner's tab (extension/popups.ts).
+// must open the page's new tab itself, behind the user's tab (extension/popups.ts).
 export async function newContexts({ context, worker, daemon, url, pass }: {
   context: BrowserContext; worker: Worker; daemon: FakeDaemon; url: string; pass: (label: string) => void;
 }) {
