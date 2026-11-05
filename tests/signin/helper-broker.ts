@@ -13,8 +13,10 @@ import type { FakeDaemon } from '../bridge/fake-daemon.ts';
 
 // Production broker -> native transport relay -> real extension -> local HTTP fixture.
 // Only op and owner authentication are stand-ins. No installed service, vault or real account.
-export async function exerciseHelperBroker({site,daemon,state,username,password,reset}: {
-  site:string; daemon:Pick<FakeDaemon,'request'>; state:string; username:string; password:string; reset:()=>void;
+// downloadHold: start the broker with the owner's opt-in hold.downloads overlay and exercise only
+// the held capture path. Without it, the default policy is exercised: captures do not ask.
+export async function exerciseHelperBroker({site,daemon,state,username,password,reset,downloadHold=false}: {
+  site:string; daemon:Pick<FakeDaemon,'request'>; state:string; username:string; password:string; reset:()=>void; downloadHold?:boolean;
 }) {
   const repo=path.resolve(import.meta.dirname,'../..'), home=path.join(state,'helper-broker'); fs.mkdirSync(home);
   const socket=path.join(os.tmpdir(),`gaddi-helper-broker-${process.pid}.sock`), lock=path.join(home,'locked'), saves=path.join(home,'saves');
@@ -31,15 +33,25 @@ else console.log(${JSON.stringify(JSON.stringify([{label:'username',value:userna
 `,{mode:0o700});
   const env={...process.env,PATH:`${home}:${process.env.PATH}`,GADDI_HOME:home,GADDI_SOCKET:socket,
     GADDI_AUDIT:path.join(home,'audit.jsonl'),GADDI_STATE:path.join(home,'state.json'),GADDI_APPROVER_PUB:path.join(home,'approver.pub'),GADDI_APP_LAUNCHER:'/usr/bin/true',GADDI_POLICY_OFF:process.env.GADDI_HELPER_POLICY_OFF==='1'?'1':'0'};
+  if(downloadHold)fs.writeFileSync(path.join(home,'policy.json'),JSON.stringify({hold:{downloads:true}}));
   let entry=path.join(repo,'daemon/daemon.mjs');
-  if(process.env.GADDI_HELPER_BREAK_CREATE_HOLD==='1') {
+  // Falsification mutants: each removes one guarantee so its assertion must go red.
+  const mutations:Record<string,[string,string,string]>={
+    'create-hold':['daemon/daemon.ts',"creating ? { outcome: 'hold', reason: 'create and save a new 1Password login' }","creating ? { outcome: 'allow' }"],
+    'download-always-hold':['daemon/downloads.ts',"!policy.off && policy.hold.downloads === true ?","!policy.off ?"],
+    'download-ignores-switch':['daemon/downloads.ts',"!policy.off && policy.hold.downloads === true ?","false ?"],
+    'download-drops-click-hold':['daemon/daemon.ts',"check = strictest(check, checkDownload(policy));","check = checkDownload(policy);"],
+  };
+  const mutation=process.env.GADDI_HELPER_BREAK_CREATE_HOLD==='1'?'create-hold':process.env.GADDI_HELPER_MUTATE;
+  if(mutation) {
+    assert.ok(Object.hasOwn(mutations,mutation),`unknown mutation ${mutation}`);
+    const [relative,marker,replacement]=mutations[mutation]!;
     const mutant=path.join(home,'mutant');fs.mkdirSync(mutant);
     for(const dir of ['daemon','shared','policy'])fs.cpSync(path.join(repo,dir),path.join(mutant,dir),{recursive:true});
     fs.writeFileSync(path.join(mutant,'package.json'),JSON.stringify({type:'module'}));
-    const file=path.join(mutant,'daemon/daemon.ts'),source=fs.readFileSync(file,'utf8');
-    const marker="creating ? { outcome: 'hold', reason: 'create and save a new 1Password login' }";
-    assert.equal(source.split(marker).length,2,'signup hold mutation point');
-    fs.writeFileSync(file,source.replace(marker,"creating ? { outcome: 'allow' }"));
+    const file=path.join(mutant,relative),source=fs.readFileSync(file,'utf8');
+    assert.equal(source.split(marker).length,2,`${mutation} mutation point`);
+    fs.writeFileSync(file,source.replace(marker,replacement));
     entry=path.join(mutant,'daemon/daemon.mjs');
   }
   const broker=spawn(process.execPath,[entry],{env,stdio:['ignore','ignore','pipe']});
@@ -69,6 +81,8 @@ else console.log(${JSON.stringify(JSON.stringify([{label:'username',value:userna
     assert.equal(reply.error,undefined,`helper action ${method}`);return reply.result;
   }
   const output=path.join(os.tmpdir(),`gaddi-helper-export-${crypto.randomUUID()}.zip`);
+  // Outside Downloads and temp: refused before any write (the state dir itself lives under temp).
+  const outsideOutput=path.join(os.homedir(),`gaddi-helper-outside-${crypto.randomUUID()}.zip`);
   try {
     for(let n=0;n<200&&!fs.existsSync(socket)&&broker.exitCode===null;n++)await pause(20);
     assert.ok(fs.existsSync(socket),'helper broker started');
@@ -79,7 +93,7 @@ else console.log(${JSON.stringify(JSON.stringify([{label:'username',value:userna
       void daemon.request(request.method,request.params,25000,undefined,request.deadline).then(reply=>bridge?.write(JSON.stringify({...reply,id:request.id})+'\n'));
     }});
     for(let n=0;n<100;n++){const status=await result('bridge.status');if(isRecord(status)&&status.connected)break;await pause(20);}
-    if(!process.env.GADDI_HELPER_ONLY_DOWNLOAD) {
+    if(!process.env.GADDI_HELPER_ONLY_DOWNLOAD&&!downloadHold) {
     reset();
     const opened=await action('open',{url:site+'/signup',group:'Helper fixture'});assert.ok(isRecord(opened)&&typeof opened.id==='number');const tab=opened.id;
     const create={title:'Helper fixture',username,vault:'aaaaaaaaaaaaaaaaaaaaaaaaaa'};
@@ -110,18 +124,40 @@ else console.log(${JSON.stringify(JSON.stringify([{label:'username',value:userna
 
     reset();const exportTab=await action('open',{url:site+'/download'});assert.ok(isRecord(exportTab)&&typeof exportTab.id==='number');
     const request={tab:exportTab.id,selector:'#export',download:output};
-    const captureHeld=await call('click',request);assert.equal(captureHeld.error?.code,'held','ASSERT_DOWNLOAD_HOLD');assert.equal(fs.existsSync(output),false);
-    const captureId=captureHeld.error!.approval!.id;await approve(captureId);
-    // An approved path cannot be swapped to a different local target.
-    const swapped=await call('click',{...request,download:output+'.other',approval:captureId});assert.ok(swapped.error);
-    assert.equal(fs.existsSync(output+'.other'),false);
-    // A failed binding consumes no action; obtain a new exact approval for the intended path.
-    const saved=await action('click',request);assert.ok(isRecord(saved)&&saved.downloaded===true,'ASSERT_HELPER_DOWNLOAD');
-    assert.equal(fs.readFileSync(output,'utf8'),'fixture generated export');
-    await result('close',{tabs:[exportTab.id]});
-    console.log('PASS public broker download: exact path held, swapped destination refused, generated ZIP saved on disk');
+    if(downloadHold) {
+      // The owner's opt-in hold: the capture asks, and the signed card binds the exact path.
+      const captureHeld=await call('click',request);assert.equal(captureHeld.error?.code,'held','ASSERT_DOWNLOAD_HOLD');assert.equal(fs.existsSync(output),false);
+      const captureId=captureHeld.error!.approval!.id;await approve(captureId);
+      // An approved path cannot be swapped to a different local target.
+      const swapped=await call('click',{...request,download:output+'.other',approval:captureId});assert.ok(swapped.error);
+      assert.equal(fs.existsSync(output+'.other'),false);
+      // A failed binding consumes no action; obtain a new exact approval for the intended path.
+      const saved=await action('click',request);assert.ok(isRecord(saved)&&saved.downloaded===true,'ASSERT_HELPER_DOWNLOAD');
+      assert.equal(fs.readFileSync(output,'utf8'),'fixture generated export');
+      await result('close',{tabs:[exportTab.id]});
+      console.log('PASS public broker download (hold.downloads on): exact path held, swapped destination refused, generated ZIP saved on disk');
+    } else {
+      // Default policy: an ordinary export click with a capture returns the file, no card.
+      const saved=await call('click',request);
+      assert.equal(saved.error,undefined,'ASSERT_DOWNLOAD_NO_HOLD: '+JSON.stringify(saved.error));
+      assert.ok(isRecord(saved.result)&&saved.result.downloaded===true&&saved.result.path===fs.realpathSync(output),'ASSERT_HELPER_DOWNLOAD');
+      assert.equal(fs.readFileSync(output,'utf8'),'fixture generated export');
+      const none=await result('approvals.list');assert.ok(isRecord(none)&&Array.isArray(none.pending)&&none.pending.length===0,'ASSERT_DOWNLOAD_NO_CARD');
+      // The file limits still apply without a hold: no overwrite, no path outside Downloads/temp.
+      const again=await call('click',request);assert.equal(again.error?.code,'denied','ASSERT_DOWNLOAD_NO_OVERWRITE');
+      assert.equal(fs.readFileSync(output,'utf8'),'fixture generated export');
+      const outside=await call('click',{...request,download:outsideOutput});assert.equal(outside.error?.code,'denied','ASSERT_DOWNLOAD_CONFINED');
+      assert.equal(fs.existsSync(outsideOutput),false);
+      await result('close',{tabs:[exportTab.id]});
+      // The click's own hold survives a capture: an export button named as a delete still asks.
+      const deleteTab=await action('open',{url:site+'/download?delete'});assert.ok(isRecord(deleteTab)&&typeof deleteTab.id==='number');
+      const heldClick=await call('click',{tab:deleteTab.id,selector:'#export',download:output+'.delete'});
+      assert.equal(heldClick.error?.code,'held','ASSERT_DOWNLOAD_KEEPS_CLICK_HOLD');assert.equal(fs.existsSync(output+'.delete'),false);
+      await result('close',{tabs:[deleteTab.id]});
+      console.log('PASS public broker download (default): generated ZIP saved with no card; overwrite and outside paths refused; a held click still asks');
+    }
 
-    if(!process.env.GADDI_HELPER_ONLY_DOWNLOAD) {
+    if(!process.env.GADDI_HELPER_ONLY_DOWNLOAD&&!downloadHold) {
     reset();const lockedTab=await action('open',{url:site+'/login'});assert.ok(isRecord(lockedTab)&&typeof lockedTab.id==='number');
     fs.writeFileSync(lock,'locked');const before=Date.now();
     const unavailable=await result('signin',{tab:lockedTab.id});assert.ok(isRecord(unavailable)&&unavailable.outcome==='needs_you'&&unavailable.step==='1password');
@@ -134,6 +170,6 @@ else console.log(${JSON.stringify(JSON.stringify([{label:'username',value:userna
     bridge?.destroy();for(const client of clients)client.destroy();
     const exited=once(broker,'close');broker.kill('SIGTERM');const timer=setTimeout(()=>broker.kill('SIGKILL'),5000);await exited;clearTimeout(timer);
     safe(diagnostics);
-    if(fs.existsSync(output))fs.unlinkSync(output);
+    for(const file of [output,output+'.other',output+'.delete',outsideOutput])if(fs.existsSync(file))fs.unlinkSync(file);
   }
 }

@@ -94,7 +94,7 @@ const TOOLS: ToolDefinition[] = [
   tool('open', 'Open background URL in Gaddi; foreground selects it.', { url: S, group: S, foreground: B, approval, why }, ['url'], 'open', pageJSON),
   tool('goto', 'Navigate a tab to a URL.', { tab, url: S, approval, why }, ['url'], 'goto', pageJSON),
   tool('back', 'Go back in a tab.', { tab }, [], 'back', pageJSON),
-  tool('click', 'Click selector/at:{x,y}; version guards stale. download:path captures blob to Downloads/temp (held,20MB).', { tab, version, selector: S, at, frameId, download: S, approval, why }),
+  tool('click', 'Click selector/at:{x,y}; version guards stale. download:path captures blob to Downloads/temp (20MB).', { tab, version, selector: S, at, frameId, download: S, approval, why }),
   tool('type', 'Replace text; mode:append adds, preserving chips/mentions. Passwords denied.', { tab, version, selector: S, text: S, mode: { ...S, enum: ['replace', 'append'] }, frameId }, ['selector', 'text']),
   tool('signin', '1Password. create:{title,username,vault}: new login; signup:true: fill existing. Signup never submits.', { tab, item: S, signup: B, create: { type: 'object', properties: { title: S, username: S, vault: S }, required: ['title','username','vault'], additionalProperties: false }, approval, why }),
   tool('press', 'Press key; frameId requires focus in that document.', { tab, version, key: S, frameId, approval, why }, ['key']),

@@ -115,6 +115,7 @@
       "/disdett"
     ],
     "uploads": true,
+    "downloads": false,
     "keys": [
       {
         "url": "mail\\.google\\.com",

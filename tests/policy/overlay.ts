@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { loadPolicy, checkEval, checkNavigation, checkClick, checkPress, checkType } from '../../daemon/policy.ts';
+import { checkDownload } from '../../daemon/downloads.ts';
 
 const root = path.resolve('tests/.state');
 fs.mkdirSync(root, { recursive: true });
@@ -30,6 +31,22 @@ try {
     assert.throws(() => loadPolicy({ overlay, off: false }), /Invalid policy overlay/, 'ASSERT_BROWSER_POLICY_INVALID');
   }
   pass('browser-policy-defaults-merge-and-reject-invalid-options');
+
+  // DOWNLOAD-CAPTURE: no hold by default; the owner can turn the hold back on in policy.json.
+  fs.rmSync(overlay, { force: true });
+  assert.equal(checkDownload(loadPolicy({ overlay, off: false })).outcome, 'allow', 'ASSERT_DOWNLOAD_DEFAULT_NO_HOLD');
+  write({ hold: { downloads: true } });
+  const holding = loadPolicy({ overlay, off: false });
+  assert.equal(checkDownload(holding).outcome, 'hold', 'ASSERT_DOWNLOAD_OPT_IN_HOLD');
+  assert.equal(holding.hold.uploads, true, 'a partial hold overlay keeps the other defaults');
+  assert.ok(holding.hold.verbs.includes('delete'), 'a partial hold overlay keeps the hold verbs');
+  write({ hold: { downloads: false } });
+  assert.equal(checkDownload(loadPolicy({ overlay, off: false })).outcome, 'allow');
+  for (const downloads of ['yes', 1, null]) {
+    write({ hold: { downloads } });
+    assert.throws(() => loadPolicy({ overlay, off: false }), /Invalid policy overlay/, 'ASSERT_DOWNLOAD_POLICY_INVALID');
+  }
+  pass('download-hold-off-by-default-owner-switch-and-invalid-values');
 
   fs.copyFileSync('tests/fixtures/eval-overlay.json', overlay);
   const policy = loadPolicy({ overlay, off: false });

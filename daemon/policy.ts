@@ -8,7 +8,7 @@ import { isRecord, parseJSON, errorMessage } from '../shared/protocol.ts';
 
 interface PolicyData {
  version: number; comment?: string;
- hold: { verbs: string[]; url_patterns: string[]; keys: { url: string; keys: string[] }[]; uploads?: boolean; extensions?: { disable?: boolean; uninstall?: boolean } };
+ hold: { verbs: string[]; url_patterns: string[]; keys: { url: string; keys: string[] }[]; uploads?: boolean; downloads?: boolean; extensions?: { disable?: boolean; uninstall?: boolean } };
  deny: { comment?: string; verbs_on_hosts: { host: string; verbs: string[] }[]; type_into: string[]; eval_patterns: string[] };
  approvals: { ttl_minutes: number; wait_minutes?: number; grant_rules_max?: number };
  signin?: { remember: string[] };
@@ -59,7 +59,7 @@ function sendReason(value: unknown): boolean {
 }
 const schema: Schema = {
   version: v => v === 3, comment: string,
-  hold: { verbs: [text], url_patterns: [pattern], keys: [{ url: pattern, keys: [text] }], uploads: v => typeof v === 'boolean',
+  hold: { verbs: [text], url_patterns: [pattern], keys: [{ url: pattern, keys: [text] }], uploads: v => typeof v === 'boolean', downloads: v => typeof v === 'boolean',
     extensions: { disable: v => typeof v === 'boolean', uninstall: v => typeof v === 'boolean' } },
   deny: { comment: string, verbs_on_hosts: [{ host: pattern, verbs: [text] }], type_into: [text], eval_patterns: [pattern] },
   approvals: { ttl_minutes: v => typeof v === 'number' && Number.isFinite(v) && v > 0,

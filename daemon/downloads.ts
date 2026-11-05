@@ -4,8 +4,11 @@ import path from 'node:path';
 import { GateError } from './approvals.ts';
 import type { PolicyCheck } from './policy.ts';
 
-export function checkDownload(policy: {off:boolean}): PolicyCheck {
-  return policy.off ? {outcome:'allow'} : {outcome:'hold',reason:'capture a page-generated download'};
+// DOWNLOAD-CAPTURE: capturing a page's own export adds no hold unless the owner's policy sets
+// hold.downloads to true. This only decides whether the capture itself asks; the click keeps its
+// own deny/hold, and downloadTarget, the size cap, the same-site and top-document checks always apply.
+export function checkDownload(policy: {off:boolean; hold:{downloads?:boolean}}): PolicyCheck {
+  return !policy.off && policy.hold.downloads === true ? {outcome:'hold',reason:'capture a page-generated download'} : {outcome:'allow'};
 }
 
 export const DOWNLOAD_LIMIT = 20 * 1024 * 1024;

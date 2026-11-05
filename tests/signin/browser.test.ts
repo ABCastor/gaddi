@@ -44,7 +44,7 @@ const server = http.createServer((req, res) => {
     return;
   }
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
-  if (req.url?.startsWith('/download')) { res.end(`<!doctype html><title>Export fixture</title><button id="export">Export ZIP</button><script>
+  if (req.url?.startsWith('/download')) { res.end(`<!doctype html><title>Export fixture</title><button id="export">${req.url.includes('delete')?'Delete export':'Export ZIP'}</button><script>
     document.querySelector('button').onclick=()=>{const a=document.createElement('a');a.download='page-export.zip';a.href=URL.createObjectURL(new Blob(['fixture generated export'],{type:'application/zip'}));document.body.append(a);a.click();};
     </script>`); return; }
   if (req.url?.includes('signup') && !signedIn) { res.end(fs.readFileSync(path.join(repo,'tests/signin/fixtures/signup.html'))); return; }

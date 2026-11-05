@@ -4,7 +4,8 @@ import path from 'node:path';
 import assert from 'node:assert/strict';
 import { exerciseHelperBroker } from '../signin/helper-broker.ts';
 import type { ChromeParams } from '../../shared/protocol.ts';
-const state=fs.mkdtempSync(path.join(os.tmpdir(),'gaddi-helper-fake-'));
+const states:string[]=[];
+const freshState=()=>{const dir=fs.mkdtempSync(path.join(os.tmpdir(),'gaddi-helper-fake-'));states.push(dir);return dir;};
 const site='http://127.0.0.1:18987';let phase='form',url=site+'/signup',next=0;
 const tabs:{id:number;url:string}[]=[];
 const filled=new Map<string,string>();let capture=false;
@@ -17,7 +18,7 @@ const transport={async request(method:string,raw:object={}){
   else if(method==='chrome.signinProbe')result={url,signature:phase,username:'@username',password:'@password',confirmation:'@confirmation'};
   else if(method==='chrome.signinType'){filled.set(params.signin!.kind!,params.text!);result={typed:true};}
   else if(method==='chrome.signinSubmit')throw new Error('Signup must not use a privileged submit');
-  else if(method==='chrome.describe')result={name:url.includes('download')?'Export ZIP':'Create account',tag:'BUTTON',type:'submit',autocomplete:'',href:'',selector:params.selector,password:false,disabled:false,submitName:'',matched:[]};
+  else if(method==='chrome.describe')result={name:url.includes('delete')?'Delete export':url.includes('download')?'Export ZIP':'Create account',tag:'BUTTON',type:'submit',autocomplete:'',href:'',selector:params.selector,password:false,disabled:false,submitName:'',matched:[]};
   else if(method==='chrome.approvalCapture')result={};
   else if(method==='chrome.click'){
     if(!url.includes('download')){assert.equal(filled.get('username'),'fixture-user');assert.equal(filled.get('password'),'fixture-password');assert.equal(filled.get('confirmation'),'fixture-password');phase='complete';}
@@ -31,7 +32,11 @@ const transport={async request(method:string,raw:object={}){
   else throw new Error(`Unexpected fixture method ${method}`);
   return {id:0,result};
 }};
+// GADDI_HELPER_DOWNLOAD_PHASE=default|hold runs one policy only (for falsification runs); unset runs both.
+const downloadPhase=process.env.GADDI_HELPER_DOWNLOAD_PHASE;
+const run=(downloadHold:boolean)=>exerciseHelperBroker({site,daemon:transport,state:freshState(),username:'fixture-user',password:'fixture-password',downloadHold,reset(){phase='form';filled.clear();}});
 try {
-  await exerciseHelperBroker({site,daemon:transport,state,username:'fixture-user',password:'fixture-password',reset(){phase='form';filled.clear();}});
+  if(downloadPhase!=='hold')await run(false);
+  if(downloadPhase!=='default')await run(true);
   console.log('== helper broker contracts passed');
-} finally {fs.rmSync(state,{recursive:true,force:true});}
+} finally {for(const dir of states)fs.rmSync(dir,{recursive:true,force:true});}

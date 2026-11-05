@@ -120,7 +120,7 @@ bash tests/run-all.sh
 
 Tests use isolated state and falsify gates by removing their protection. Browser tests need Chrome for Testing; Secure Enclave checks need a desktop session. Missing prerequisites are skipped. Commit regenerated extension output after changes. [Visual sources](docs/media/README.md) are included.
 
-`browser_click` accepts `download:"/absolute/path/export.zip"` for an approved, same-origin blob/filesystem anchor export that reaches the top document. It saves a new file under Downloads or the system temporary directory, up to 20 MiB, with no overwrite. Detached anchors, other download methods and embedded documents are unsupported. See [the bounded download contract](docs/authorization.md#page-generated-downloads).
+`browser_click` accepts `download:"/absolute/path/export.zip"` for a same-origin blob/filesystem anchor export that reaches the top document. It saves a new file under Downloads or the system temporary directory, up to 20 MiB, with no overwrite. The capture does not ask for approval unless `hold.downloads` is `true` in your policy file; the click's own holds still apply. Detached anchors, other download methods and embedded documents are unsupported. See [the bounded download contract](docs/authorization.md#page-generated-downloads).
 
 When an agent's click or Enter in a tab you are not looking at makes the page open a new tab or popup, Gaddi opens that address itself as a background tab, because Chrome brings its window in front of your work for any tab a page opens. A page that needs its real popup (a sign-in window that reports back to it) gets one when that tab is in front of you.
 
