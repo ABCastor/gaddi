@@ -3,6 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 mkdir -p tests/.state/helper-evidence
 node tests/downloads/files.test.ts
+node tests/downloads/policy.test.ts
 node tests/downloads/broker.test.ts
 # Each fault removes one guarantee; the run must go red on that guarantee's own assertion.
 # name | assertion | environment
