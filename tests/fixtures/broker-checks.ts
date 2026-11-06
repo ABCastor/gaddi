@@ -40,6 +40,7 @@ const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve:
 fs.writeFileSync(publicPath, publicKey.export({ type: 'spki', format: 'pem' }));
 fs.writeFileSync(path.join(home, 'policy.json'), JSON.stringify({ ...(scenario === 'sessions' && mode !== 'own' ? { browser: { window: 'shared', show: 'attention' } } : {}), approvals: { ...(scenario === 'approval-wait' ? { wait_minutes: 1, grant_rules_max: 100 } : {}), ttl_minutes: scenario === 'approval-wait' ? 0.1 : scenario === 'approval' ? 0.03 : scenario === 'approval-picture' ? 0.1 : 10 }, deny: { type_into: ['input[type=password]', 'input[autocomplete=current-password]', '.sensitive'] } }));
 if (scenario === 'eval-overlay') fs.copyFileSync(path.join(repo, 'tests/fixtures/eval-overlay.json'), path.join(home, 'policy.json'));
+fs.writeFileSync(path.join(home, 'agent-cred'), 'agent-value-from-file\n', { mode: 0o600 });
 const env = { ...process.env, GADDI_APP_LAUNCHER: launcher, OMNIREAD_BIN: path.join(home, 'missing-omniread'), GADDI_HOME: home, GADDI_SOCKET: socket, GADDI_APPROVER_PUB: publicPath,
   // Never the user's own drop-in file, whatever his shell has set.
   GADDI_REMOTE_KEY: path.join(home, 'remote-approver.pub'),
@@ -48,7 +49,7 @@ const env = { ...process.env, GADDI_APP_LAUNCHER: launcher, OMNIREAD_BIN: path.j
   ...(scenario === 'upload' ? { HOME: person } : {}),
   // Remote approval answers uploads too, so the broker's home folder is the disposable person folder; and its
   // sign-in check finds the fake 1Password CLI first on PATH.
-  ...(scenario === 'remote-approver' ? { HOME: person, PATH: `${path.join(home, 'fake-op')}:${process.env.PATH}` } : {}),
+  ...(scenario === 'remote-approver' ? { HOME: person, PATH: `${path.join(home, 'fake-op')}:${process.env.PATH}`, GADDI_OP_TOKEN_FILE: path.join(home, 'agent-cred'), GADDI_OP_HOME: path.join(home, 'op-home') } : {}),
   // A grant "minute" is 400 ms here, so a five-minute grant can be watched ending without a long wait.
   ...(scenario === 'session-grant' ? { HOME: person, GADDI_GRANT_MINUTE_MS: '400' } : {}) };
 const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
