@@ -36,6 +36,13 @@ export function zoneAddMessage(site: string, ts: unknown) {
   return `zones.add|${site}|${ts}`;
 }
 
+// SANDBOX: turning a test zone into a sandbox needs the user's Touch ID signature over exactly this text, a message of
+// its own so that a zones.add signature can never be replayed as a sandbox. Turning it off is unsigned.
+export function sandboxAddMessage(site: string, ts: unknown) {
+  if (zoneSite(site) !== site) throw new GateError('approval-invalid', 'exact sandbox origin required');
+  return `sandbox.add|${site}|${ts}`;
+}
+
 export function sendRevokeMessage(rule: SendRule, ts: unknown) {
   if (!sendRule(rule.site, rule.kind, rule.reason)) throw new GateError('approval-invalid', 'exact send scope required');
   return `sends.revoke|${rule.site}|${rule.kind}|${rule.reason}|${ts}`;

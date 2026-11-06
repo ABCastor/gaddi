@@ -10,6 +10,8 @@ import type { ApprovalAction, StoredApprovalRef, StoredApproval, RemoteFacts, Ap
 // `decision` and `remoteKey` exist only to be written to the audit: who answered from another device and what,
 // never the signature or the nonce.
 interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: unknown; url: string }[]; upload?: { name: string; bytes?: number }; signin?: SigninResult; grantId?: string; zone?: string; reason?: string;
+  // SANDBOX and GITHUB-OWN: written to the audit beside `zone` when a sandbox or a standing allowance allowed the action.
+  sandbox?: boolean; allowance?: string;
   // The viewport point a click was aimed at, and the embedded document it fell inside. Structured,
   // already cleaned, and the only record of where a point click landed.
   point?: { x: number; y: number; frame?: string };
@@ -25,7 +27,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from './policy.ts';
+import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, setSandbox, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from './policy.ts';
 import { signinSite, listLogins, chooseLogin, runSignin, createLogin, PASSWORD_UNAVAILABLE } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
 import { redactURLs, redactURLText } from '../shared/url-redaction.ts';
@@ -33,8 +35,8 @@ import { downloadTarget, saveDownload, checkDownload, DOWNLOAD_LIMIT } from './d
 import { readUpload, UPLOAD_CHUNK } from './uploads.ts';
 import type { UploadFile } from './uploads.ts';
 import { createApprovals, GateError, approvalRef, cleanURL, cleanDetail, approvalContext } from './approvals.ts';
-import { createProofVerifier, approvalMessage, signinRevokeMessage, sendRevokeMessage, uploadRevokeMessage, zoneAddMessage } from './proof.ts';
-import { createGrants, checkGrant, checkZone, zoneCoversRule, parseGrantRequest, grantDetail, isGrantSpec, ruleString, remoteWaivable } from './grants.ts';
+import { createProofVerifier, approvalMessage, signinRevokeMessage, sendRevokeMessage, uploadRevokeMessage, zoneAddMessage, sandboxAddMessage } from './proof.ts';
+import { createGrants, checkGrant, checkZone, checkSandbox, checkGitHubOwn, sandboxCovers, zoneCoversRule, parseGrantRequest, grantDetail, isGrantSpec, ruleString, remoteWaivable } from './grants.ts';
 import type { GrantRule } from './grants.ts';
 import type { GrantScope } from './grants.ts';
 import { createRemote } from './remote.ts';
@@ -151,6 +153,8 @@ function emit(event: string, data: unknown) {
     shown.clear();
     tabActivity.clear();
     chromeHeal.attached();
+    // SANDBOX: a fresh extension knows no sandbox; it is told the list so its pages show the red band again.
+    if ((policy.zones?.sandbox ?? []).length) queueMicrotask(pushSandbox);
   }
   if (event === 'approval.pending') {
     if (isRecord(data)) wakeApprovalApp([data.approval], { log });
@@ -172,6 +176,12 @@ const chromeHeal = createChromeHeal({ ...chromeControls(), log,
 function browserBridgeStatus() {
   const recovery = chromeHeal.status();
   return { ...bridge.status(), connected: recovery.state === 'connected', recovery };
+}
+// SANDBOX: the extension draws a red band on every page of a sandbox site. Why: the user, watching Chrome, must see
+// where agents may pay and send without asking. The band is display only; the broker's checks never read it.
+function pushSandbox() {
+  if (!bridge.status().connected) return;
+  bridge.request('chrome.sandbox', { sandbox: policy.zones?.sandbox ?? [] }).catch(() => log('sandbox band list not delivered; it is sent again on reconnect'));
 }
 const proofs = createProofVerifier({ publicKeyPath: process.env.GADDI_APPROVER_PUB || path.join(os.homedir(), 'Library/Application Support/Gaddi/approver.pub'),
   usedPath: path.join(home, 'used-proofs.log') });
@@ -368,7 +378,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   // The chat's session grant is the one place a hold becomes an allow. A click or a key that
   // happens inside an embedded document is judged on THAT document's address: the site that
   // acts is the one a grant, a zone, a refused host or a protected address must name.
-  let grantId: string | undefined, zone: string | undefined;
+  let grantId: string | undefined, zone: string | undefined, sandbox = false, allowance: string | undefined;
   // What remote approval will judge again if this call becomes a hold: the page as it is now, with its query
   // (a query can make a page protected), and the same raw name and destination the grant scan reads.
   let remoteScope: Omit<RemoteFacts, 'reason'> | undefined;
@@ -377,6 +387,12 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     grantId = decision.grant;
     remoteScope = { pageURL: scopeURL, scope };
     if (decision.outcome !== 'hold') return decision;
+    // SANDBOX: the user's sandbox, for every caller. An embedded document is judged with the tab around it (FRAME-SCOPE).
+    const boxed = checkSandbox(policy, scopeURL, held, { ...scope, ...(scopeURL !== pageURL ? { tab: pageURL } : {}) });
+    if (boxed.sandbox) { zone = boxed.zone; sandbox = true; return boxed; }
+    // GITHUB-OWN: the user's standing allowance on their own GitHub accounts, for every caller.
+    const owned = checkGitHubOwn(policy, scopeURL, held, scope);
+    if (owned.allowance) { allowance = owned.allowance; return owned; }
     // TEST-ZONE: the user's standing choice for a whole site, for every caller (a CLI call included).
     const zoned = checkZone(policy, scopeURL, held, scope);
     zone = zoned.zone;
@@ -611,7 +627,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       ...(upload ? { file: { name: upload.name, bytes: upload.bytes.length, sha256: upload.sha256 } } : {}) } });
   // A supplied approval went through consume, so only an action the grant itself waived is credited to it.
   if (grantId && !params.approval) meta.grantId = grantId;
-  if (zone && !grantId && !params.approval) meta.zone = zone;
+  if (zone && !grantId && !params.approval) { meta.zone = zone; if (sandbox) meta.sandbox = true; }
+  if (allowance && !grantId && !params.approval) meta.allowance = allowance;
   // Add the wire field only after gating so existing approval action hashes stay valid.
   if (method === 'click' || method === 'press' && /^(enter|return)$/i.test(args.key!)) args.checkedDescription = args._description;
   if (targetSelector && targetSelector !== ':focus') args.selector = targetSelector;
@@ -690,6 +707,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
         isRecord(frame) && typeof frame.frameId === 'number' && Number.isSafeInteger(frame.frameId) && frame.frameId > 0
         && typeof frame.url === 'string').map(frame => ({ frameId: frame.frameId, url: frame.url,
           ...(frame.challenge === true ? { challenge: true } : {}) })) } : {}),
+      // SANDBOX: the broker says so itself, from the policy, so a page that hides its red band cannot hide it from agents.
+      ...(sandboxOf(pageURL) ? { sandbox: sandboxOf(pageURL) } : {}),
       text: wrap(pageURL, text), outline: wrap(pageURL, outline), length: text.length,
       truncated: result.truncated === true || result.text.length > TEXT_LIMIT || String(result.outline || '').length > TEXT_LIMIT } satisfies BrokerResults['look'];
   }
@@ -729,10 +748,17 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
 // itself, so the agent never retries and never holds a token that could be replayed.
 // TEST-ZONE: opening a zone's own account or security page is not held there (grants.ts:checkZone).
 function zoneNavigation(check: PolicyCheck, url: string, meta: CallMeta) {
+  // SANDBOX: opening a sandbox's own payment page, or a Stripe test Checkout session, is not held either.
+  const boxed = checkSandbox(policy, url, check, { kind: 'navigate' });
+  if (boxed.sandbox) { meta.zone = boxed.zone; meta.sandbox = true; return boxed; }
   const zoned = checkZone(policy, url, check, { kind: 'navigate' });
   if (zoned.zone) meta.zone = zoned.zone;
   return zoned;
 }
+function sandboxOf(url: string) {
+  try { return sandboxCovers(policy, new URL(url)); } catch { return undefined; }
+}
+function zonesView() { return { sites: policy.zones?.sites ?? [], sandbox: policy.zones?.sandbox ?? [] }; }
 function pendingGrantsOf(session: string) {
   return approvals.pendingMatching(a => a.kind === 'grant' && isRecord(a.grant) && a.grant.session === session);
 }
@@ -943,21 +969,40 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
   },
   // TEST-ZONE. Adding needs the user's signature; removing only takes authority away. A waiting grant request
   // that asks only for what the zones now give is closed: the chat already has it.
-  'zones.list': () => ({ sites: policy.zones?.sites ?? [] }),
+  'zones.list': () => zonesView(),
   'zones.add': ({ site, proof }) => {
     if (typeof site !== 'string' || zoneSite(site) !== site) throw new GateError('approval-invalid', 'a test zone must be a whole site (https, or http on this Mac) that is not protected');
     proofs.verify(proof, zoneAddMessage(site, isRecord(proof) ? proof.ts : undefined));
     policy = setZone(policyPath, site, true, policy.off);
     for (const request of approvals.pendingMatching(a => a.kind === 'grant' && isGrantSpec(a.grant)
       && a.grant.rules.every(rule => zoneCoversRule(policy, rule)))) approvals.cancel(request.id);
-    emit('zones.changed', { sites: policy.zones?.sites ?? [] });
-    return { sites: policy.zones?.sites ?? [] };
+    emit('zones.changed', zonesView());
+    return zonesView();
   },
   'zones.remove': ({ site }) => {
     if (typeof site !== 'string') throw new GateError('approval-invalid', 'site required');
+    const boxed = (policy.zones?.sandbox ?? []).includes(site);
     if ((policy.zones?.sites ?? []).includes(site)) policy = setZone(policyPath, site, false, policy.off);
-    emit('zones.changed', { sites: policy.zones?.sites ?? [] });
-    return { sites: policy.zones?.sites ?? [] };
+    if (boxed) pushSandbox();
+    emit('zones.changed', zonesView());
+    return zonesView();
+  },
+  // SANDBOX. Turning a zone into a sandbox needs the user's signature over sandbox.add; turning it off only takes
+  // authority away, so it needs none.
+  'sandbox.add': ({ site, proof }) => {
+    if (typeof site !== 'string' || zoneSite(site) !== site || !(policy.zones?.sites ?? []).includes(site))
+      throw new GateError('approval-invalid', 'a sandbox must be a test zone already');
+    proofs.verify(proof, sandboxAddMessage(site, isRecord(proof) ? proof.ts : undefined));
+    policy = setSandbox(policyPath, site, true, policy.off);
+    pushSandbox();
+    emit('zones.changed', zonesView());
+    return zonesView();
+  },
+  'sandbox.remove': ({ site }) => {
+    if (typeof site !== 'string') throw new GateError('approval-invalid', 'site required');
+    if ((policy.zones?.sandbox ?? []).includes(site)) { policy = setSandbox(policyPath, site, false, policy.off); pushSandbox(); }
+    emit('zones.changed', zonesView());
+    return zonesView();
   },
   'approval.cancel': ({ id }) => ({ cancelled: approvals.cancel(id) }),
   // Article extraction can decode entities after HTML leaves the broker. Sanitize its final text too.
@@ -1124,6 +1169,8 @@ async function handle(input: unknown, conn: Socket) {
       url: cleanURL(meta.url), ...(meta.tabs ? { tabs: meta.tabs } : {}), ...(meta.upload ? { upload: meta.upload } : {}),
       ...(meta.grantId ? { grant: meta.grantId } : {}),
       ...(meta.zone ? { zone: meta.zone } : {}),
+      ...(meta.sandbox ? { sandbox: true } : {}),
+      ...(meta.allowance ? { allowance: meta.allowance } : {}),
       ...(meta.point ? { point: meta.point } : {}),
       ...(meta.shot ? { shot: meta.shot } : {}),
       ...(meta.reason ? { reason: meta.reason } : {}),

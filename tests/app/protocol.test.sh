@@ -37,6 +37,7 @@ for line in \
   'NOTIFICATION Café task · Click “click Pay café”' \
   'APPROVAL a1 kind=click tab=42 detail=click Pay café reason=checkout action' \
   'GRANTS g1' \
+  'ZONES https://sandbox.example.test,https://zone.example.test SANDBOX https://sandbox.example.test' \
   'REMOTE enabled=false candidate=abcd ef01 2345 6789' \
   'REMOTE-APPROVABLE existing' \
   'REMOTE-ANSWERED Approved from phone: Marcus task click “Post” on example.test/shop, ' \

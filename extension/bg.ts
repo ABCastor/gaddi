@@ -23,6 +23,7 @@ import { manageExtensions } from './extensions.ts';
 import { createRecovery, RECOVERY_KEY } from './recovery.ts';
 import { createAgentWindow } from './windows.ts';
 import { armNewContexts, collectNewContexts, hookWindowOpen } from './popups.ts';
+import { sandboxSite, sandboxBand } from './sandbox.ts';
 
 const NATIVE_HOST = 'com.abcastor.gaddi.bridge';
 let nativePort: chrome.runtime.Port | undefined, reconnectTimer: ReturnType<typeof setTimeout> | undefined, retryDelay = 250, nextConnect = 0;
@@ -183,6 +184,24 @@ chrome.debugger.onDetach.addListener(({ tabId }, reason) => {
   attached.delete(tabId); emulations.delete(tabId);
   if (hadMotion) forTab<PageResult | false>(tabId, check => !emulations.has(tabId)
     && onPage(tabId, 'animationSpeed', { reset: true }, check)).catch(() => {});
+});
+// SANDBOX: the sites the broker last said are sandboxes, in memory only. Why: a restarted extension reconnects, and the
+// broker tells it again on attach, so a stale list never outlives the broker's own policy.
+let sandboxSites: string[] = [];
+const banded = new Set<number>();
+async function markSandbox(tab: number, url: string | undefined) {
+  const label = sandboxSite(url, sandboxSites);
+  if (!label && !banded.has(tab)) return;
+  try {
+    await chrome.scripting.executeScript({ target: { tabId: tab }, injectImmediately: true, world: 'ISOLATED', func: sandboxBand, args: [label ?? null] });
+    if (label) banded.add(tab); else banded.delete(tab);
+  } catch { /* Chrome's own page, or one not ready yet: the next update of the tab tries again. */ }
+}
+chrome.tabs.onRemoved.addListener(tab => { banded.delete(tab); });
+chrome.tabs.onUpdated.addListener((tab, change, info) => {
+  // Nothing to draw or remove: no page is touched, and no other listener's work is delayed.
+  if (!sandboxSites.length && !banded.size) return;
+  if (change.status !== undefined || change.url !== undefined) void markSandbox(tab, info?.url ?? change.url);
 });
 chrome.tabs.onUpdated.addListener((tab, change) => {
   if (change.status === 'complete' && emulations.get(tab)?.animationSpeed !== undefined) {
@@ -929,6 +948,13 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
   if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('params must be an object');
   if (params.browser) browser = params.browser;
   if (params.browser) await agentWindow.setMode(browser.window);
+  if (method === 'chrome.sandbox') {
+    if (!Array.isArray(params.sandbox) || params.sandbox.length > 1000 || params.sandbox.some(site => typeof site !== 'string')) throw new Error('sandbox must list sites');
+    sandboxSites = [...params.sandbox];
+    const tabs = await chrome.tabs.query({});
+    await Promise.all(tabs.map(tab => tab.id === undefined ? undefined : markSandbox(tab.id, tab.url)));
+    return { sandbox: sandboxSites.length };
+  }
   if (method === 'chrome.extensions') return manageExtensions(params, check, () => recovery.requestSelfReload('broker-requested', check));
   if (method === 'chrome.tabs') {
     const groups = await chrome.tabGroups.query({});

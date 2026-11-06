@@ -23,6 +23,7 @@ export interface ChromeResults {
   'chrome.screenshot': { data: string; mimeType: string; width?: number; height?: number;
     box?: { x: number; y: number; width: number; height: number }; frame?: { frameId: number; url: string } };
   'chrome.eval': { value: unknown };
+  'chrome.sandbox': { sandbox: number };
   'chrome.emulate': { emulated: boolean };
   'chrome.click': { clicked: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string };
   'chrome.hover': { hovered: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string };
@@ -55,6 +56,7 @@ export function isChromeResult<M extends keyof ChromeResults>(method: M, value: 
     case 'chrome.html': return hasFields(value, { html: 'string', truncated: 'boolean' });
     case 'chrome.screenshot': return hasFields(value, { data: 'string', mimeType: 'string' });
     case 'chrome.eval': return 'value' in value;
+    case 'chrome.sandbox': return typeof value.sandbox === 'number';
     default: {
       const fields = { 'chrome.emulate': 'emulated', 'chrome.click': 'clicked', 'chrome.hover': 'hovered', 'chrome.type': 'typed', 'chrome.press': 'pressed', 'chrome.scroll': 'scrolled', 'chrome.select': 'selected' };
       const offset = (v: unknown) => isRecord(v) && hasFields(v, { left: 'number', top: 'number' });

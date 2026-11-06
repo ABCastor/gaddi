@@ -121,6 +121,9 @@ const POINTS: Record<string, { selector: string; name?: string; role?: string; t
   '12,12': { selector: '#frame-plain', name: 'Continue', frameUrl: 'https://pay.example/checkout' },
   '13,13': { selector: '#blind', name: 'Embedded app', blind: true, frameUrl: 'https://blind.example/app' },
   '14,14': { selector: '#frame-mail', name: 'Send', frameUrl: 'https://mail.google.com/mail/u/0' },
+  // SANDBOX: a payment frame of another site inside a sandbox page, and a sandbox page framed by another site.
+  '15,15': { selector: '#frame-elements', name: 'Pay now', frameUrl: 'https://js.payments.example/elements' },
+  '16,16': { selector: '#frame-sandbox', name: 'Pay now', frameUrl: 'https://unseen.example/embed/pay' },
 };
 // Independent expected broker policy: callers cannot override the user's choice.
 const defaultBrowser = { window: scenario === 'sessions' && mode !== 'own' ? 'shared' : 'own', show: 'attention' } as const;
@@ -1509,6 +1512,112 @@ async function sessionGrant(c: Client, b: Bridge) {
     }
     await named('Delete', async () => assert.equal(await outcome(click(undefined)), 'held', 'after removal the delete is held again'));
   });
+
+  // The holds a check left waiting are closed, so the broker's hundred-request limit never reaches the next check.
+  const closingHolds = async (fn: () => Promise<void>) => {
+    const before = new Set((await result(c, 'approvals.list')).pending.map(p => p.id));
+    try { await fn(); }
+    finally { for (const p of (await result(c, 'approvals.list')).pending) if (!before.has(p.id)) await c.call('approval.cancel', { id: p.id }); }
+  };
+  await check('ASSERT_SANDBOX', () => closingHolds(async () => {
+    const site = 'https://unseen.example';
+    let stamp = Date.now();
+    const signed = (message: string, ts = ++stamp) => ({ ts, sig: crypto.sign('sha256', Buffer.from(`${message}|${ts}`), privateKey).toString('base64') });
+    const sandboxProof = (target: string) => signed(`sandbox.add|${target}`);
+    const listed = async () => { const r = await c.call('zones.list', {}); assert.equal(r.error, undefined); assert.ok(isRecord(r.result)); return r.result; };
+    const pushed = () => b.calls.filter(m => m.method === 'chrome.sandbox').map(m => JSON.stringify(m.params.sandbox));
+    const STRIPE_TEST = 'https://checkout.stripe.com/c/pay/cs_test_a1B2c3D4e5';
+    await named('Pay now', async () => assert.equal(await outcome(click(undefined)), 'held', 'before: a payment is held'));
+    assert.equal((await c.call('sandbox.add', { site, proof: sandboxProof(site) })).error?.code, 'approval-invalid', 'only a test zone can become a sandbox');
+    assert.equal((await c.call('zones.add', { site, proof: signed(`zones.add|${site}`) })).error, undefined, 'the site becomes a zone first');
+    try {
+      await named('Pay now', async () => assert.equal(await outcome(click(undefined)), 'held', 'a plain zone still holds a payment'));
+      assert.equal(await outcome(c.call('goto', { ...base(), url: STRIPE_TEST })), 'held', 'no sandbox yet: a Stripe test session is held');
+      assert.equal((await c.call('sandbox.add', { site, proof: { ts: Date.now(), sig: 'AAAA' } })).error?.code, 'proof-invalid', 'turning on needs the user signature');
+      assert.equal((await c.call('sandbox.add', { site, proof: signed(`zones.add|${site}`) })).error?.code, 'proof-invalid', 'a zones.add signature is not a sandbox signature');
+      for (const identity of ['https://github.com', 'https://accounts.google.com', 'https://mail.google.com']) {
+        assert.equal((await c.call('sandbox.add', { site: identity, proof: sandboxProof(identity) })).error?.code, 'approval-invalid', `${identity} can never be a sandbox`);
+      }
+      const added = await c.call('sandbox.add', { site, proof: sandboxProof(site) });
+      assert.equal(added.error, undefined, JSON.stringify(added));
+      assert.deepEqual((await listed()).sandbox, [site], 'the sandbox is listed with the zones');
+      assert.ok(await until(async () => pushed().includes(JSON.stringify([site]))), 'the extension is told, so its pages show the red band');
+      for (const name of ['Pay now', 'Buy now', 'Place order', 'Transfer', 'Send', 'Delete and pay', 'Post and pay', 'Procedi al pagamento']) {
+        await named(name, async () => assert.equal(await outcome(click(undefined)), 'allowed', `${name} runs in a sandbox, even from the command line`));
+      }
+      assert.equal(await outcome(c.call('goto', { ...base(), url: `${site}/checkout` })), 'allowed', 'a sandbox opens its own payment page');
+      await on(`${SHOP}/checkout`, async () => assert.equal(await outcome(upload(undefined)), 'allowed', 'an upload on its payment page'));
+      try {
+        b.control.focusSubmit = 'Pay now';
+        assert.equal(await outcome(enter(undefined)), 'allowed', 'Enter on a payment form in a sandbox');
+      } finally { b.control.focusSubmit = 'Search'; }
+      assert.equal(await outcome(upload(undefined, { path: privateKeyFile })), 'denied', 'a secret file is still refused');
+      await named('Pay now', async () => assert.equal(await outcome(click(undefined)), 'held', 'a link leaving the sandbox is judged by its own address'), 'https://elsewhere.example/pay');
+      await named('Pay now', async () => assert.equal(await outcome(click(undefined)), 'allowed', 'a link inside the sandbox runs'), `${site}/checkout/confirm`);
+      assert.equal(await outcome(c.call('click', { ...base(), at: { x: 15, y: 15 } })), 'held', 'another site framed in a sandbox page is judged by its own address');
+      assert.equal(await outcome(c.call('click', { ...base(), at: { x: 16, y: 16 } })), 'allowed', 'a sandbox frame inside a sandbox page runs');
+      await on('https://other.example/shop', async () => {
+        assert.equal(await outcome(c.call('click', { ...base(), at: { x: 16, y: 16 } })), 'held', 'a sandbox framed by another site: both addresses must allow');
+        await named('Pay now', async () => assert.equal(await outcome(click(undefined)), 'held', 'another site is not a sandbox'));
+      });
+      assert.equal(await outcome(c.call('click', { ...base(), at: { x: 13, y: 13 } })), 'held', 'a document Gaddi cannot inspect stays held');
+      // Payment provider test mode: a Stripe-hosted test Checkout session, and only that.
+      assert.equal(await outcome(c.call('goto', { ...base(), url: STRIPE_TEST })), 'allowed', 'a Stripe test session opens');
+      await named('Pay now', async () => assert.equal(await outcome(click(undefined)), 'allowed', 'a sandbox page can lead to a Stripe test session'), STRIPE_TEST);
+      await on(STRIPE_TEST, async () => named('Pay', async () => assert.equal(await outcome(click(undefined)), 'allowed', 'paying in a Stripe test session')));
+      for (const live of ['https://checkout.stripe.com/c/pay/cs_live_a1B2c3D4e5', 'https://checkout.stripe.com/pay/cs_test_a1B2c3D4e5', 'https://www.paypal.com/checkoutnow/pay']) {
+        await on(live, async () => named('Pay', async () => assert.equal(await outcome(click(undefined)), 'held', `${live}: a live session or another provider stays held`)));
+        assert.equal(await outcome(c.call('goto', { ...base(), url: live })), 'held', `${live} is not opened without asking`);
+      }
+      const look = await c.call('look', base());
+      assert.ok(isRecord(look.result) && look.result.sandbox === site, 'the broker tells agents the page is a sandbox, whatever the page shows');
+      const lines = auditLines();
+      assert.ok(lines.some(line => line.sandbox === true && line.zone === site && line.outcome === 'allow' && line.method === 'click'), 'the audit names the sandbox');
+      assert.ok(lines.some(line => line.sandbox === true && line.zone === 'https://checkout.stripe.com' && line.outcome === 'allow'), 'the audit names a Stripe test session');
+      assert.ok(!lines.some(line => line.sandbox === true && line.outcome !== 'allow'), 'only an allowed action carries the sandbox mark');
+      assert.equal((await c.call('sandbox.remove', { site })).error, undefined, 'turning a sandbox off needs no proof');
+      assert.deepEqual((await listed()).sites, [site], 'the zone stays');
+      assert.ok(await until(async () => pushed().at(-1) === '[]'), 'the extension is told the band is gone');
+      await named('Pay now', async () => assert.equal(await outcome(click(undefined)), 'held', 'after the sandbox ends a payment is held again'));
+      await named('Delete', async () => assert.equal(await outcome(click(undefined)), 'allowed', 'while the zone still allows a delete'));
+      assert.equal(await outcome(c.call('goto', { ...base(), url: STRIPE_TEST })), 'held', 'with no sandbox left a Stripe test session is held again');
+      assert.equal((await c.call('sandbox.add', { site, proof: sandboxProof(site) })).error, undefined);
+    } finally {
+      assert.equal((await c.call('zones.remove', { site })).error, undefined, 'removing the zone needs no proof');
+    }
+    assert.deepEqual(await listed(), { sites: [], sandbox: [] }, 'removing a zone ends its sandbox too');
+    await named('Pay now', async () => assert.equal(await outcome(click(undefined)), 'held', 'and a payment is held again'));
+  }));
+
+  await check('ASSERT_GITHUB_OWN', () => closingHolds(async () => {
+    const own = 'https://github.com/ABCastor/gaddi/issues/12';
+    await on(own, async () => {
+      for (const name of ['Delete', 'Post', 'Delete comment', 'Remove']) {
+        await named(name, async () => assert.equal(await outcome(click(undefined)), 'allowed', `${name} on the user's own repository, without asking`));
+      }
+      for (const name of ['Delete and pay', 'Pay now', 'Send', 'Sponsor and pay']) {
+        await named(name, async () => assert.equal(await outcome(click(undefined)), 'held', `${name} stays held on GitHub`));
+      }
+      try {
+        b.control.focusSubmit = 'Delete';
+        assert.equal(await outcome(enter(undefined)), 'allowed', 'Enter on a delete form in their own repository');
+      } finally { b.control.focusSubmit = 'Search'; }
+      assert.equal(await outcome(upload(undefined)), 'held', 'an upload is not repo work: it stays held');
+      await named('Delete', async () => assert.equal(await outcome(click(undefined)), 'held', 'a link leaving their account stays held'), 'https://github.com/someone/else/issues/1');
+      await named('Delete', async () => assert.equal(await outcome(click(undefined)), 'held', 'a link to settings stays held'), '/ABCastor/gaddi/settings');
+      await named('Delete', async () => assert.equal(await outcome(click(undefined)), 'allowed', 'a link inside their account runs'), '/ABCastor/gaddi/issues/13');
+    });
+    await on('https://github.com/anneo22/notes/pull/3', async () => named('Delete', async () =>
+      assert.equal(await outcome(click(undefined)), 'allowed', 'the second account, named in any case')));
+    for (const page of ['https://github.com/ABCastor/gaddi/settings', 'https://github.com/ABCastor/gaddi/settings/branches', 'https://github.com/ABCastor/gaddi/%73ettings',
+      'https://github.com/ABCastor/gaddi/SETTINGS', 'https://github.com/settings/profile', 'https://github.com/ABCastor/gaddi/security', 'https://github.com/ABCastor/billing',
+      'https://github.com/sponsors/ABCastor', 'https://github.com/someone/repo/issues/1', 'https://github.com/ABCastorX/repo/issues/1', 'https://github.com/orgs/ABCastor/people',
+      'https://gist.github.com/ABCastor/abc', 'http://github.com/ABCastor/gaddi/issues/1']) {
+      await on(page, async () => named('Delete', async () => assert.equal(await outcome(click(undefined)), 'held', `${page} stays held`)));
+    }
+    assert.ok(auditLines().some(line => line.allowance === 'github-own' && line.outcome === 'allow' && line.zone === undefined), 'the audit names the allowance');
+    assert.equal((await c.call('zones.add', { site: 'https://github.com', proof: { ts: Date.now(), sig: 'AAAA' } })).error?.code, 'approval-invalid', 'GitHub is never a zone');
+  }));
 
   await check('ASSERT_GRANT_DETAIL', async () => {
     const session = await liveSession();

@@ -26,7 +26,9 @@ echo "PASS session-grant pristine copy: $(grep -Ec '^PASS ASSERT_GRANT_' "$BASE"
 FALSIFIED=0
 for mutation in \
   OTHER_SESSION CLI LIVE_REQUIRED ENDED_ASK PROOF REMEMBER REVOKE SESSION_END AUDIT APPROVAL_CREDIT UPLOAD CLICK ENTER \
-  LEAK_VIEW LEAK_DISK CLEAN_GRANT FOLD ZONE ZONE_MIXED ZONE_ENTER ZONE_PAYMENT EXPIRY LIST BOUNDARY ORIGIN PERMISSION MIXED PROTECTED DESTINATION NEVER GMAIL TABLE DETAIL \
+  LEAK_VIEW LEAK_DISK CLEAN_GRANT FOLD ZONE ZONE_MIXED ZONE_ENTER ZONE_PAYMENT \
+  SANDBOX SANDBOX_LEAVING SANDBOX_FRAME SANDBOX_LIVE SANDBOX_MESSAGE SANDBOX_AUDIT SANDBOX_REMOVE \
+  GITHUB_SETTINGS GITHUB_OTHER GITHUB_ENCODED GITHUB_AUDIT EXPIRY LIST BOUNDARY ORIGIN PERMISSION MIXED PROTECTED DESTINATION NEVER GMAIL TABLE DETAIL \
   NEEDED DENY SECRET RESTART; do
   # Reset every source from the real tree, then apply ONE distinct mutation to this copy.
   for source in daemon/*.ts; do cp "$source" "$COPY/$source"; done
@@ -73,6 +75,28 @@ const table = {
     ['daemon/grants.ts', "return kind === 'press' ? ENTER_VERBS.includes(verb) : ZONE_VERBS.includes(verb);", 'return ZONE_VERBS.includes(verb);'],
     ['daemon/grants.ts', "const allowed = scope.kind === 'press' ? (verb: string) => ENTER_VERBS.includes(fold(verb)) : zoneVerb;", 'const allowed = zoneVerb;']],
   ZONE_PAYMENT: ['ASSERT_ZONE', ['daemon/grants.ts', "patterns.some(pattern => !ZONE_PAGES.includes(pattern) && rx(pattern)?.test(url.href));", "false;"]],
+  // SANDBOX: a sandbox waives on a site that is not one (a plain zone, any site); a link or frame leaving it is covered;
+  // a live Stripe session counts as test mode; a zones.add signature turns it on; the audit forgets it; a removed zone
+  // leaves its sandbox behind.
+  SANDBOX: ['ASSERT_SANDBOX', ['daemon/grants.ts',
+    'if (sandbox.includes(target.origin) && (policy.zones?.sites ?? []).includes(target.origin) && zoneSite(target.origin) === target.origin',
+    'if (zoneSite(target.origin) === target.origin']],
+  SANDBOX_LEAVING: ['ASSERT_SANDBOX', ['daemon/grants.ts', 'for (const other of [scope.tab, scope.destination]) {', 'for (const other of [scope.tab]) {']],
+  SANDBOX_FRAME: ['ASSERT_SANDBOX', ['daemon/grants.ts', 'for (const other of [scope.tab, scope.destination]) {', 'for (const other of [scope.destination]) {']],
+  SANDBOX_LIVE: ['ASSERT_SANDBOX', ['daemon/grants.ts', 'return stripeTestSession(target) ? STRIPE_CHECKOUT : undefined;',
+    'return target.origin === STRIPE_CHECKOUT ? STRIPE_CHECKOUT : undefined;']],
+  SANDBOX_MESSAGE: ['ASSERT_SANDBOX', ['daemon/proof.ts', 'return `sandbox.add|${site}|${ts}`;', 'return `zones.add|${site}|${ts}`;']],
+  SANDBOX_AUDIT: ['ASSERT_SANDBOX', ['daemon/daemon.ts', 'if (zone && !grantId && !params.approval) { meta.zone = zone; if (sandbox) meta.sandbox = true; }',
+    'if (zone && !grantId && !params.approval) { meta.zone = zone; }']],
+  SANDBOX_REMOVE: ['ASSERT_SANDBOX', ['daemon/policy.ts', 'const sandbox = (current.zones?.sandbox ?? []).filter(entry => sites.has(entry));',
+    'const sandbox = current.zones?.sandbox ?? [];']],
+  // GITHUB-OWN: the allowance covers a settings page, another account, an encoded settings segment; the audit forgets it.
+  GITHUB_SETTINGS: ['ASSERT_GITHUB_OWN', ['daemon/grants.ts',
+    "const GITHUB_HELD = ['settings', 'billing', 'sponsors', 'sponsorships', 'security', 'payments', 'payment'];", 'const GITHUB_HELD: string[] = [];']],
+  GITHUB_OTHER: ['ASSERT_GITHUB_OWN', ['daemon/grants.ts', 'return segments.length >= 2 && accounts.includes(segments[0]);',
+    'return segments.length >= 2 && accounts.length > 0;']],
+  GITHUB_ENCODED: ['ASSERT_GITHUB_OWN', ['daemon/grants.ts', '.map(segment => decodeURIComponent(segment).toLowerCase()); }', '.map(segment => segment.toLowerCase()); }']],
+  GITHUB_AUDIT: ['ASSERT_GITHUB_OWN', ['daemon/daemon.ts', 'if (allowance && !grantId && !params.approval) meta.allowance = allowance;', '']],
   EXPIRY: ['ASSERT_GRANT_EXPIRY', ['daemon/grants.ts', 'expiresAt: created + spec.minutes * minuteMs };', 'expiresAt: created + spec.minutes * minuteMs * 1000 };']],
   LIST: ['ASSERT_GRANT_LIST', ['daemon/grants.ts', 'mine: mine !== undefined && grant.session === mine });', 'mine: true });']],
   BOUNDARY: ['ASSERT_GRANT_BOUNDARY', ['daemon/grants.ts', "url.pathname.startsWith(rule.path + '/')", 'url.pathname.startsWith(rule.path)']],

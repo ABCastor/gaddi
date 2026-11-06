@@ -52,6 +52,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         let rememberedSends: [SendPermission]
         let rememberedUploads: [String]
         let zones: [String]
+        let sandbox: [String]
         let grants: [SessionGrant]
         let remote: RemoteStatus
         let remoteApprovable: Set<String>
@@ -259,6 +260,7 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
             rememberedSends: snapshot.rememberedSends,
             rememberedUploads: snapshot.rememberedUploads,
             zones: snapshot.zones,
+            sandbox: snapshot.sandbox,
             grants: snapshot.grants,
             remote: snapshot.remote,
             remoteApprovable: snapshot.remoteApprovable,
@@ -303,9 +305,11 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
                 zone: { [weak self] approval in self?.makeZone(approval) }))
         }
         add(PanelRule())
-        add(ZoneList(snapshot.zones, canAdd: connected && keyReady && !busy, canRemove: connected && !busy,
+        add(ZoneList(snapshot.zones, sandbox: snapshot.sandbox, canAdd: connected && keyReady && !busy, canRemove: connected && !busy,
             add: { [weak self] site in self?.addZones([site], answering: nil) },
-            remove: { [weak self] site in self?.removeZone(site) }))
+            remove: { [weak self] site in self?.removeZone(site) },
+            sandboxOn: { [weak self] site in self?.addSandbox(site) },
+            sandboxOff: { [weak self] site in self?.removeSandbox(site) }))
         add(PanelRule())
         // Standing authority comes first and is always shown, even empty. Ending a grant needs no
         // Touch ID (it only removes authority), so this list does not wait for the signing key.
@@ -492,6 +496,23 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
                         "proof": ["ts": ts, "sig": signed.signature.base64EncodedString()]])
                 }
             }
+        }
+    }
+    /// SANDBOX: one Touch ID makes a test zone a sandbox. Turning it off asks for none, because it only takes authority away.
+    private func addSandbox(_ site: String) {
+        let named = ApprovalWords.host(site)
+        authenticated(reason: "Make \(named) a sandbox: agents may also pay, buy, order, transfer and send messages there without asking, until you turn it off") { [self] context in
+            let ts = Int64(Date().timeIntervalSince1970 * 1000)
+            let signed = try keys.sign(try sandboxAddMessage(site: site, timestamp: ts), context: context)
+            _ = try model.client.call("sandbox.add", ["site": site, "proof": ["ts": ts, "sig": signed.signature.base64EncodedString()]])
+        }
+    }
+    private func removeSandbox(_ site: String) {
+        guard connected, !busy else { return }
+        model.queue.async { [self] in
+            do { _ = try model.client.call("sandbox.remove", ["site": site]) }
+            catch { DispatchQueue.main.async { self.showError("The sandbox was not turned off", error: error) } }
+            model.refresh()
         }
     }
     private func removeZone(_ site: String) {

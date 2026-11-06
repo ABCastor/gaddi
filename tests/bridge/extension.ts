@@ -39,6 +39,7 @@ import { autonomousSetup } from './autonomy-browser.ts';
 import { uploadChecks } from './upload.ts';
 import { hscrollChecks } from './hscroll.ts';
 import { frameChecks } from './frames.ts';
+import { sandboxBandChecks } from './sandbox-band.ts';
 
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 const root = path.join(repo, 'tests/.state-bridge');
@@ -112,6 +113,13 @@ try {
     assert.ok(source.includes(order), 'pre-scroll mutation point exists');
     fs.writeFileSync(contentFile, source.replace(order,
       "            const before = action === 'clickCheck' ? '' : signature();\n            el.scrollIntoView({ block: params.frameId === undefined ? 'center' : 'nearest', inline: 'center', behavior: 'instant' });"));
+  }
+  if (process.env.GADDI_BRIDGE_BREAK_SANDBOX_BAND === '1') {
+    // Disposable copy only: the band is drawn once and never put back.
+    const file = path.join(extension, 'dist/extension/sandbox.js'), source = fs.readFileSync(file, 'utf8');
+    const observer = 'const observer = new MutationObserver(reassert);', backstop = 'const timer = setInterval(() => {';
+    assert.ok(source.includes(observer) && source.includes(backstop), 'sandbox band mutation points exist');
+    fs.writeFileSync(file, source.replace(observer, 'const observer = new MutationObserver(() => { });').replace(backstop, `${backstop} return;`));
   }
   const bg = path.join(extension, 'dist/extension/bg.js');
   fs.writeFileSync(bg, fs.readFileSync(bg, 'utf8').replace("const NATIVE_HOST = 'com.abcastor.gaddi.bridge';", `const NATIVE_HOST = '${hostName}';`));
@@ -741,6 +749,7 @@ try {
     await uploadChecks({ context, daemon, url, pass });
     await hscrollChecks({ context, daemon, url, pass });
     await frameChecks({ context, daemon, url, inner, pass });
+    await sandboxBandChecks({ context, daemon, url, pass });
     }
     await browser.close();
     context = undefined;

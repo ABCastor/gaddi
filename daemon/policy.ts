@@ -14,8 +14,11 @@ interface PolicyData {
  signin?: { remember: string[] };
  sends?: { remember: SendRule[] };
  uploads?: { remember: string[] };
- // Test zones: sites the user marked as his own test ground (TEST-ZONE in docs/authorization.md).
- zones?: { sites: string[] };
+ // Test zones: sites the user marked as their own test ground (TEST-ZONE in docs/authorization.md).
+ // `sandbox` lists the zones the user also made sandboxes, where money and sends run too (SANDBOX).
+ zones?: { sites: string[]; sandbox?: string[] };
+ // Standing allowances set in the defaults (GITHUB-OWN): the user's own GitHub account prefixes.
+ allowances?: { github_own: string[] };
  browser: { window: 'own' | 'shared'; show: 'attention' | 'front' };
 }
 export interface Policy extends PolicyData { off: boolean; sources: string[] }
@@ -54,6 +57,11 @@ function exactOrigin(value: unknown): boolean {
     || url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname));
 }
 const SEND_VERBS = ['send', 'send now', 'invia', 'invia ora'];
+// GITHUB-OWN: an account prefix is exactly https://github.com/<account>/, one GitHub account or organisation name.
+// Why: a longer or looser prefix could reach another account, github.com/settings or a host that is not GitHub.
+export function githubOwnPrefix(value: unknown): value is string {
+  return typeof value === 'string' && /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})\/$/.test(value);
+}
 function sendReason(value: unknown): boolean {
   return typeof value === 'string' && SEND_VERBS.some(verb => value === 'verb:' + verb || value === 'enter-submits:' + verb);
 }
@@ -68,7 +76,8 @@ const schema: Schema = {
   signin: { remember: [exactOrigin] },
   sends: { remember: [{ site: exactOrigin, kind: v => v === 'click' || v === 'press', reason: sendReason }] },
   uploads: { remember: [exactOrigin] },
-  zones: { sites: [exactOrigin] },
+  zones: { sites: [exactOrigin], sandbox: [exactOrigin] },
+  allowances: { github_own: [githubOwnPrefix] },
   browser: { window: v => v === 'own' || v === 'shared', show: v => v === 'attention' || v === 'front' },
 };
 function validate(value: unknown, shape: Schema = schema, at = 'policy', required = false): void {
@@ -126,6 +135,11 @@ export function loadPolicy({ overlay = path.join(process.env.GADDI_HOME || path.
   }
   for (const site of policy.zones?.sites ?? []) {
     if (zoneSite(site) !== site) throw new Error('policy.zones.sites: invalid test zone site');
+  }
+  // SANDBOX: a sandbox is a level on top of a zone. Why: a hand edit must not create a sandbox the user never made a
+  // zone, nor one on a site that could never be a zone (identity providers, refused hosts).
+  for (const site of policy.zones?.sandbox ?? []) {
+    if (zoneSite(site) !== site || !policy.zones?.sites.includes(site)) throw new Error('policy.zones.sandbox: invalid sandbox site');
   }
   if (off) {
     log('!!!!!!!!!! GADDI_POLICY_OFF=1: EVERY GATE IS DISABLED. Test-only. Never run like this for real work. !!!!!!!!!!');
@@ -197,7 +211,25 @@ export function setZone(overlay: string, site: unknown, on: boolean, off = false
   if (!isRecord(local)) throw new Error('Invalid policy overlay');
   const sites = new Set(current.zones?.sites ?? []);
   if (on) sites.add(site as string); else sites.delete(site as string);
-  return saveRememberedPolicy(overlay, { ...local, zones: { sites: [...sites] } }, off);
+  // Removing a zone also ends its sandbox: a sandbox never outlives the zone it sits on.
+  const sandbox = (current.zones?.sandbox ?? []).filter(entry => sites.has(entry));
+  return saveRememberedPolicy(overlay, { ...local, zones: { sites: [...sites], ...(sandbox.length ? { sandbox } : {}) } }, off);
+}
+
+// SANDBOX: called only after the daemon verifies the user's Touch ID signature over sandbox.add (turning on), or for
+// turning off, which only takes authority away. Only a site that is already a test zone can become a sandbox.
+export function setSandbox(overlay: string, site: unknown, on: boolean, off = false): Policy {
+  validate({ zones: { sites: [], sandbox: [site] } });
+  if (zoneSite(site) !== site) throw new Error('policy.zones.sandbox: invalid sandbox site');
+  const current = loadPolicy({ overlay, off });
+  const local: unknown = fs.existsSync(overlay) ? parseJSON(fs.readFileSync(overlay, 'utf8')) : {};
+  validate(local);
+  if (!isRecord(local)) throw new Error('Invalid policy overlay');
+  const sites = current.zones?.sites ?? [];
+  if (on && !sites.includes(site as string)) throw new Error('policy.zones.sandbox: only a test zone can become a sandbox');
+  const sandbox = new Set(current.zones?.sandbox ?? []);
+  if (on) sandbox.add(site as string); else sandbox.delete(site as string);
+  return saveRememberedPolicy(overlay, { ...local, zones: { sites, ...(sandbox.size ? { sandbox: [...sandbox] } : {}) } }, off);
 }
 
 // Reject refused hosts and protected pages even when an overlay loosens ordinary holds.
@@ -211,6 +243,11 @@ export function protections(policy: Policy) {
     patterns: [...builtInPolicy.hold.url_patterns, ...policy.hold.url_patterns],
     verbs: [...builtInPolicy.hold.verbs, ...policy.hold.verbs],
   };
+}
+// The protected addresses the user added, beyond the built-in list. Why: a sandbox lifts the built-in payment
+// and security holds on its site, but what the user protected by hand still wins, as it does over a test zone.
+export function ownPatterns(policy: Policy) {
+  return policy.hold.url_patterns.filter(pattern => !builtInPolicy.hold.url_patterns.includes(pattern));
 }
 export function sendRule(url: unknown, kind: unknown, reason: unknown): SendRule | undefined {
   if (!(kind === 'click' && typeof reason === 'string' && reason.startsWith('verb:')

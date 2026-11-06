@@ -29,6 +29,8 @@ func headlessCheck() -> Never {
         if snapshot.remote.enabled || snapshot.remote.candidate != nil {
             print("REMOTE enabled=\(snapshot.remote.enabled) candidate=\(snapshot.remote.candidate.map(shortFingerprint) ?? "none")")
         }
+        // Test zones and sandboxes arrive in the same snapshot; naming them proves the parse.
+        if !snapshot.zones.isEmpty { print("ZONES \(snapshot.zones.joined(separator: ",")) SANDBOX \(snapshot.sandbox.joined(separator: ","))") }
         if !snapshot.remoteApprovable.isEmpty { print("REMOTE-APPROVABLE \(snapshot.remoteApprovable.sorted().joined(separator: ","))") }
         for decision in snapshot.remoteDecisions { print("REMOTE-ANSWERED \(decision.line)") }
         fflush(stdout)

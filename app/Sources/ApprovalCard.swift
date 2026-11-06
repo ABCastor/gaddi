@@ -520,7 +520,8 @@ final class ApprovalList: NSStackView {
 /// takes authority away, so it asks for none.
 final class ZoneList: NSStackView {
     private let field = NSTextField()
-    init(_ sites: [String], canAdd: Bool, canRemove: Bool, add: @escaping (String) -> Void, remove: @escaping (String) -> Void) {
+    init(_ sites: [String], sandbox: [String] = [], canAdd: Bool, canRemove: Bool, add: @escaping (String) -> Void, remove: @escaping (String) -> Void,
+         sandboxOn: @escaping (String) -> Void = { _ in }, sandboxOff: @escaping (String) -> Void = { _ in }) {
         super.init(frame: .zero)
         orientation = .vertical; alignment = .leading; spacing = 12
         let heading = NSTextField(labelWithString: "Test zones")
@@ -538,8 +539,33 @@ final class ZoneList: NSStackView {
             label.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
             let button = PanelButton("Remove", kind: .secondary) { remove(site) }
             button.isEnabled = canRemove
-            let row = NSStackView(views: [label, button]); row.spacing = 12; row.alignment = .centerY
+            // SANDBOX: a zone can be made a sandbox (Touch ID) and turned back into a plain zone (no Touch ID).
+            let boxed = sandbox.contains(site)
+            var views: [NSView] = [label]
+            if boxed {
+                let tag = NSTextField(labelWithString: "SANDBOX")
+                tag.font = Typeface.interface(11); tag.textColor = .white
+                tag.drawsBackground = true; tag.backgroundColor = NSColor(calibratedRed: 0.78, green: 0.16, blue: 0.16, alpha: 1)
+                tag.toolTip = "Payments, purchases and sends run here without asking too"
+                views.append(tag)
+                let off = PanelButton("End sandbox", kind: .secondary) { sandboxOff(site) }
+                off.isEnabled = canRemove
+                views.append(off)
+            } else {
+                let on = PanelButton("Make sandbox", kind: .quiet, symbol: "touchid") { sandboxOn(site) }
+                on.isEnabled = canAdd
+                on.toolTip = "Also let agents pay, buy and send messages here without asking"
+                views.append(on)
+            }
+            views.append(button)
+            let row = NSStackView(views: views); row.spacing = 12; row.alignment = .centerY
             addArrangedSubview(row); row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
+        }
+        if !sandbox.isEmpty {
+            let warning = NSTextField(wrappingLabelWithString: "On a sandbox, agents also pay, buy, order, transfer and send messages without asking, and Stripe test checkouts run too. Every page of a sandbox shows a red band. Use it only for sites that hold test data and test payment keys.")
+            warning.font = Typeface.interface(13); warning.textColor = NSColor(calibratedRed: 0.70, green: 0.12, blue: 0.12, alpha: 1)
+            addArrangedSubview(warning)
+            warning.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         field.placeholderString = "https://staging.example.com"
         field.font = Typeface.interface(13)

@@ -11,6 +11,8 @@ export GADDI_BRIDGE_BREAK_PRE_SCROLL_SIGNATURE=0 GADDI_BRIDGE_BREAK_NEW_CONTEXT=
 export GADDI_BRIDGE_BREAK_FOREIGN_REMOVE=0 GADDI_BRIDGE_BREAK_FOREIGN_SHADOW=0 GADDI_BRIDGE_BREAK_HSCROLL=0
 # A new fact for the gates must be able to fail: forgetting that a radio is a choice.
 export GADDI_BRIDGE_BREAK_CHOICE=0
+# The sandbox band must come back when a page removes it.
+export GADDI_BRIDGE_BREAK_SANDBOX_BAND=0
 GADDI_BRIDGE_BREAK_NAMES=0 GADDI_BRIDGE_BREAK_EXPLICIT_CLOSE=0 node tests/bridge/extension.ts || result=$?
 if [[ "$result" != 0 ]]; then exit "$result"; fi
 mkdir -p tests/.state/logs
@@ -198,4 +200,11 @@ if GADDI_BRIDGE_BREAK_NEW_CONTEXT=1 node tests/bridge/extension.ts >"$LOG" 2>&1;
 fi
 if ! rg -q 'AssertionError.*ASSERT_POPUP_BACKGROUND' "$LOG"; then cat "$LOG"; echo 'FAIL new-context falsification failed for an unrelated reason'; exit 1; fi
 echo 'FALSIFIED new tabs: a background click that lets the page open its own tab fails ASSERT_POPUP_BACKGROUND'
+
+LOG=tests/.state/logs/bridge-sandbox-band-falsified.log
+if GADDI_BRIDGE_BREAK_SANDBOX_BAND=1 node tests/bridge/extension.ts >"$LOG" 2>&1; then
+  echo 'FAIL a band that is never put back did not fail the sandbox band assertion'; exit 1
+fi
+if ! rg -q 'AssertionError.*ASSERT_SANDBOX_BAND_RETURNS' "$LOG"; then cat "$LOG"; echo 'FAIL sandbox band falsification failed for an unrelated reason'; exit 1; fi
+echo 'FALSIFIED sandbox band: a band the page removed that is never put back fails ASSERT_SANDBOX_BAND_RETURNS'
 echo 'PASS bridge extension suite: baseline and all mutation checks passed'

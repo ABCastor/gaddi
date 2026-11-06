@@ -1,5 +1,6 @@
 // Non-interactive checks for the production protocol parser and socket client.
 import Foundation
+import AppKit
 var passed = 0
 func check(_ condition: @autoclosure () -> Bool, _ label: String) {
     guard condition() else { diagnostic("FAIL \(label)"); exit(1) }
@@ -150,6 +151,22 @@ check(RemoteDecision(untimed) == nil, "an answer with no readable time is not li
 var phoneGrant = answeredObject; phoneGrant["kind"] = "grant"; phoneGrant["detail"] = "upload on github.com/settings\nfor 2 hours"
 check(RemoteDecision(phoneGrant)!.line == "Approved from phone: Marcus work without asking you for 2 hours, \(displayTime(phoneAnswer.at))",
       "a session grant is listed without its rule list")
+// SANDBOX: its own signed message, and the Test zones section offers it on a zone and shows it on a sandbox.
+check(try! sandboxAddMessage(site: "https://staging.example.com", timestamp: 1_700_000_000_000) == "sandbox.add|https://staging.example.com|1700000000000",
+      "turning a sandbox on signs sandbox.add, never zones.add")
+rejects("a sandbox site with a separator is refused before signing") { _ = try sandboxAddMessage(site: "https://a.example|x", timestamp: 1) }
+func texts(_ view: NSView) -> [String] {
+    let own = (view as? NSButton)?.title ?? (view as? NSTextField)?.stringValue
+    return (own.map { [$0] } ?? []) + view.subviews.flatMap(texts)
+}
+let zoneTexts = texts(ZoneList(["https://staging.example.com", "https://test.example.com"], sandbox: ["https://test.example.com"],
+    canAdd: true, canRemove: true, add: { _ in }, remove: { _ in }))
+check(zoneTexts.filter { $0 == "Make sandbox" }.count == 1 && zoneTexts.filter { $0 == "End sandbox" }.count == 1
+      && zoneTexts.contains("SANDBOX") && zoneTexts.filter { $0 == "Remove" }.count == 2,
+      "a zone offers Make sandbox, a sandbox is marked and offers End sandbox, and both can be removed")
+check(zoneTexts.contains { $0.hasPrefix("On a sandbox, agents also pay") }, "the section warns what a sandbox allows")
+check(!texts(ZoneList(["https://staging.example.com"], canAdd: true, canRemove: true, add: { _ in }, remove: { _ in })).contains("SANDBOX"),
+      "a plain zone is not marked as a sandbox")
 check(SocketClient.socketPath == ProcessInfo.processInfo.environment["GADDI_SOCKET"], "GADDI_SOCKET overrides all defaults")
 // Either home is disposable; the point is that the live broker's socket can never be named.
 guard SocketClient.socketPath.contains("/tests/.state/") || SocketClient.socketPath.hasPrefix("/tmp/gaddi-test-")

@@ -195,6 +195,13 @@ func zoneAddMessage(site: String, timestamp: Int64) throws -> String {
     return "zones.add|\(site)|\(timestamp)"
 }
 
+/// SANDBOX: what Touch ID signs to make a test zone a sandbox, where payments and sends run without asking too.
+/// A message of its own, so a zones.add signature can never turn a sandbox on.
+func sandboxAddMessage(site: String, timestamp: Int64) throws -> String {
+    guard !site.isEmpty, !site.contains("|") else { throw AppError("Invalid sandbox site") }
+    return "sandbox.add|\(site)|\(timestamp)"
+}
+
 func uploadRevokeMessage(site: String, timestamp: Int64) throws -> String {
     guard !site.isEmpty, !site.contains("|") else { throw AppError("Invalid upload origin") }
     return "uploads.revoke|\(site)|\(timestamp)"
@@ -293,6 +300,8 @@ struct Snapshot: Equatable {
     var rememberedUploads: [String] = []
     /// Sites the user made test zones: uploads, posts and deletes there run without asking, for every agent.
     var zones: [String] = []
+    /// SANDBOX: the zones that are also sandboxes: payments, purchases and sends run there without asking too.
+    var sandbox: [String] = []
     var grants: [SessionGrant] = []
     var remote = RemoteStatus()
     /// The waiting approvals the user's other device may also answer.
@@ -405,6 +414,11 @@ final class BrowserModel {
                 let answer = try client.call("zones.list")
                 guard let zoneSites = answer["sites"] as? [String] else { throw AppError("Daemon returned an invalid test zone list") }
                 next.zones = zoneSites.sorted()
+                // A broker without sandboxes sends no list; a malformed one is an error, like a malformed zone list.
+                if let boxed = answer["sandbox"] {
+                    guard let sandboxSites = boxed as? [String] else { throw AppError("Daemon returned an invalid sandbox list") }
+                    next.sandbox = sandboxSites.sorted()
+                }
             } catch {
                 if !error.localizedDescription.contains("unknown method") { throw error }
             }

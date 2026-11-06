@@ -26,6 +26,8 @@ export interface ChromeParams {
   // `look`, which lists every document the extension can reach.
   frameId?: number;
   version?: string;
+  // SANDBOX: the sandbox sites whose pages show the red band. Broker-only; never forwarded from caller params.
+  sandbox?: string[];
   // Internal ownership of temporary rich-editor layout during trusted append.
   appendCleanup?: string;
   // Broker-only credential actions. Public type/press never forward this authority.
@@ -186,7 +188,9 @@ export function isTabInfo(value: unknown): value is TabInfo {
 }
 
 export interface HTMLPage { tab: number; url: string; html: string; truncated?: boolean }
-export interface TextPage { tab: number; url: string; text: string; version?: string; note?: string; outline?: string; positions?: ControlPosition[]; offscreen?: { above: number; below: number }; title?: unknown; untrusted?: boolean; length?: number; truncated?: boolean; scroll?: { y: number; height: number }; frames?: FrameInfo[] }
+export interface TextPage { tab: number; url: string; text: string; version?: string; note?: string; outline?: string; positions?: ControlPosition[]; offscreen?: { above: number; below: number }; title?: unknown; untrusted?: boolean; length?: number; truncated?: boolean; scroll?: { y: number; height: number }; frames?: FrameInfo[];
+  // SANDBOX: the sandbox site this page belongs to, said by the broker from its policy, never by the page.
+  sandbox?: string }
 // Where a click by point landed and what the gates judge: the deepest element under the
 // point, and the embedded document holding it when there is one.
 export interface PointDescription extends Required<ElementDescription> {

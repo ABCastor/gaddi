@@ -15,7 +15,7 @@
 //     except through the user's own grant request, which it may approve for at most two hours.
 import crypto from 'node:crypto';
 import { isRecord } from '../shared/protocol.ts';
-import { UPLOAD_HOLD, fold, hostOf, phraseIn, protections, rx } from './policy.ts';
+import { UPLOAD_HOLD, fold, hostOf, phraseIn, protections, rx, ownPatterns, zoneSite } from './policy.ts';
 import type { Policy, PolicyCheck } from './policy.ts';
 
 export type GrantPermission = 'upload' | 'post' | 'delete';
@@ -244,6 +244,79 @@ export function checkZone(policy: Policy, pageURL: string, check: PolicyCheck, s
   }
   return { outcome: 'allow', reason: 'test zone', zone: page.origin };
 }
+// SANDBOX: a test zone the user also made a sandbox with Touch ID. On it, for every
+// caller, no hold remains: payments, purchases, orders, transfers and their pages, and sends run too. Invariants (each
+// falsified by a mutation in tests/gates/session-grant-mutations.test.sh):
+//  1. Only a sandbox site, or a Stripe-hosted test Checkout session while at least one sandbox exists, is covered.
+//     Why: Stripe issues the cs_test_ id and its test mode cannot move real money; a live session (cs_live_) or any other
+//     provider can, so they stay held.
+//  2. A deny stays a deny (nothing here sees one), a guarded secret file is refused before this runs, extension
+//     operations never reach it, and a hold whose reason is not in SANDBOX_REASONS (a blind frame, a guarded key) stays.
+//  3. A link, or an embedded document, that leaves the sandbox is judged by its own address: the destination, the acting
+//     document and the tab around it must all be covered (FRAME-SCOPE). Why: a sandbox page cannot spend real money
+//     elsewhere by linking or framing it.
+//  4. Refused hosts and the protected addresses the user added still win, as over a zone.
+const STRIPE_TEST = /^\/c\/pay\/cs_test_[A-Za-z0-9]+\/?$/;
+export const STRIPE_CHECKOUT = 'https://checkout.stripe.com';
+function stripeTestSession(url: URL) {
+  return url.origin === STRIPE_CHECKOUT && !url.username && !url.password && STRIPE_TEST.test(url.pathname);
+}
+function sandboxBlocked(policy: Policy, url: URL) {
+  return protections(policy).hosts.some(host => rx(host)?.test(hostOf(url.href))) || ownPatterns(policy).some(pattern => rx(pattern)?.test(url.href));
+}
+// The sandbox that covers an address, named by its site, or undefined. A sandbox is always a zone too (policy.ts).
+export function sandboxCovers(policy: Policy, target: URL): string | undefined {
+  const sandbox = policy.zones?.sandbox ?? [];
+  if (!sandbox.length || sandboxBlocked(policy, target)) return undefined;
+  if (sandbox.includes(target.origin) && (policy.zones?.sites ?? []).includes(target.origin) && zoneSite(target.origin) === target.origin
+    && grantableAddress(target)) return target.origin;
+  return stripeTestSession(target) ? STRIPE_CHECKOUT : undefined;
+}
+const SANDBOX_HOLDS = ['verb:', 'enter-submits:', 'url-pattern:'];
+const sandboxReason = (reason: string | undefined) => reason !== undefined
+  && (reason === UPLOAD_HOLD || reason === 'send destination requires approval' || SANDBOX_HOLDS.some(prefix => reason.startsWith(prefix)));
+export interface SandboxScope extends ZoneScope { tab?: string }
+export function checkSandbox(policy: Policy, pageURL: string, check: PolicyCheck, scope: SandboxScope): PolicyCheck & { zone?: string; sandbox?: true } {
+  if (check.outcome !== 'hold' || !(policy.zones?.sandbox ?? []).length || !sandboxReason(check.reason)) return check;
+  const page = parseURL(pageURL);
+  const site = page && sandboxCovers(policy, page);
+  if (!site) return check;
+  for (const other of [scope.tab, scope.destination]) {
+    if (!other) continue;
+    const target = parseURL(other);
+    if (!target || !sandboxCovers(policy, target)) return check;
+  }
+  return { outcome: 'allow', reason: 'sandbox', zone: site, sandbox: true };
+}
+
+// GITHUB-OWN: agents do repo, issue and pull-request work on the user's own GitHub
+// accounts without asking. Invariants (each falsified by a mutation in tests/gates/session-grant-mutations.test.sh):
+//  1. Only post-type and delete-type holds (the session-grant tables) are waived, through the same `waive` scan as a
+//     grant: a mixed name ("Delete and pay"), a protected page (security, payments) and a link leaving the prefix stay
+//     held. Uploads, sends, money and sign-in are not post or delete, so they stay held.
+//  2. Only https://github.com paths under a listed account prefix (policy.default.json allowances.github_own).
+//  3. A path with a settings, billing, sponsors or security segment stays held. Why: repo, organisation and account
+//     settings (which include deleting or transferring a repo), billing and sponsorships act on the account itself.
+const GITHUB = 'https://github.com';
+const GITHUB_HELD = ['settings', 'billing', 'sponsors', 'sponsorships', 'security', 'payments', 'payment'];
+const GITHUB_OWN = { id: 'github-own' };
+export function githubOwnCovers(policy: Policy, target: URL) {
+  if (target.origin !== GITHUB || target.username || target.password) return false;
+  let segments: string[];
+  // A segment is compared decoded and folded, so %73ettings or SETTINGS is still settings.
+  try { segments = target.pathname.split('/').slice(1).map(segment => decodeURIComponent(segment).toLowerCase()); }
+  catch { return false; }
+  if (segments.some(segment => GITHUB_HELD.includes(segment) || segment.includes('/'))) return false;
+  // GitHub account names are case-insensitive, so the account segment is compared folded.
+  const accounts = (policy.allowances?.github_own ?? []).map(prefix => prefix.slice(GITHUB.length + 1, -1).toLowerCase());
+  return segments.length >= 2 && accounts.includes(segments[0]);
+}
+export function checkGitHubOwn(policy: Policy, pageURL: string, check: PolicyCheck, scope: GrantScope): PolicyCheck & { allowance?: string } {
+  if (check.outcome !== 'hold' || scope.kind === 'upload' || !(policy.allowances?.github_own ?? []).length) return check;
+  const waived = waive((needed, target) => needed !== 'upload' && githubOwnCovers(policy, target) ? GITHUB_OWN : undefined, policy, pageURL, check, scope);
+  return waived.outcome === 'allow' ? { outcome: 'allow', reason: 'github-own allowance', allowance: 'github-own' } : check;
+}
+
 // Whether a grant rule asks for nothing a test zone does not already give.
 export function zoneCoversRule(policy: Policy, rule: GrantRule) {
   const url = parseURL(rule.origin + rule.path);

@@ -163,6 +163,12 @@
   "uploads": {
     "remember": []
   },
+  "allowances": {
+    "github_own": [
+      "https://github.com/ABCastor/",
+      "https://github.com/Anneo22/"
+    ]
+  },
   "approvals": {
     "ttl_minutes": 10
   }
