@@ -17,7 +17,7 @@ const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 fs.writeFileSync(path.join(scratch, 'op'), `#!/usr/bin/env node
 const fs = require('node:fs');
 const args = process.argv.slice(2);
-fs.appendFileSync(process.env.SIGNIN_TEST_CALLS, JSON.stringify({args,opEnv:Object.keys(process.env).filter(k=>/^OP_/i.test(k))})+'\\n');
+fs.appendFileSync(process.env.SIGNIN_TEST_CALLS, JSON.stringify({args,opEnv:Object.keys(process.env).filter(k=>/^OP_/i.test(k)),tokenOk:process.env.OP_SERVICE_ACCOUNT_TOKEN==='agent-value-from-file',homeOk:/op-home$/.test(process.env.HOME||'')})+'\\n');
 const mode = process.env.SIGNIN_TEST_MODE;
 if (mode === 'fail') { console.error('unsafe ${password} ${user} ${otp}'); process.exit(1); }
 if (mode === 'bad-json') { console.log('invalid ${password}'); process.exit(0); }
@@ -30,7 +30,10 @@ process.env.OP_SERVICE_ACCOUNT_TOKEN = 'fake-machine-token';
 process.env.OP_SESSION_fake = 'fake-session';
 process.env.OP_ACCOUNT = 'fake-account';
 process.env.SIGNIN_TEST_CALLS = path.join(scratch, 'calls.jsonl');
-const calls = () => fs.existsSync(process.env.SIGNIN_TEST_CALLS!) ? fs.readFileSync(process.env.SIGNIN_TEST_CALLS!, 'utf8').trim().split('\n').map(line => JSON.parse(line) as {args:string[];opEnv:string[]}) : [];
+fs.writeFileSync(path.join(scratch, 'agent-cred'), 'agent-value-from-file\n', { mode: 0o600 });
+process.env.GADDI_OP_TOKEN_FILE = path.join(scratch, 'agent-cred');
+process.env.GADDI_OP_HOME = path.join(scratch, 'op-home');
+const calls = () => fs.existsSync(process.env.SIGNIN_TEST_CALLS!) ? fs.readFileSync(process.env.SIGNIN_TEST_CALLS!, 'utf8').trim().split('\n').map(line => JSON.parse(line) as {args:string[];opEnv:string[];tokenOk:boolean;homeOk:boolean}) : [];
 
 try {
   assert.equal(signinSite('https://example.com/login?q=x'), 'https://example.com');
@@ -72,7 +75,15 @@ try {
   assert.deepEqual(await listLogins(), [item]);
   assert.deepEqual(await getCredentials(item), {username:user,password});
   assert.equal(await getOTP(item), otp);
-  assert.ok(calls().every(call => call.opEnv.length === 0));
+  // ASSERT_OP_AGENT_TOKEN: op gets only the agents' service account from its file and a home without the desktop app.
+  assert.ok(calls().every(call => call.opEnv.join() === 'OP_SERVICE_ACCOUNT_TOKEN' && call.tokenOk && call.homeOk), 'ASSERT_OP_AGENT_TOKEN');
+  {
+    const before = calls().length;
+    process.env.GADDI_OP_TOKEN_FILE = path.join(scratch, 'missing-cred');
+    await assert.rejects(listLogins(), { message: '1Password login list failed' });
+    assert.equal(calls().length, before, 'ASSERT_OP_NO_DESKTOP_FALLBACK: without the file op never starts');
+    process.env.GADDI_OP_TOKEN_FILE = path.join(scratch, 'agent-cred');
+  }
   assert.deepEqual(calls()[0].args, ['item','list','--categories','Login','--format','json']);
   assert.deepEqual(calls()[1].args, ['item','get',item.id,'--fields','label=username,label=password','--reveal','--format','json']);
   for (const mode of ['fail','bad-json']) {

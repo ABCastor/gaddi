@@ -1,5 +1,7 @@
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { isIP } from 'node:net';
 import { domainToASCII } from 'node:url';
 import { isRecord } from '../shared/protocol.ts';
@@ -62,7 +64,7 @@ export function chooseLogin(items: LoginItem[], value: string, requested?: unkno
     return { outcome: 'failed', site, reason: 'Invalid login selection' };
   }
   const candidates = items.filter(item => matches(item, site) && (requested === undefined || item.id === requested || item.title === requested));
-  if (!candidates.length) return { outcome: requested === undefined ? 'no_login' : 'failed', site, reason: requested === undefined ? 'No matching login' : 'Selected login does not match this site' };
+  if (!candidates.length) return { outcome: requested === undefined ? 'no_login' : 'failed', site, reason: requested === undefined ? 'No matching login in the vaults agents can read (Automation or Shared)' : 'Selected login does not match this site' };
   if (candidates.length > 1) return { outcome: 'choose', site, reason: JSON.stringify(candidates.map(item => item.title)) };
   return { outcome: 'selected', item: candidates[0] };
 }
@@ -76,14 +78,26 @@ function opBinary(): string {
   }
   return 'op';
 }
-export const PASSWORD_UNAVAILABLE = '1Password is locked or unavailable: unlock the desktop app, authorize CLI access, then retry. The browser extension is not required.';
+export const PASSWORD_UNAVAILABLE = "1Password is unavailable to agents: the agent token file is missing or 1Password could not be reached. Logins must sit in a vault agents can read (Automation or Shared), never Personal.";
+// op signs in only with the agents' service-account token, read from its file per call,
+// and runs with a home of its own so it never finds the 1Password desktop app. Why: the
+// desktop app answers an agent's op call with a Touch ID card, which blocks every sign-in
+// whenever nobody is at the Mac (raised five times on 6 Nov 2026). No desktop fallback.
+function opEnv(): Record<string, string> {
+  const tokenFile = process.env.GADDI_OP_TOKEN_FILE || path.join(os.homedir(), '.config/op/agent-rw-token');
+  const token = fs.readFileSync(tokenFile, 'utf8').trim();
+  if (!token) throw new Error('empty token');
+  const home = process.env.GADDI_OP_HOME || path.join(os.homedir(), '.config/op/isolated-home');
+  fs.mkdirSync(home, { recursive: true, mode: 0o700 });
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('OP_') && !key.startsWith('GADDI_OP_'))) as Record<string, string>;
+  return { ...env, HOME: home, OP_SERVICE_ACCOUNT_TOKEN: token };
+}
 function op(args: string[], input?: string): Promise<string> {
   return new Promise((resolve, reject) => {
-    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('OP_')));
     let stdout = '', size = 0, done = false;
     const fail = () => { if (!done) { done = true; reject(new Error('1Password lookup failed')); } };
     let child;
-    try { child = spawn(opBinary(), args, { env, stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000, killSignal: 'SIGKILL' });
+    try { child = spawn(opBinary(), args, { env: opEnv(), stdio: ['pipe', 'pipe', 'pipe'], timeout: 5000, killSignal: 'SIGKILL' });
       child.stdin.on('error', () => {});
       child.stdin.end(input); } catch { fail(); return; }
     child.stdout.setEncoding('utf8');

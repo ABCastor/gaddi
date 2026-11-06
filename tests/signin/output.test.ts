@@ -147,12 +147,14 @@ console.log(JSON.stringify({result:{content:html.replace(/&amp;/g,'&')}}));
   fs.writeFileSync(path.join(home, 'op'), `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
-fs.appendFileSync(process.env.SIGNIN_OUTPUT_RECEIPT, JSON.stringify({args,env:Object.keys(process.env).filter(k=>/^OP_/i.test(k))})+'\\n');
+fs.appendFileSync(process.env.SIGNIN_OUTPUT_RECEIPT, JSON.stringify({args,env:Object.keys(process.env).filter(k=>/^OP_/i.test(k)),tokenOk:process.env.OP_SERVICE_ACCOUNT_TOKEN==='agent-value-from-file',homeOk:/op-home$/.test(process.env.HOME||'')})+'\\n');
 if(args[1]==='list') console.log(JSON.stringify([{id:'fixture-item',title:'Fixture login',urls:[{href:'http://example.com'}]}]));
 else console.log(JSON.stringify([{label:'username',value:'${username}'},{label:'password',value:'${password}'}]));
 `, { mode: 0o700 });
   process.env.PATH = `${home}:${process.env.PATH}`;
   process.env.SIGNIN_OUTPUT_RECEIPT = receipt;
+fs.writeFileSync(path.join(home, 'agent-cred'), 'agent-value-from-file\n', { mode: 0o600 });
+process.env.GADDI_OP_TOKEN_FILE = path.join(home, 'agent-cred'); process.env.GADDI_OP_HOME = path.join(home, 'op-home');
   process.env.OP_SERVICE_ACCOUNT_TOKEN = 'FAKE_SERVICE_TOKEN'; process.env.OP_SESSION_fake = 'FAKE_SESSION';
   // The approval app is replaced by a no-op; no real app or Touch ID prompt.
   vm.runInContext('process.env.GADDI_APP_LAUNCHER = "/usr/bin/true"', context);
@@ -185,13 +187,13 @@ else console.log(JSON.stringify([{label:'username',value:'${username}'},{label:'
   const after = await rpc('eval', { tab: 7, expression: 'document.querySelector("input").value' });
   assert.ok(!JSON.stringify(after).includes(username) && !JSON.stringify(after).includes(password));
   console.log('PASS production sign-in automatically retains credentials for following eval redaction');
-  const records = fs.readFileSync(receipt, 'utf8').trim().split('\n').map(line => JSON.parse(line) as {env:string[]});
-  assert.ok(records.every(call => call.env.length === 0));
+  const records = fs.readFileSync(receipt, 'utf8').trim().split('\n').map(line => JSON.parse(line) as {env:string[];tokenOk:boolean;homeOk:boolean});
+  assert.ok(records.every(call => call.env.join() === 'OP_SERVICE_ACCOUNT_TOKEN' && call.tokenOk && call.homeOk), 'ASSERT_OP_AGENT_TOKEN');
   const finalAudit = fs.readFileSync(path.join(home, 'audit.jsonl'), 'utf8');
   assert.ok(!finalAudit.includes(username) && !finalAudit.includes(password));
   const signinRows = finalAudit.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>).filter(row => 'site' in row);
   assert.ok(signinRows.length > 0 && signinRows.every(row => Object.keys(row).sort().join(',') === 'item_title,outcome,site,ts'));
-  console.log('PASS production sign-in audit has four metadata fields and op has no OP_* env');
+  console.log('PASS production sign-in audit has four metadata fields and op gets only the agent service account and an isolated home');
   console.log('== signin output: 9 passed, 0 failed');
 } finally {
   process.env = oldEnvironment;

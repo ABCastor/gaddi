@@ -120,6 +120,8 @@ try {
   browser = await chromium.connectOverCDP(`http://127.0.0.1:${devtoolsPort}`, { noDefaults: true });
   const context = browser.contexts()[0];
   process.env.PATH = `${state}:${process.env.PATH}`;
+fs.writeFileSync(path.join(state, 'agent-cred'), 'agent-value-from-file\n', { mode: 0o600 });
+process.env.GADDI_OP_TOKEN_FILE = path.join(state, 'agent-cred'); process.env.GADDI_OP_HOME = path.join(state, 'op-home');
   const cases = process.env.GADDI_SIGNIN_CASE ? [process.env.GADDI_SIGNIN_CASE]
     : process.env.GADDI_SIGNIN_BREAK_LANDED === '1' ? ['?sticky']
     : auraMutation ? ['?aura'] : ['?plain', '?persistent', '?focus', '?sticky', '?aura', '?aura-sticky', '?signup'];

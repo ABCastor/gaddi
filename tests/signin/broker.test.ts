@@ -23,12 +23,13 @@ fs.writeFileSync(path.join(home, 'approver.pub'), publicKey.export({ type: 'spki
 fs.writeFileSync(path.join(home, 'op'), `#!${process.execPath}
 const fs = require('node:fs');
 const args = process.argv.slice(2);
-fs.appendFileSync(process.env.SIGNIN_OP_CALLS, JSON.stringify({args,opEnv:Object.keys(process.env).filter(k=>/^OP_/i.test(k))})+'\\n');
+fs.appendFileSync(process.env.SIGNIN_OP_CALLS, JSON.stringify({args,opEnv:Object.keys(process.env).filter(k=>/^OP_/i.test(k)),tokenOk:process.env.OP_SERVICE_ACCOUNT_TOKEN==='agent-value-from-file',homeOk:/op-home$/.test(process.env.HOME||'')})+'\\n');
 if (args[1] === 'list') console.log(fs.readFileSync(process.env.SIGNIN_ITEMS,'utf8'));
 else console.log(JSON.stringify([{label:'username',value:'${username}'},{label:'password',value:'${password}'}]));
 `, { mode: 0o700 });
+fs.writeFileSync(path.join(home, 'agent-cred'), 'agent-value-from-file\n', { mode: 0o600 });
 const env = { ...process.env, PATH: `${home}:${process.env.PATH}`, OP_SERVICE_ACCOUNT_TOKEN: 'FAKE_MACHINE_TOKEN', OP_SESSION_test: 'FAKE_SESSION',
-  SIGNIN_OP_CALLS: opCalls, SIGNIN_ITEMS: itemsPath, GADDI_HOME: home, GADDI_SOCKET: socket,
+  SIGNIN_OP_CALLS: opCalls, GADDI_OP_TOKEN_FILE: path.join(home, 'agent-cred'), GADDI_OP_HOME: path.join(home, 'op-home'), SIGNIN_ITEMS: itemsPath, GADDI_HOME: home, GADDI_SOCKET: socket,
   GADDI_AUDIT: path.join(home, 'audit.jsonl'), GADDI_STATE: path.join(home, 'state.json'),
   GADDI_APPROVER_PUB: path.join(home, 'approver.pub'), GADDI_APP_LAUNCHER: '/usr/bin/true', GADDI_POLICY_OFF: '0',
   OMNIREAD_BIN: path.join(home, 'missing-omniread') };
@@ -207,13 +208,13 @@ try {
     // browser_grant only asks; the user's signed decision in the app is what grants (tests/gates/session-grant).
     assert.equal(tools.tools.some(tool => tool.name !== 'browser_grant' && /remember|revoke|grant/.test(tool.name)), false);
     pass('signed Always skips the next hold on its exact origin; signed Revoke restores it; unsigned RPCs and replay fail');
-    const calls = fs.readFileSync(opCalls, 'utf8').trim().split('\n').map(line => JSON.parse(line) as { opEnv: string[] });
-    assert.ok(calls.every(call => call.opEnv.length === 0));
+    const calls = fs.readFileSync(opCalls, 'utf8').trim().split('\n').map(line => JSON.parse(line) as { opEnv: string[]; tokenOk: boolean; homeOk: boolean });
+    assert.ok(calls.every(call => call.opEnv.join() === 'OP_SERVICE_ACCOUNT_TOKEN' && call.tokenOk && call.homeOk), 'ASSERT_OP_AGENT_TOKEN');
     const audit = fs.readFileSync(env.GADDI_AUDIT, 'utf8'); noSecrets(audit); noSecrets(stderr);
     const rows = audit.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
     const signinRows = rows.filter(row => 'site' in row);
     assert.ok(signinRows.length > 0 && signinRows.every(row => Object.keys(row).sort().join(',') === 'item_title,outcome,site,ts'));
-    pass('op child has no OP_* variables; audit/log output has no credentials');
+    pass('op child gets only the agent service account from its file and an isolated home; audit/log output has no credentials');
     console.log(`== signin broker: ${passed} passed, 0 failed`);
   }
 } finally {

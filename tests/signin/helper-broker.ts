@@ -31,7 +31,8 @@ if(fs.existsSync(${JSON.stringify(lock)})){setTimeout(()=>console.log('[]'),8000
 }else if(args[1]==='list')console.log(JSON.stringify([{id:'helper-new-item',title:'Helper fixture',urls:[{href:${JSON.stringify(site)}}]}]));
 else console.log(${JSON.stringify(JSON.stringify([{label:'username',value:username},{label:'password',value:password}]))});
 `,{mode:0o700});
-  const env={...process.env,PATH:`${home}:${process.env.PATH}`,GADDI_HOME:home,GADDI_SOCKET:socket,
+  fs.writeFileSync(path.join(home, 'agent-cred'), 'agent-value-from-file\n', { mode: 0o600 });
+const env={...process.env,PATH:`${home}:${process.env.PATH}`,GADDI_HOME:home,GADDI_SOCKET:socket,GADDI_OP_TOKEN_FILE:path.join(home,'agent-cred'),GADDI_OP_HOME:path.join(home,'op-home'),
     GADDI_AUDIT:path.join(home,'audit.jsonl'),GADDI_STATE:path.join(home,'state.json'),GADDI_APPROVER_PUB:path.join(home,'approver.pub'),GADDI_APP_LAUNCHER:'/usr/bin/true',GADDI_POLICY_OFF:process.env.GADDI_HELPER_POLICY_OFF==='1'?'1':'0'};
   if(downloadHold)fs.writeFileSync(path.join(home,'policy.json'),JSON.stringify({hold:{downloads:true}}));
   let entry=path.join(repo,'daemon/daemon.mjs');
@@ -161,7 +162,7 @@ else console.log(${JSON.stringify(JSON.stringify([{label:'username',value:userna
     reset();const lockedTab=await action('open',{url:site+'/login'});assert.ok(isRecord(lockedTab)&&typeof lockedTab.id==='number');
     fs.writeFileSync(lock,'locked');const before=Date.now();
     const unavailable=await result('signin',{tab:lockedTab.id});assert.ok(isRecord(unavailable)&&unavailable.outcome==='needs_you'&&unavailable.step==='1password');
-    assert.match(String(unavailable.reason),/locked or unavailable/);assert.ok(Date.now()-before<6500,'ASSERT_HELPER_LOCK');
+    assert.match(String(unavailable.reason),/unavailable to agents/);assert.ok(Date.now()-before<6500,'ASSERT_HELPER_LOCK');
     await result('close',{tabs:[lockedTab.id]});
     const audit=fs.readFileSync(path.join(home,'audit.jsonl'),'utf8');safe(audit);
     console.log('PASS public broker locked case: clear needs_you/1password in under 6.5s, no credentials in output/audit');
