@@ -106,7 +106,13 @@ try {
   assert.doesNotMatch(instructions, /agents cannot grant permissions/, 'ASSERT_GRANT_GUIDANCE');
   assert.match(instructions, /ask for a session grant with browser_grant.*only the owner approves it in Gaddi/, 'ASSERT_GRANT_GUIDANCE');
   assert.match(instructions, /Payments, sends, sign-in, security stay held/, 'ASSERT_GRANT_GUIDANCE');
-  assert.deepEqual(Object.keys(schema('signin').properties).sort(), ['approval', 'create', 'item', 'signup', 'tab', 'why']);
+  assert.deepEqual(Object.keys(schema('signin').properties).sort(), ['approval', 'create', 'item', 'signup', 'submit', 'tab', 'why']);
+  assert.deepEqual(schema('signin').properties.submit, { type: 'boolean' }, 'ASSERT_SIGNUP_SUBMIT_SCHEMA');
+  // SECRET-FILL: a password comes from a named 1Password item, so text is no longer required.
+  assert.deepEqual(schema('type').properties.secret, { type: 'string' }, 'ASSERT_SECRET_FILL_SCHEMA');
+  assert.deepEqual(schema('type').required, ['selector'], 'ASSERT_SECRET_FILL_SCHEMA');
+  assert.match(listed.tools.find(t => t.name === 'browser_type')!.description!, /secret: 1Password item fills a password/, 'ASSERT_SECRET_FILL_SCHEMA');
+  assert.deepEqual(schema('grant').properties.standing, { type: 'boolean' }, 'ASSERT_STANDING_SCHEMA');
   assert.deepEqual(schema('click').properties.download,{type:'string'},'ASSERT_DOWNLOAD_SCHEMA');
   const create=schema('signin').properties.create;assert.ok(isRecord(create)&&isRecord(create.properties));
   assert.deepEqual(Object.keys(create.properties).sort(),['title','username','vault'],'ASSERT_CREATE_NO_SECRET_FIELD');
@@ -114,7 +120,7 @@ try {
   assert.equal(create.additionalProperties,false);
   assert.deepEqual(schema('signin').properties.signup,{type:'boolean'});
   // Every tool whose call can be held takes the agent's one-line purpose, for the user's card; no other tool does.
-  const holdable = ['read', 'open', 'goto', 'click', 'press', 'signin', 'upload', 'extensions'];
+  const holdable = ['read', 'open', 'goto', 'click', 'type', 'press', 'signin', 'upload', 'extensions'];
   for (const tool of listed.tools) {
     const why = isRecord(tool.inputSchema.properties) ? tool.inputSchema.properties.why : undefined;
     if (holdable.includes(tool.name.slice(8))) assert.deepEqual(why, { type: 'string' }, `ASSERT_WHY_SCHEMA: ${tool.name}`);

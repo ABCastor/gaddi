@@ -18,7 +18,7 @@ I built it to work with MCP-capable agents without taking focus from my other ap
 
 **A held action waits for you to confirm it in Gaddi's Mac panel.** Telling the agent "yes" does not create that signature.
 
-A local broker checks each request before Chrome. The default policy holds recognized payments, purchases, deletion, security changes and sends, plus all uploads. Gmail Send and direct password-field access are refused.
+A local broker checks each request before Chrome. The default policy holds recognized payments, purchases, deletion, security changes and sends, plus all uploads. Gmail Send and typing literal text into password fields are refused; a password goes in only from 1Password.
 
 <img src="docs/media/approval.png" width="700" alt="The native approval card names the agent, site and Publish local note action, shows the target on the page, and offers Approve or Deny.">
 
@@ -100,7 +100,7 @@ Pass the version from `look` to reject stale input. When a session ends, its bac
 
 `browser_signin` uses the [1Password CLI](https://developer.1password.com/docs/cli/) and desktop-app integration, without needing the browser's password-manager extension. You authorize the site and Login item; Gaddi fills it. A locked or unavailable CLI returns an unlock/retry instruction after a five-second process budget. Agents can work through visual challenges with screenshot/click; passkeys and extra verification can need you.
 
-For a new account, pass `create:{title,username,vault}`. You approve the new item and vault; `op` generates and saves its password, then Gaddi fills the signup form without submitting. Use `signup:true` with `item` to fill an already saved login. Submit with an ordinary click, keeping its existing approval rules. See [the sign-in contract](docs/authorization.md#new-accounts-and-a-locked-password-manager).
+For a new account, pass `create:{title,username,vault}`. You approve the new item and vault (or choose Always allow for the site); `op` generates and saves its password, then Gaddi fills the signup form, and with `submit:true` presses its button as an ordinary, gated click. Use `signup:true` with `item` to fill an already saved login. `browser_type` with `secret:<item>` fills one password field from 1Password; the agent never sees the value. See [the sign-in contract](docs/authorization.md#new-accounts-and-a-locked-password-manager).
 
 Credentials stay out of sign-in results and audit entries. Text output redacts exact matches for ten minutes after use; screenshots do not. Credential-bearing URL query/fragment values are redacted independently, across results, errors, events and stored broker metadata. Navigation and signed approvals still use the original URL. Existing broker state and audit files are scrubbed at startup; client transcripts and Chrome history are not. See [URL credentials](docs/authorization.md#url-credentials).
 

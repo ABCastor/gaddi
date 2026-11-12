@@ -31,7 +31,9 @@ export interface ChromeParams {
   // Internal ownership of temporary rich-editor layout during trusted append.
   appendCleanup?: string;
   // Broker-only credential actions. Public type/press never forward this authority.
-  signin?: { site: string; signup?: boolean; kind?: 'username' | 'password' | 'confirmation' | 'otp' };
+  signin?: { site: string; signup?: boolean; kind?: 'username' | 'usernameConfirmation' | 'password' | 'confirmation' | 'otp' };
+  // Broker-only 1Password fill of one password field on this exact site; the text is the item's password.
+  fill?: { site: string };
   // Internal, origin-bound interception of a page's generated download. No local path crosses this wire.
   downloadCapture?: { id: string; site: string; index?: number };
   // A file the broker vetted, sent in base64 pieces and then attached by reference to them.
@@ -43,6 +45,12 @@ export interface BrokerParams extends ChromeParams {
   caller?: string; session?: string; harness?: string; approval?: string; id?: string; proof?: SignedProof;
   kind?: string; n?: number; path?: string; item?: string;
   signup?: boolean; create?: { title: string; username: string; vault: string };
+  // browser_signin: after a sign-up fill, press the form's button as an ordinary gated click.
+  submit?: boolean;
+  // browser_type: the title or ID of a 1Password login whose password fills a password field (SECRET-FILL).
+  secret?: string;
+  // browser_grant: ask for standing permission per site (`<upload|signin> <origin>`) instead of a session grant.
+  standing?: boolean;
   download?: string;
   remember?: boolean; site?: string; reason?: string;
   // browser_grant: what to waive (`<upload|post|delete> <address prefix>`), for how long, and the agent's own words.
@@ -116,8 +124,10 @@ export function isControlPosition(value: unknown): value is ControlPosition {
       && (key === 'x' || key === 'y' || value[key] >= 0));
 }
 export interface ApprovalCapture { data: string; mimeType: string; width: number; height: number; box: ImageBox }
-export interface SigninProbe { url: string; signature: string; username?: string; password?: string; confirmation?: string; passwordPresent?: boolean; otp?: string; challenge?: boolean }
-export interface SigninResult { outcome: 'signed_in' | 'filled' | 'needs_you' | 'no_login' | 'choose' | 'failed'; site: string; item_title?: string; step?: string; reason?: string }
+export interface SigninProbe { url: string; signature: string; username?: string; usernameConfirmation?: string; password?: string; confirmation?: string; passwordPresent?: boolean; otp?: string; challenge?: boolean;
+  // Sign-up only: the button that sends the form, pressed by the broker as an ordinary gated click.
+  submit?: string }
+export interface SigninResult { outcome: 'signed_in' | 'filled' | 'submitted' | 'needs_you' | 'no_login' | 'choose' | 'failed'; site: string; item_title?: string; step?: string; reason?: string }
 export interface PageResults {
   downloadArm: { armed: boolean };
   downloadPoll: { ready: boolean; bytes?: number; chunks?: number; error?: string };
@@ -139,7 +149,7 @@ export interface PageResults {
   pointTarget: PointTarget;
   read: { text: string; outline: string; positions?: ControlPosition[]; version?: string; offscreen?: { above: number; below: number }; scroll: { y: number; height: number }; frames?: FrameInfo[] };
   html: { html: string; truncated: boolean };
-  evalCheck: Record<string, never>;
+  evalCheck: { hidden: string[] };
   snapshot: { signature: string };
   settle: PageResults['snapshot'] & { url: string; version?: string };
   pressCheck: PageResults['snapshot'];
@@ -152,7 +162,9 @@ export interface PageResults {
   typeLanded: { landed: boolean };
   // The point a trusted click would use and the document reference it was measured from, so a
   // frame-targeted click can prove the composed point still holds that very element.
-  clickPoint: PageResults['snapshot'] & { x: number; y: number; selector: string };
+  // choice: a radio, checkbox, option or the label of one; domClick: it is hidden, so it is clicked through the page.
+  clickPoint: PageResults['snapshot'] & { x: number; y: number; selector: string; choice?: boolean; domClick?: boolean };
+  domClick: PageResults['snapshot'] & { domClick: true };
   // Whether the tab's own document handed the focus to an embedded one.
   pressFocus: { embedded: boolean };
   // The visible part of a document, in CSS pixels.
@@ -169,7 +181,7 @@ export type PageResult = { __gaddiError?: string; __gaddiCode?: string } & Parti
   & Omit<PageResults['describe'], 'password'> & PageResults['read'] & PageResults['html']
   & PageResults['wait'] & PageResults['captureBox'] & PageResults['scroll'] & PageResults['select'] & PageResults['clickPoint'] & PageResults['scrollPoint'] & PageResults['typeFocus'] & PageResults['settle']
   & PageResults['closeForeignFrames'] & PageResults['typeLanded'] & PageResults['upload'] & PageResults['pointTarget'] & PageResults['pressFocus'] & PageResults['viewport']
-  & Omit<SigninProbe, 'password'> & { password: boolean | string }>;
+  & PageResults['evalCheck'] & PageResults['domClick'] & Omit<SigninProbe, 'password'> & { password: boolean | string }>;
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -229,7 +241,7 @@ export type BrokerRPC = <M extends string>(method: M, params?: BrokerParams) => 
 // Check only the result fields a client consumes; arbitrary eval and policy payloads stay opaque.
 export function isBrokerResult<M extends string>(method: M, value: unknown): value is BrokerResult<M> {
   switch (method) {
-    case 'signin': return isRecord(value) && ['signed_in', 'filled', 'needs_you', 'no_login', 'choose', 'failed'].includes(String(value.outcome))
+    case 'signin': return isRecord(value) && ['signed_in', 'filled', 'submitted', 'needs_you', 'no_login', 'choose', 'failed'].includes(String(value.outcome))
       && typeof value.site === 'string' && ['item_title', 'step', 'reason'].every(key => value[key] === undefined || typeof value[key] === 'string')
       && Object.keys(value).every(key => ['outcome', 'site', 'item_title', 'step', 'reason'].includes(key));
     case 'tabs': return isRecord(value) && Array.isArray(value.tabs) && value.tabs.every(isTabInfo);

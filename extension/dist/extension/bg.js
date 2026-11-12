@@ -551,6 +551,8 @@ async function resolvePoint(tab, at, check) {
 // While an agent's input runs in a tab the user is not looking at, a tab the page asks
 // for opens behind their work instead of bringing Chrome to the front (popups.ts).
 const NEW_CONTEXT_MS = 10000, NEW_CONTEXT_WAIT_MS = 500;
+// How long a click on a choice waits for a page that answers late (afterInput patientMs).
+const CHOICE_PATIENCE_MS = 1200;
 // A frame that never answers (still loading, or a busy renderer) must not hold up the input.
 const bounded = (work, fallback) => {
     let timer;
@@ -655,10 +657,26 @@ async function waitOnTab(tab, params, scope) {
         chrome.tabs.onUpdated.removeListener(updated);
     }
 }
-async function afterInput(tab, before, url, scope, combobox = false, frameId) {
+// Password field values (EVAL-PASSWORDS) removed from an evaluation's result, wherever they appear in it.
+// Values under 4 characters are left alone: replacing every "a" would wreck any result and protect nothing.
+function hideValues(value, values) {
+    const hidden = [...new Set(values.filter(entry => entry.length >= 4))].sort((a, b) => b.length - a.length);
+    if (!hidden.length)
+        return value;
+    const text = (entry) => hidden.reduce((out, secret) => out.split(secret).join('(hidden)'), entry);
+    const walk = (entry) => typeof entry === 'string' ? text(entry)
+        : typeof entry === 'number' || typeof entry === 'bigint' ? (text(String(entry)) === String(entry) ? entry : '(hidden)')
+            : Array.isArray(entry) ? entry.map(walk)
+                : entry && typeof entry === 'object' ? Object.fromEntries(Object.entries(entry).map(([key, item]) => [text(key), walk(item)]))
+                    : entry;
+    return walk(value);
+}
+// patientMs: a choice (a radio, a checkbox, an option) on a page that answers late. A controlled radio is put back
+// at once and the page moves on only after its own request returns; without patience such a click reads as no change.
+async function afterInput(tab, before, url, scope, combobox = false, frameId, patientMs = 0) {
     // Observation cannot reject an input already sent. Bound even a lost injection
     // reply (navigation or a busy renderer); do not leave agents waiting to replay it.
-    const maxWait = combobox ? 450 : 300;
+    const maxWait = (combobox ? 450 : 300) + patientMs;
     // Preserve the request deadline and leave the same budget for debugger cleanup.
     if (scope.end - Date.now() <= maxWait * 2)
         return { changed: true, url };
@@ -667,7 +685,11 @@ async function afterInput(tab, before, url, scope, combobox = false, frameId) {
         return await Promise.race([
             (async () => {
                 try {
-                    const after = await onPage(tab, 'settle', { settleMs: combobox ? 200 : 50, ...(frameId === undefined ? {} : { frameId }) }, scope.check);
+                    let after = await onPage(tab, 'settle', { settleMs: combobox ? 200 : 50, ...(frameId === undefined ? {} : { frameId }) }, scope.check);
+                    for (const until = Date.now() + patientMs; /* PATIENT_TEST_POINT */ after.signature === before.signature && Date.now() < until;) {
+                        await new Promise(resolve => setTimeout(resolve, 120));
+                        after = await onPage(tab, 'settle', { settleMs: 50, ...(frameId === undefined ? {} : { frameId }) }, scope.check);
+                    }
                     // An embedded document's address is not the tab's, so only its change is used.
                     return { changed: before.signature !== after.signature, url: frameId === undefined ? after.url : url,
                         ...(after.version ? { version: after.version } : {}) };
@@ -1446,14 +1468,16 @@ async function dispatchAction({ method, params = {} }, scope) {
             if (/password/i.test(params.expression))
                 throw new Error('Refusing password access');
             return rendered(async (send) => {
-                await onPage(tab, 'evalCheck', {}, check);
+                // Invariant: what password fields hold, before and after the evaluation, never leaves in its result.
+                const before = await onPage(tab, 'evalCheck', {}, check);
                 const evaluated = await send('Runtime.evaluate', { expression: params.expression,
                     returnByValue: true, awaitPromise: true, timeout: 10000 });
                 if (evaluated.exceptionDetails)
                     throw new Error('Page evaluation failed');
                 if (evaluated.result?.subtype === 'error')
                     throw new Error('Page evaluation failed');
-                return { ...result, value: evaluated.result?.value ?? evaluated.result?.unserializableValue ?? null };
+                const after = await onPage(tab, 'evalCheck', {}, check);
+                return { ...result, value: hideValues(evaluated.result?.value ?? evaluated.result?.unserializableValue ?? null, [...before.hidden ?? [], ...after.hidden ?? []]) };
             });
         }
         if (action === 'upload') {
@@ -1628,6 +1652,13 @@ async function dispatchAction({ method, params = {} }, scope) {
         if (action === 'click' || action === 'hover')
             return trusted(async (send) => {
                 const measured = await onPage(tab, action === 'hover' ? 'hoverPoint' : 'clickPoint', params, check);
+                const patience = action === 'click' && measured.choice ? CHOICE_PATIENCE_MS : 0;
+                if (action === 'click' && measured.domClick) {
+                    // A hidden choice or option: the page's own click, after the same name check (content.ts domClick).
+                    const before = await onPage(tab, 'domClick', params, check);
+                    return opened({ ...result, clicked: true, note: 'The control is hidden, so Gaddi clicked it through the page; look to confirm the result',
+                        ...await afterInput(tab, before, result.url, scope, false, params.frameId, patience) });
+                }
                 // Trusted input goes to the tab's own viewport, so a point measured inside an embedded
                 // document is moved by that document's place in the page first.
                 // Aiming inside a document also holds the point to the visible part of the tab.
@@ -1643,7 +1674,7 @@ async function dispatchAction({ method, params = {} }, scope) {
                     await press(send, point);
                 }
                 return opened({ ...result, [action === 'click' ? 'clicked' : 'hovered']: true,
-                    ...await afterInput(tab, measured, result.url, scope, false, params.frameId) });
+                    ...await afterInput(tab, measured, result.url, scope, false, params.frameId, patience) });
             }).catch(handedNote);
         if (action === 'type') {
             if (typeof params.text !== 'string')
@@ -1652,7 +1683,8 @@ async function dispatchAction({ method, params = {} }, scope) {
                 throw new Error('mode must be replace or append');
             // Every follow-up runs in the same document the focus was checked in: the field's
             // reference belongs to that frame's element map.
-            const frame = params.frameId === undefined ? {} : { frameId: params.frameId };
+            // The broker's 1Password fill keeps its site binding on every follow-up check (content.ts assertWritable).
+            const frame = { ...(params.frameId === undefined ? {} : { frameId: params.frameId }), ...(params.fill ? { fill: params.fill } : {}) };
             const target = { ...await onPage(tab, 'typeFocus', params, check), mode: params.mode, ...frame };
             return trusted(async (send) => {
                 try {

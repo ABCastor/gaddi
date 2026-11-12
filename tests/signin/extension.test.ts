@@ -253,12 +253,13 @@ await test('relative form destinations honor baseURI; empty action remains on th
   const result = await probe();
   assert.equal((await pageTask('signinSubmitFocus', params(result.password!, 'password'))).__gaddiError, undefined);
 });
-await test('ordinary typing, pressing and evaluation still refuse passwords', async () => {
+await test('ordinary typing and pressing still refuse passwords; evaluation learns their values to hide', async () => {
   const password = input('password'); inForm([password]); const result = await probe();
   assert.match((await pageTask('typeFocus', { selector: result.password })).__gaddiError!, /password/);
   doc.activeElement = password;
   assert.match((await pageTask('pressCheck')).__gaddiError!, /password/);
-  assert.match((await pageTask('evalCheck')).__gaddiError!, /password/);
+  password.value = 'held-by-the-page';
+  assert.deepEqual((await pageTask('evalCheck')).hidden, ['held-by-the-page']);
 });
 
 class Event<T extends (...args: never[]) => unknown> {

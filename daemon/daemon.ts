@@ -5,7 +5,7 @@ import net from 'node:net';
 import type { Socket } from 'node:net';
 import { isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, pointParam, isControlPosition } from '../shared/protocol.ts';
 import type { IncomingParams, ChromeParams, WireError, BrokerResults, SigninResult, ControlPosition } from '../shared/protocol.ts';
-import type { PolicyCheck } from './policy.ts';
+import type { PolicyCheck, SendRule } from './policy.ts';
 import type { ApprovalAction, StoredApprovalRef, StoredApproval, RemoteFacts, ApprovalContext } from './approvals.ts';
 // `decision` and `remoteKey` exist only to be written to the audit: who answered from another device and what,
 // never the signature or the nonce.
@@ -27,8 +27,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, setSandbox, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf } from './policy.ts';
-import { signinSite, listLogins, chooseLogin, runSignin, createLogin, PASSWORD_UNAVAILABLE } from './signin.ts';
+import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, setSandbox, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf, UPLOAD_HOLD } from './policy.ts';
+import { signinSite, listLogins, chooseLogin, runSignin, createLogin, getPassword, PASSWORD_UNAVAILABLE } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
 import { redactURLs, redactURLText } from '../shared/url-redaction.ts';
 import { downloadTarget, saveDownload, checkDownload, DOWNLOAD_LIMIT } from './downloads.ts';
@@ -439,7 +439,9 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     try {
       site = signinSite(pageURL);
       if (params.signup !== undefined && typeof params.signup !== 'boolean') throw new Error();
+      if (params.submit !== undefined && typeof params.submit !== 'boolean') throw new Error();
       const creating = params.create !== undefined, signup = creating || params.signup === true;
+      if (params.submit === true && !signup) throw new Error();
       if (creating && (params.item !== undefined || !isRecord(params.create) || typeof params.create.title !== 'string'
         || !params.create.title.trim() || params.create.title.length > 160 || typeof params.create.username !== 'string'
         || !params.create.username.trim() || params.create.username.length > 320
@@ -459,7 +461,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       const title = cleanDetail(creating ? `Create new login: ${item.title} (${String((params.create as Record<string, unknown>).username)}), vault ${String((params.create as Record<string, unknown>).vault)}` : item.title);
       try {
         await gate({ kind: 'signin', meta, detail: title,
-          check: creating ? { outcome: 'hold', reason: 'create and save a new 1Password login' } : checkSignin(policy, site), approval: params.approval,
+          check: creating ? creationCheck(site) : checkSignin(policy, site), approval: params.approval,
           action: { method: 'signin', caller: meta.caller, url: pageURL, tab: resolvedTab, item: item.id, title, site, signup,
             ...(creating ? { create: params.create } : {}) } });
       } catch (error) {
@@ -479,8 +481,10 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
           reason: `${PASSWORD_UNAVAILABLE} Check for the new item before retrying creation; a timed-out save may have completed.` }); }
       }
       // The bridge connection and tab remain pinned while op and the page advance.
-      return finish(await runSignin({ site, item, signup, request: (name, values, deadline) => bridge.request('chrome.' + name, { ...values, tab: resolvedTab }, connection, deadline),
-        remember: value => signinSecrets.remember(resolvedTab, [value]) }));
+      const filled = await runSignin({ site, item, signup, request: (name, values, deadline) => bridge.request('chrome.' + name, { ...values, tab: resolvedTab }, connection, deadline),
+        remember: value => signinSecrets.remember(resolvedTab, [value]) });
+      if (params.submit !== true || filled.outcome !== 'filled') return finish(filled);
+      return finish(await submitSignup(filled, resolvedTab, site, params, meta, request));
     } catch {
       return finish({ outcome: 'failed', site, step: 'signin', reason: 'Sign-in unavailable or site refused' });
     }
@@ -496,7 +500,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     return result;
   }
   let targetSelector: string | undefined;
-  let check: PolicyCheck = { outcome: 'allow' }, detail = method;
+  let check: PolicyCheck = { outcome: 'allow' }, detail = method, gateKind = method;
+  let secretFill: { item: { id: string; title: string; urls: string[] }; site: string } | undefined;
   if (['click', 'type', 'hover', 'select', 'upload'].includes(method) && !at) args.selector = requiredString(params.selector, 'selector');
   if (method === 'click' || method === 'type') {
     const info = await request('describe', { ...args, ...(method === 'type' ? { denySelectors: policy.deny.type_into || [] } : {}) });
@@ -529,6 +534,23 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       if (at) meta.point = { x: at.x, y: at.y, ...(scopeURL !== pageURL ? { frame: cleanURL(scopeURL) } : {}) };
       // Bind the resolved accessible name and destination too, so a changed button requires new approval.
       args._description = { name: info.name, href: info.href };
+    } else if (params.secret !== undefined) {
+      // SECRET-FILL: the password of one 1Password login goes from op straight into one password field of the site that
+      // login belongs to. The agent names the item; it never sees, sends or receives the value. The same rule as a
+      // sign-in judges it (remembered site, test zone, or the owner's approval), with the same card.
+      if (params.text !== undefined || params.mode !== undefined) throw new Error('secret fills the whole field: give secret or text, and no mode');
+      if (typeof params.secret !== 'string' || !params.secret.trim() || params.secret.length > 200) throw new Error('secret must name a 1Password item (title or ID)');
+      if (args.frameId !== undefined) throw new Error('secret fills a password field of the tab itself, not inside an embedded document');
+      if (info.password !== true) throw new Error('secret fills only a password field; type the other fields with text');
+      const site = signinSite(pageURL);
+      let logins;
+      try { logins = await listLogins(); } catch { throw new Error(PASSWORD_UNAVAILABLE); }
+      const selection = chooseLogin(logins, site, params.secret);
+      if (selection.outcome !== 'selected') throw new Error(selection.outcome === 'choose' ? `several logins match: ${selection.reason}` : String(selection.reason));
+      secretFill = { item: selection.item, site };
+      check = checkSignin(policy, site);
+      gateKind = 'signin';
+      detail = cleanDetail(`Fill the password of ${selection.item.title}`);
     } else {
       if (typeof params.text !== 'string') throw new Error('text must be a string');
       if (typeof info.type !== 'string' || typeof info.autocomplete !== 'string') throw new Error('chrome.describe must return type and autocomplete');
@@ -617,13 +639,13 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   // DOWNLOAD: the capture adds a hold only when policy sets hold.downloads (default off).
   // The original action's stricter deny/hold is always retained; a held click signs the file path too.
   if (download) { check = strictest(check, checkDownload(policy)); detail += ` -> ${download} (up to 20 MB)`; }
-  await gate({ kind: method, meta, detail, check, approval: params.approval, targetSelector, remoteScope,
+  await gate({ kind: gateKind, meta, detail, check, approval: params.approval, targetSelector, remoteScope,
     capture: targetSelector ? () => bridge.request('chrome.approvalCapture', { tab: resolvedTab,
       selector: targetSelector, checkedDescription: args._description, ...(method === 'press' ? { key: args.key } : {}) },
       connection, Math.min(deadline, Date.now() + 3000)) : undefined,
     // An approval covers this exact file: its name, size and content digest.
     action: { method, caller: meta.caller, url: pageURL, ...args,
-      ...(download ? { download } : {}),
+      ...(download ? { download } : {}), ...(secretFill ? { item: secretFill.item.id } : {}),
       ...(upload ? { file: { name: upload.name, bytes: upload.bytes.length, sha256: upload.sha256 } } : {}) } });
   // A supplied approval went through consume, so only an action the grant itself waived is credited to it.
   if (grantId && !params.approval) meta.grantId = grantId;
@@ -633,6 +655,13 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   if (method === 'click' || method === 'press' && /^(enter|return)$/i.test(args.key!)) args.checkedDescription = args._description;
   if (targetSelector && targetSelector !== ':focus') args.selector = targetSelector;
   delete args._description;
+  if (secretFill) {
+    // After the gate, never before: an unapproved fill must not have read the secret at all.
+    let value = '';
+    try { value = await getPassword(secretFill.item); } catch { throw new Error(PASSWORD_UNAVAILABLE); }
+    signinSecrets.remember(resolvedTab, [value]);
+    args.text = value; args.fill = { site: secretFill.site }; value = '';
+  }
   if (upload) {
     const id = crypto.randomUUID(), chunks = Math.max(1, Math.ceil(upload.bytes.length / UPLOAD_CHUNK));
     for (let index = 0; index < chunks; index++) await request('uploadChunk', { upload: { id, index,
@@ -741,6 +770,89 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   // Eval's arbitrary page object keys are data. Broker contract keys stay intact.
   if (method === 'eval' && isRecord(rawResult)) return { ...rawResult, value: signinSecrets.redact(rawResult.value) };
   return rawResult;
+}
+
+// NEW-LOGIN: creating a login follows the site's sign-in rule. A site the owner chose "Always allow" for (or a test
+// zone) creates and fills without a card; anywhere else the card asks, and offers Always allow (owner, 12 Nov 2026:
+// "be as autonomous as possible when appropriate"). Refused and protected sites still win (checkSignin).
+function creationCheck(site: string): PolicyCheck {
+  const check = checkSignin(policy, site);
+  return check.outcome === 'hold' ? { ...check, reason: 'create and save a new 1Password login' } : check;
+}
+// SIGNUP-SUBMIT: after a sign-up fill, the form's own button is pressed through the ordinary click path, so every
+// payment, send, delete and account hold still applies; a held press is handed back, never retried here.
+async function submitSignup(filled: SigninResult, tab: number, site: string, params: IncomingParams, meta: CallMeta,
+  request: (name: string, args: ChromeParams) => Promise<unknown>): Promise<SigninResult> {
+  const done = (outcome: SigninResult['outcome'], reason: string): SigninResult => ({ ...filled, outcome, step: 'submit', reason });
+  let probe: unknown;
+  try { probe = await request('signinProbe', { tab, signin: { site, signup: true } }); } catch { probe = undefined; }
+  const button = isRecord(probe) && typeof probe.submit === 'string' && /^@[A-Za-z0-9_-]{6}:[0-9a-z]+$/.test(probe.submit) ? probe.submit : undefined;
+  if (!button) return done('filled', 'Filled. Gaddi found no single submit button: look, then click it.');
+  const clickMeta: CallMeta = { caller: meta.caller, tab: null, url: null, context: meta.context, chat: meta.chat };
+  const start = Date.now();
+  let outcome = 'allow', approval: string | undefined, changed: boolean | undefined;
+  try {
+    const clicked = await browserCall('click', { tab, selector: button, caller: params.caller, session: params.session, why: params.why, context: params.context }, clickMeta);
+    changed = isRecord(clicked) && typeof clicked.changed === 'boolean' ? clicked.changed : undefined;
+    return done('submitted', changed === false ? 'Filled and pressed the submit button; the page did not change yet: look before acting again.'
+      : 'Filled and submitted: look to see what the site asks next.');
+  } catch (error) {
+    if (error instanceof GateError && error.code === 'held' && error.approval) {
+      outcome = 'hold'; approval = String(error.approval.id);
+      return done('filled', `Filled. Pressing ${button} is held: approve ${approval} in Gaddi, then browser_click selector=${button} approval=${approval}.`);
+    }
+    outcome = error instanceof GateError && error.code === 'denied' ? 'deny' : 'error';
+    return done('filled', `Filled. Pressing ${button} failed (${errorMessage(error).split('\n')[0]}): look, then click it.`);
+  } finally {
+    audit({ ts: new Date().toISOString(), caller: meta.caller, method: 'click', tab, url: cleanURL(clickMeta.url), via: 'signin-submit',
+      ...(changed === undefined ? {} : { changed }), outcome, ...(approval ? { approval } : {}), ms: Date.now() - start });
+  }
+}
+// STANDING: an agent asks once for the owner's standing permission on whole sites (uploads, sign-in). Each becomes
+// an ordinary held card of that kind; nothing is done now. Only the owner's "Always allow" (Touch ID) saves it, the
+// same signed remember choice the first held upload or sign-in offers. "Allow once" on such a card allows nothing.
+function requestStanding(params: IncomingParams, meta: CallMeta) {
+  const caller = typeof params.caller === 'string' ? params.caller : 'unknown';
+  if (!Array.isArray(params.rules) || params.rules.length < 1 || params.rules.length > 20) throw new Error('standing needs 1 to 20 rules: <upload|signin> <https origin>');
+  return { standing: params.rules.map(rule => {
+    const match = typeof rule === 'string' ? /^(upload|signin) (\S+)$/.exec(rule.trim()) : null;
+    if (!match) throw new Error(`invalid standing rule (use <upload|signin> <https origin>): ${String(rule).slice(0, 80)}`);
+    const kind = match[1];
+    let site: string | undefined;
+    try { site = kind === 'upload' ? uploadSite(match[2]) : signinSite(match[2]); } catch { site = undefined; }
+    if (!site || new URL(match[2]).origin !== site || kind === 'signin' && checkSignin(policy, site).outcome === 'deny') throw new Error(`that site cannot have standing ${kind} permission: ${cleanURL(match[2])}`);
+    if (kind === 'upload' ? policy.uploads?.remember.includes(site) : checkSignin(policy, site).outcome === 'allow') return { kind, site, status: 'already allowed' };
+    const action = { method: 'standing', caller, url: site, kind };
+    const record = approvals.pendingFor(action) ?? approvals.hold({ kind, tab: null, caller, url: site + '/', action, rememberable: true,
+      detail: `Standing request: always allow ${kind === 'upload' ? 'uploads' : 'sign-in'} on ${site}. Nothing is done now; Allow once allows nothing.`,
+      reason: kind === 'upload' ? UPLOAD_HOLD : 'standing sign-in permission', context: meta.context ?? approvalContext(caller, params) });
+    return { kind, site, status: 'waiting for the owner', approval: String(record.id) };
+  }), note: 'The owner answers each card with Always allow (Touch ID). It applies to every agent from then on; browser_approvals shows standing permissions. Do not retry: keep working, and your held actions on those sites will run once allowed.' };
+}
+// Saves the owner's signed "Always allow" for the kind of the approval being answered.
+function rememberSite(id: unknown) {
+  return (site: string, send?: SendRule) => {
+    if (send) {
+      policy = setSendRemember(policyPath, send, true, policy.off);
+      emit('sends.remembered', { rules: policy.sends?.remember ?? [] });
+    } else if (approvals.get(id).kind === 'upload') {
+      policy = setUploadRemember(policyPath, site, true, policy.off);
+      emit('uploads.remembered', { sites: policy.uploads?.remember ?? [] });
+    } else {
+      policy = setSigninRemember(policyPath, site, true, policy.off);
+      emit('signin.remembered', { sites: policy.signin?.remember ?? [] });
+    }
+  };
+}
+// A standing request's card has no tab (every real upload or sign-in hold has one) and the broker's own words.
+function isStandingRequest(a: StoredApproval) {
+  return a.tab === null && (a.kind === 'upload' || a.kind === 'signin') && String(a.detail).startsWith('Standing request: ');
+}
+// What the owner already allows without asking, for every agent: shown with the approvals so an agent can see it.
+function standingView() {
+  return { signin: policy.signin?.remember ?? [], uploads: policy.uploads?.remember ?? [],
+    sends: (policy.sends?.remember ?? []).map(rule => ({ site: rule.site, kind: rule.kind, reason: rule.reason })),
+    zones: policy.zones?.sites ?? [] };
 }
 
 // ---------------------------------------------------------------- session grants
@@ -901,8 +1013,8 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
       args => bridge.request('chrome.extensions', args, connection), options => gate({ ...options, meta: { ...options.meta, context: meta.context, chat: meta.chat } }));
   }),
   // `mine` marks the grants of the asking chat; the session key itself is never sent.
-  'approvals.list': params => ({ ...approvals.list(), grants: grants.list(grantSession(params)) }),
-  'grant.request': params => requestGrant(params),
+  'approvals.list': params => ({ ...approvals.list(), grants: grants.list(grantSession(params)), standing: standingView() }),
+  'grant.request': (params, _conn, meta) => params.standing === true ? requestStanding(params, meta) : requestGrant(params),
   // Ending a grant only removes authority, so it needs no proof and any client may do it.
   'grants.revoke': ({ id }) => {
     if (typeof id !== 'string' || !grants.revoke(id)) throw new Error('no such active session grant');
@@ -910,20 +1022,12 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
   },
   'approval.grant': ({ id, proof, remember }) => {
     if (approvals.get(id).kind === 'grant') return activateGrant(id, proof, remember);
-    return approvals.signed(id, 'grant', proof, proofs, approvalMessage, {
-      remember, onRemember: (site, send) => {
-        if (send) {
-          policy = setSendRemember(policyPath, send, true, policy.off);
-          emit('sends.remembered', { rules: policy.sends?.remember ?? [] });
-        } else if (approvals.get(id).kind === 'upload') {
-          policy = setUploadRemember(policyPath, site, true, policy.off);
-          emit('uploads.remembered', { sites: policy.uploads?.remember ?? [] });
-        } else {
-          policy = setSigninRemember(policyPath, site, true, policy.off);
-          emit('signin.remembered', { sites: policy.signin?.remember ?? [] });
-        }
-      },
-    });
+    // STANDING: nothing retries a standing request, so its card closes as soon as it is answered.
+    if (isStandingRequest(approvals.get(id))) {
+      approvals.signed(id, 'grant', proof, proofs, approvalMessage, { remember, onRemember: rememberSite(id) });
+      return approvals.complete(id);
+    }
+    return approvals.signed(id, 'grant', proof, proofs, approvalMessage, { remember, onRemember: rememberSite(id) });
   },
   'approval.deny': ({ id, proof, remember }) => approvals.signed(id, 'deny', proof, proofs, approvalMessage, { remember }),
   // Approving from another device. Status is read-only; turning ON needs the user's Touch ID signature over the

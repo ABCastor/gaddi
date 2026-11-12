@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>Fixture register</title>
+<!-- Shaped like the Communications Ombudsman sign-up (12 Nov 2026): Email, Confirm email, Password, a privacy box,
+     an invisible reCAPTCHA (badge, notice, size=invisible frame), no <form> element: a script sends it on click. -->
+<style>.grecaptcha-badge { position: fixed; right: 0; bottom: 14px; width: 256px; height: 60px; } .field { display: block; margin: 8px 0; }</style>
+<main id="app">
+  <h1>Create your account</h1>
+  <label class="field">Email <input name="email" type="email" autocomplete="email"></label>
+  <label class="field">Confirm email <input name="confirmEmail" type="email" autocomplete="off"></label>
+  <label class="field">Password <input name="password" type="password" autocomplete="new-password"></label>
+  <label class="field"><input name="privacy" type="checkbox"> I have read the privacy notice</label>
+  <button type="button" id="register">Create account</button>
+  <p class="small">This site is protected by reCAPTCHA and the Google Privacy Policy and Terms of Service apply.</p>
+</main>
+<div class="grecaptcha-badge" data-style="bottomright"><div class="grecaptcha-logo"><iframe title="reCAPTCHA" width="256" height="60" src="/vendor/recaptcha/api2/anchor?ar=1&amp;k=fixture&amp;size=invisible"></iframe></div></div>
+<script>
+  const value = name => document.querySelector(`[name="${name}"]`);
+  document.getElementById('register').addEventListener('click', async () => {
+    const body = { email: value('email').value, confirmEmail: value('confirmEmail').value, password: value('password').value, privacy: value('privacy').checked };
+    const reply = await fetch('/register', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    if (reply.ok) location.href = '/welcome';
+    else document.querySelector('h1').textContent = 'Please check the form';
+  });
+</script>

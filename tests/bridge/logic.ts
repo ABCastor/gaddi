@@ -542,10 +542,16 @@ await request('chrome.screenshot');
 assert.equal(calls.slice(marker).filter(([kind]) => kind === 'attach').length, 1);
 pass('failed emulation clears its attachment so partial settings cannot persist');
 
-pageResult = { __gaddiError: 'Refusing evaluation on a page with password fields' };
+// A page check that fails still stops the evaluation before it runs.
+pageResult = { __gaddiError: 'Page script failed' };
 marker = calls.length;
-assert.match((await request('chrome.eval', { expression: 'document.title' })).error!.message, /password/);
+assert.match((await request('chrome.eval', { expression: 'document.title' })).error!.message, /Page script failed/);
 assert.equal(calls.slice(marker).filter(([, method]) => method === 'Runtime.evaluate').length, 0);
+// EVAL-PASSWORDS: a page with password fields is evaluated, and what those fields hold never comes back.
+pageResult = { hidden: ['field-value-1234', 'abc'] };
+cdpResult = { result: { value: { echo: ['field-value-1234', 'pre field-value-1234 post', 'abc'], 'field-value-1234': 1 } } };
+assert.deepEqual((await request('chrome.eval', { expression: 'window.fixtureState' })).result!.value,
+  { echo: ['(hidden)', 'pre (hidden) post', 'abc'], '(hidden)': 1 }, 'ASSERT_EVAL_HIDES_FIELD_VALUES');
 pageResult = {};
 cdpResult = { result: { value: { status: 'local' } } };
 assert.deepEqual((await request('chrome.eval', { expression: 'window.fixtureState' })).result!.value, { status: 'local' });
@@ -553,7 +559,7 @@ assert.deepEqual((await request('chrome.eval', { expression: 'LMSSetValue("x", "
 assert.match((await request('chrome.eval', { expression: 'document.querySelector("input[type=password]").value' })).error!.message, /password/);
 cdpResult = { exceptionDetails: { text: 'Synthetic failure' } };
 assert.match((await request('chrome.eval', { expression: 'invalidCall()' })).error!.message, /evaluation failed/);
-pass('eval checks password DOM before main-world execution and reports exceptions');
+pass('eval runs on password pages, hides field values, refuses password expressions and reports exceptions');
 
 // Navigation completion must belong to the requested document, even when
 // events arrive before the CDP command reply or the previous document was ready.
@@ -699,9 +705,11 @@ assert.equal((await checkNow).result!.met, true, 'ASSERT_WAIT_REPLY_GRACE');
 pass('a check-now wait gives a busy page time to answer instead of reporting not met');
 
 let releaseClick!: (result: PageResult) => void, releaseEval!: (result: PageResult) => void;
+let evalStalled = false;
 pageResult = action => action === 'settle' ? { signature: 'after', url: tab.url } : new Promise(resolve => {
   if (action === 'clickPoint') releaseClick = resolve;
-  if (action === 'evalCheck') releaseEval = resolve;
+  // The first page check is the one that stalls; the one after the evaluation answers at once.
+  if (action === 'evalCheck') { if (evalStalled) resolve({ hidden: [] }); else { evalStalled = true; releaseEval = resolve; } }
 });
 const expiredClick = request('chrome.click', { tab: recoveryTab, selector: '#button' });
 await waitFor(() => releaseClick, 'click injection stalls');
@@ -1325,8 +1333,10 @@ for (const [type, autocomplete] of [['password', ''], ['text', 'current-password
 attributes.clear(); inputType = 'text'; focusMutation = true;
 assert.match((await local('typeFocus', { selector: '#input' })).__gaddiError!, /password/);
 assert.match((await local('pressCheck')).__gaddiError!, /password/);
-assert.match((await local('evalCheck')).__gaddiError!, /password/);
-pass('content blocks password tokens and focus-time password mutation');
+node.value = 'focused-field-value';
+assert.deepEqual(Array.from((await local('evalCheck')).hidden!), ['focused-field-value'], 'ASSERT_EVAL_COLLECTS_PASSWORD_VALUES');
+delete node.value;
+pass('content blocks password tokens and focus-time password mutation; eval learns password values to hide');
 for (const tagName of ['IFRAME', 'FRAME', 'OBJECT', 'EMBED']) {
   doc.activeElement = { tagName };
   assert.match((await local('pressCheck')).__gaddiError!, /embedded document/);
@@ -1370,15 +1380,15 @@ pass('landmark names use author labels instead of all descendant text');
 attributes.clear();
 node.matches = selector => selector === '.protected';
 assert.deepEqual(Array.from((await local('describe', { selector: '#input', denySelectors: ['.protected', '.ordinary'] })).matched!), ['.protected']);
-assert.equal((await local('evalCheck')).__gaddiError!, undefined);
-node.shadowRoot = { querySelectorAll() { return [{ type: 'password' }]; } };
-assert.match((await local('evalCheck')).__gaddiError!, /password/);
+assert.deepEqual(Array.from((await local('evalCheck')).hidden!), []);
+node.shadowRoot = { querySelectorAll() { return [{ type: 'password', value: 'shadow-value' }]; } };
+assert.deepEqual(Array.from((await local('evalCheck')).hidden!), ['shadow-value']);
 node.shadowRoot = null;
 node.tagName = 'IFRAME';
-node.contentDocument = { querySelectorAll() { return [{ type: 'password' }]; } };
-assert.match((await local('evalCheck')).__gaddiError!, /password/);
+node.contentDocument = { querySelectorAll() { return [{ type: 'password', value: 'frame-value' }]; } };
+assert.deepEqual(Array.from((await local('evalCheck')).hidden!), ['frame-value']);
 node.contentDocument = null; node.tagName = 'INPUT';
-pass('custom typing deny selectors and password checks cover open shadows and readable frames');
+pass('custom typing deny selectors and password values to hide cover open shadows and readable frames');
 
 const redacted: string[] = [];
 const secrets = ['password', 'current-password', 'section-login new-password'].map(kind => ({

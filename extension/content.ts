@@ -29,9 +29,10 @@ interface ElementState {
   motion?: MotionState;
   appendNext?: number;
   appendCleanup?: { owner?: string; restore: () => void };
-  signin?: Map<string, { kind: 'username' | 'password' | 'confirmation' | 'otp'; form: HTMLFormElement | null; signup: boolean }>;
+  signin?: Map<string, { kind: SigninKind; form: HTMLFormElement | null; signup: boolean }>;
   download?: { id: string; site: string; busy: boolean; data?: Uint8Array; error?: string; stop: () => void };
 }
+type SigninKind = 'username' | 'usernameConfirmation' | 'password' | 'confirmation' | 'otp';
 declare global { var __gaddiElements: ElementState | undefined; }
 // This function is serialized by executeScript. Everything it needs lives inside
 // it; persistent element references live in Chrome's isolated extension world.
@@ -407,10 +408,16 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     return `${performance.timeOrigin}:${hash >>> 0}`;
   }
   function assertWritable(el: PageElement) {
-    if (isPassword(el)) throw new Error('Refusing to type into a password field');
+    // Invariant: typed text reaches a password field only as the broker's 1Password fill (params.fill). That fill
+    // names this page's own origin and targets a password field on it; its text came from 1Password, never from an agent.
+    if (params.fill) {
+      const site = params.fill.site, page = new URL(location.href);
+      if (typeof site !== 'string' || page.origin !== site || page.username || page.password) throw new Error('1Password fill refused: the page changed site');
+      if (el.tagName !== 'INPUT' || !isPassword(el)) throw new Error('1Password fills only a password field');
+    } else if (isPassword(el)) throw new Error('Refusing to type into a password field');
     if (!visible(el) || el.matches(':disabled') || el.readOnly || el.getAttribute('aria-disabled') === 'true') throw new Error('Element is not writable');
     if (!(el.isContentEditable || el.tagName === 'TEXTAREA' || el.tagName === 'INPUT'
-      && ['text', 'search', 'email', 'url', 'tel', 'number'].includes(el.type || ''))) throw new Error('Element is not a text input');
+      && ['text', 'search', 'email', 'url', 'tel', 'number', ...(params.fill ? ['password'] : [])].includes(el.type || ''))) throw new Error('Element is not a text input');
   }
   function signinSite() {
     const site = params.signin?.site;
@@ -421,7 +428,40 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
         || url.protocol === 'http:' && ['localhost', '127.0.0.1'].includes(url.hostname))) throw new Error('Sign-in refused');
     return site;
   }
-  function signinKind(el: PageElement, hintsOnly = false): 'username' | 'password' | 'confirmation' | 'otp' | undefined {
+  function signinInputs() {
+    const inputs: PageElement[] = [];
+    function walk(root: Document | ShadowRoot) {
+      for (const el of root.querySelectorAll<PageElement>('*')) {
+        if (el.tagName === 'INPUT') inputs.push(el);
+        if (el.shadowRoot) walk(el.shadowRoot);
+      }
+    }
+    walk(document);
+    return inputs;
+  }
+  // A sign-up form's "Confirm email" box. Named as such, or else the second of exactly two email/username boxes in
+  // one form, as the second of two password boxes is the password's confirmation. Only in sign-up mode.
+  let confirmationFound: { el?: PageElement } | undefined; // Once per page operation: the probe asks per field.
+  function usernameConfirmation(): PageElement | undefined {
+    if (!params.signin?.signup) return;
+    return (confirmationFound ??= { el: findUsernameConfirmation() }).el;
+  }
+  function findUsernameConfirmation(): PageElement | undefined {
+    const words = (el: PageElement) => `${el.getAttribute('name') || ''} ${el.getAttribute('id') || ''} ${nameOf(el)}`;
+    const named = (el: PageElement) => /(?:confirm|repeat|re-?type|re-?enter|verify|again)/i.test(words(el)) && /e[\s_-]?mail|user[\s_-]?name|login/i.test(words(el));
+    // An Email box and a Username box are two different answers; only two email boxes are one answer twice.
+    const email = (el: PageElement) => (el.type || '').toLowerCase() === 'email' || /e[\s_-]?mail/i.test(words(el));
+    const candidates = signinInputs().filter(el => readable(el) && ['text', 'email'].includes((el.type || 'text').toLowerCase())
+      && !el.disabled && !el.readOnly && (baseSigninKind(el) === 'username' || named(el)));
+    const confirming = candidates.filter(named);
+    if (confirming.length === 1 && candidates.length === 2) return confirming[0];
+    if (!confirming.length && candidates.length === 2 && candidates.every(email) && (candidates[0].form || null) === (candidates[1].form || null)) return candidates[1];
+  }
+  function signinKind(el: PageElement, hintsOnly = false): SigninKind | undefined {
+    if (params.signin?.signup && el === usernameConfirmation()) return 'usernameConfirmation';
+    return baseSigninKind(el, hintsOnly);
+  }
+  function baseSigninKind(el: PageElement, hintsOnly = false): Exclude<SigninKind, 'usernameConfirmation'> | undefined {
     if (el.tagName !== 'INPUT' || !visible(el) || el.matches(':disabled') || el.disabled || el.readOnly
       || el.getAttribute('aria-disabled') === 'true') return;
     const tokens = (el.getAttribute('autocomplete') || '').toLowerCase().split(/\s+/);
@@ -448,15 +488,8 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     if (['text', 'email'].includes(type) && /^(?:user[\s_-]?name|e[\s_-]?mail(?:[\s_-]+(?:address|adresse))?|login)$/i.test(nameOf(el))) return 'username';
   }
   function signinFields() {
-    const fields: Partial<Record<'username' | 'password' | 'confirmation' | 'otp', PageElement>> = {};
-    const inputs: PageElement[] = [];
-    function walk(root: Document | ShadowRoot) {
-      for (const el of root.querySelectorAll<PageElement>('*')) {
-        if (el.tagName === 'INPUT') inputs.push(el);
-        if (el.shadowRoot) walk(el.shadowRoot);
-      }
-    }
-    walk(document);
+    const fields: Partial<Record<SigninKind, PageElement>> = {};
+    const inputs = signinInputs();
     let ambiguous = !params.signin?.signup && inputs.some(el => readable(el) && /(?:^|\s)new-password(?:\s|$)/i.test(el.getAttribute('autocomplete') || ''));
     if (params.signin?.signup && inputs.filter(el => readable(el) && el.type === 'password').length > 2) ambiguous = true;
     // An unavailable verification control still means authentication is unfinished.
@@ -464,9 +497,11 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
       && (/(?:^|\s)one-time-code(?:\s|$)/i.test(el.getAttribute('autocomplete') || '')
         || /(?:^|[\s_-])(?:otp|totp|code|verification[-_]?code|one[-_]?time[-_]?code|auth[-_]?code)(?:$|[\s_-])/i.test(`${el.getAttribute('name') || ''} ${el.getAttribute('id') || ''}`))
       && signinKind(el) !== 'otp')) ambiguous = true;
+    const confirmation = usernameConfirmation();
+    if (confirmation) fields.usernameConfirmation = confirmation;
     for (const kind of ['username', 'password', 'confirmation', 'otp'] as const) {
-      const hinted = inputs.filter(el => signinKind(el, true) === kind);
-      const matches = hinted.length ? hinted : inputs.filter(el => signinKind(el) === kind);
+      const hinted = inputs.filter(el => el !== confirmation && signinKind(el, true) === kind);
+      const matches = hinted.length ? hinted : inputs.filter(el => el !== confirmation && signinKind(el) === kind);
       if (matches.length > 1) ambiguous = true;
       else if (matches.length === 1) fields[kind] = matches[0];
     }
@@ -499,9 +534,13 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     return `signin-${digest()}`;
   }
   function signinChallenge() {
-    const text = (document.body?.innerText || '').toLowerCase();
+    // An invisible reCAPTCHA (its badge, its notice, its size=invisible frame) asks nothing of anyone until it pops a
+    // challenge; that challenge is a separate, visible frame and still counts.
+    const text = (document.body?.innerText || '').toLowerCase()
+      .replace(/(?:this site is )?protected by recaptcha(?: and the google)?/g, '').replace(/\brecaptcha\s+privacy\s*-\s*terms\b/g, '');
     if (/captcha|i[’']?m not a robot|verify (?:that )?you are human|use (?:a |your )?passkey|sign in with (?:a )?passkey|approve (?:the |this )?(?:sign[- ]?in|request)|(?:code|message).{0,40}(?:sent|texted).{0,40}(?:phone|sms|mobile)|(?:sms|text message).{0,40}code/.test(text)) return true;
     return [...document.querySelectorAll<PageElement>('iframe, [id], [class]')].some(el => visible(el)
+      && !el.closest('.grecaptcha-badge') && !/[?&#]size=invisible(?:&|$)/i.test(el.getAttribute('src') || '')
       && /(?:recaptcha|hcaptcha|turnstile|captcha)/i.test(`${el.getAttribute('src') || ''} ${el.getAttribute('id') || ''} ${el.getAttribute('class') || ''}`));
   }
   function signinForm(el: PageElement) {
@@ -524,6 +563,21 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
       if (override.origin !== signinSite() || override.username || override.password) throw new Error('Sign-in refused');
     }
   }
+  // The form's default submit button; without a form element, the one button (or the one sign-up-worded button) in
+  // the nearest container that holds the field. Nothing when that is not clear.
+  function signupButton(field: PageElement | undefined): PageElement | undefined {
+    if (!field) return;
+    const usable = (el: PageElement) => readable(el) && !el.matches(':disabled') && el.getAttribute('aria-disabled') !== 'true';
+    if (field.form) return [...field.form.elements].find((control: PageElement) => usable(control)
+      && (control.tagName === 'BUTTON' && control.type === 'submit' || control.tagName === 'INPUT' && ['submit', 'image'].includes(control.type || ''))) as PageElement | undefined;
+    for (let box = field.parentElement; box && box !== document.documentElement; box = box.parentElement) {
+      const buttons = [...box.querySelectorAll<PageElement>('button, input[type="submit"], [role="button"]')].filter(usable);
+      if (!buttons.length) continue;
+      if (buttons.length === 1) return buttons[0];
+      const worded = buttons.filter(el => /^(?:sign ?up|register|create(?: an| my| your)? account|join|continue|submit|next|get started|registrati|iscriviti|crea(?: un)? account|continua|avanti)\b/i.test(nameOf(el)));
+      return worded.length === 1 ? worded[0] : undefined;
+    }
+  }
   function signinTarget(submit: boolean) {
     signinSite();
     if (typeof params.selector !== 'string' || !params.selector.startsWith(state.prefix)) throw new Error('Sign-in refused');
@@ -541,12 +595,15 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     signinSite();
     const { fields, ambiguous, passwordPresent } = signinFields(), challenge = ambiguous || signinChallenge();
     state.signin = new Map();
-    const refs: Partial<Record<'username' | 'password' | 'confirmation' | 'otp', string>> = {};
-    if (!challenge) for (const kind of ['username', 'password', 'confirmation', 'otp'] as const) {
+    const refs: Partial<Record<SigninKind, string>> = {};
+    if (!challenge) for (const kind of ['username', 'usernameConfirmation', 'password', 'confirmation', 'otp'] as const) {
       const el = fields[kind];
       if (el) { const ref = selectorFor(el); refs[kind] = ref; state.signin.set(ref, { kind, form: el.form || null, signup: params.signin?.signup === true }); }
     }
-    return { url: location.href, signature: signinSignature(), passwordPresent, ...refs, ...(challenge ? { challenge: true } : {}) } satisfies PageResults['signinProbe'];
+    // Sign-up only: the button that sends the form, which the broker presses as an ordinary, gated click.
+    const button = !challenge && params.signin?.signup ? signupButton(fields.password ?? fields.username) : undefined;
+    return { url: location.href, signature: signinSignature(), passwordPresent, ...refs, ...(button ? { submit: selectorFor(button) } : {}),
+      ...(challenge ? { challenge: true } : {}) } satisfies PageResults['signinProbe'];
   }
   if (action === 'signinLanded') {
     // Only the checked origin, role, field and form may confirm an interrupted
@@ -567,7 +624,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     if (activeElement() !== el) throw new Error('Sign-in refused');
     return { selector: selectorFor(el), signature: signinSignature(), combobox: false } satisfies PageResults['signinFocus'];
   }
-  if (params.version && ['describe', 'snapshot', 'pressCheck', 'scroll', 'scrollPoint', 'select', 'upload', 'typeFocus', 'typeCheck', 'clickPoint', 'clickCheck', 'hoverPoint'].includes(action)
+  if (params.version && ['describe', 'snapshot', 'pressCheck', 'scroll', 'scrollPoint', 'select', 'upload', 'typeFocus', 'typeCheck', 'clickPoint', 'clickCheck', 'hoverPoint', 'domClick'].includes(action)
     && params.version !== pageVersion()) {
     throw Object.assign(new Error('the page changed since you looked'), { code: 'stale' });
   }
@@ -688,12 +745,14 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     return { signature: signature(), url: location.href, version: pageVersion() } satisfies PageResults['settle'];
   }
   if (action === 'evalCheck') {
-    // Invariant: arbitrary evaluation is refused on documents containing password
-    // fields, including open shadows and readable embedded documents. Cross-origin
-    // frames are unreadable to main-world JS by the browser's same-origin policy.
+    // Invariant: evaluation runs on pages with password fields, but never returns what they hold. This collects the
+    // values of every password field the evaluation could reach (open shadows and readable embedded documents;
+    // cross-origin frames are unreadable to main-world JS by the same-origin policy) so the extension removes them
+    // from the result. They go to the extension only, never to the broker or the agent.
+    const hidden: string[] = [];
     function check(root: Document | ShadowRoot) {
       for (const el of root.querySelectorAll<PageElement>('*')) {
-        if (isPassword(el)) throw new Error('Refusing evaluation on a page with password fields');
+        if (isPassword(el) && typeof el.value === 'string' && el.value) hidden.push(el.value);
         if (el.shadowRoot) check(el.shadowRoot);
         if (['IFRAME', 'FRAME', 'OBJECT', 'EMBED'].includes(el.tagName)) {
           let child;
@@ -703,7 +762,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
       }
     }
     check(document);
-    return {} satisfies PageResults['evalCheck'];
+    return { hidden } satisfies PageResults['evalCheck'];
   }
   if (action === 'html') {
     const copy = document.documentElement?.cloneNode(true) as Element | undefined;
@@ -786,7 +845,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
   }
   const el = resolve(params.selector);
   // Whether a type whose session Chrome cut mid-insert left the field holding the text.
-  if (action === 'typeLanded') return { landed: !isPassword(el)
+  if (action === 'typeLanded') return { landed: (!isPassword(el) || !!params.fill)
     && (el.isContentEditable ? el.textContent : el.value) === params.text } satisfies PageResults['typeLanded'];
   // Inside an embedded document the gates judge that document's own site, so it says where it is.
   const topWindow = (globalThis as { top?: unknown }).top, embedded = topWindow != null && topWindow !== globalThis;
@@ -982,18 +1041,36 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
       ...(params.mode === 'append' && el.tagName === 'INPUT' && ['email', 'number'].includes(el.type || '') ? { appendNeedsEnd: true } : {}),
       combobox: el.getAttribute('role') === 'combobox' || el.tagName === 'INPUT' && ['aria-controls', 'aria-owns', 'list'].some(key => el.hasAttribute(key)) } satisfies PageResults['typeFocus' | 'typeCheck'];
   }
-  if (action === 'clickPoint' || action === 'clickCheck' || action === 'hoverPoint') {
-    if (!visible(el) || action !== 'hoverPoint' && (el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true')) throw new Error('Element is not interactable');
+  if (action === 'clickPoint' || action === 'clickCheck' || action === 'hoverPoint' || action === 'domClick') {
+    if (action !== 'hoverPoint' && (el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true')) throw new Error('Element is not interactable');
+    const choice = action !== 'hoverPoint' && describe(el).choice;
+    // A radio or checkbox the page hides and draws through its label is pressed where a person presses it: on the label.
+    const label = choice && el.tagName === 'INPUT' && !visible(el) ? [...(el.labels ?? [])].find(visible) : undefined;
+    const target = label ?? el;
+    if (!visible(target)) {
+      // A hidden choice or list option (a list that closed when the page lost focus, a styled radio with no
+      // visible label) has no point to press. It is clicked through the page instead, the way the page's own
+      // script would, after the same checks. Only a control the gates already judged by its own name gets this.
+      if (action === 'domClick' && choice) {
+        checkDescription(el);
+        const before = signature();
+        (el as HTMLElement).click();
+        return { signature: before, domClick: true } satisfies PageResults['domClick'];
+      }
+      if (choice && action === 'clickPoint') return { x: -1, y: -1, selector: selectorFor(el), signature: signature(), domClick: true, choice: true } satisfies PageResults['clickPoint'];
+      throw new Error('Element is not interactable');
+    }
+    if (action === 'domClick') throw new Error('Element is visible; it takes a real click');
     // Inside an embedded document, scroll only when the control is really out of view: scrolling
     // also moves the page around the frame, which would shift the point measured for the tab.
-    el.scrollIntoView({ block: params.frameId === undefined ? 'center' : 'nearest', inline: 'center', behavior: 'instant' });
+    target.scrollIntoView({ block: params.frameId === undefined ? 'center' : 'nearest', inline: 'center', behavior: 'instant' });
     const before = action === 'clickCheck' ? '' : signature();
-    const point = centrePoint(el);
+    const point = centrePoint(target);
     if (!point) throw new Error('Element centre is obscured');
     const { x, y } = point;
     if (action !== 'hoverPoint') checkDescription(el);
     if (action === 'clickCheck') return { x, y } satisfies PageResults['clickCheck'];
-    return { x, y, selector: selectorFor(el), signature: before } satisfies PageResults['clickPoint' | 'hoverPoint'];
+    return { x, y, selector: selectorFor(el), signature: before, ...(choice ? { choice: true } : {}) } satisfies PageResults['clickPoint' | 'hoverPoint'];
   }
   throw new Error('Unknown page operation');
   } catch (error) {

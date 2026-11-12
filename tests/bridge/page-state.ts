@@ -54,8 +54,14 @@ export async function pageStateRead({ context, daemon, url, pass }: Fixture) {
   console.log(`PAGE_STATE_STATE_OUTLINE ${JSON.stringify({ bytes: Buffer.byteLength(read.outline), lines: lines.length, scroll })}`);
   const old = await daemon.request('chrome.describe', { tab, selector: 'gaddi:00000000-0000-0000-0000-000000000000:1' });
   assert.match(old.error?.message || '', /Stale selector; read the page again/);
-  const password = await daemon.request('chrome.eval', { tab, expression: '1 + 1' });
-  assert.match(password.error?.message || '', /password/i, 'clobbered form does not weaken real password refusal');
+  // EVAL-PASSWORDS: evaluation runs on this page, and a clobbered form does not weaken hiding what its password fields hold.
+  const values = await call('chrome.eval', { tab, expression: "[...document.querySelectorAll('input')].map(el => el.value).join('|')" });
+  const joined = String(values.value);
+  assert.equal(typeof values.value, 'string', 'eval runs on a page with password fields');
+  assert.ok(!/private-(password|current|new)-marker/.test(joined), 'ASSERT_EVAL_HIDES_PASSWORDS: no password field value escapes a clobbered page');
+  assert.ok(joined.includes('(hidden)') && joined.includes('safe'), 'password values are hidden; other fields read normally');
+  assert.match((await daemon.request('chrome.eval', { tab, expression: "document.querySelector('input[type=password]').value" })).error?.message || '', /password/i,
+    'an expression that reads a password is still refused');
   await page.evaluate(() => document.querySelectorAll('input[type=password], input[autocomplete*=password]').forEach(el => el.remove()));
   assert.equal((await call('chrome.eval', { tab, expression: '1 + 1' })).value, 2, 'ASSERT_CLOBBERED_FORM: eval succeeds with a form child named type');
   const moved = await call('chrome.scroll', { tab, dy: 300 });

@@ -1,0 +1,149 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>React widgets fixture</title>
+<style>
+  body { font: 16px system-ui; margin: 40px; }
+  .radio-btn { display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; margin: 4px; border: 1px solid #888; border-radius: 6px; cursor: pointer; }
+  .radio-btn input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+  .radio-btn .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid #333; }
+  .radio-btn.checked .dot { background: #333; }
+  .radio-btn.hidden-input input { display: none; }
+  .radio-list label { display: block; border-bottom: 1px solid #ccc; }
+  .radio-list label input { display: none; }
+  .radio-list .radio-btn { display: block; padding: 1.5rem 1.5rem 1.5rem .5rem; cursor: pointer; }
+  .rc-select { display: inline-block; position: relative; width: 220px; border: 1px solid #888; padding: 6px; cursor: pointer; }
+  .rc-select-selection-search-input { position: absolute; inset: 0; opacity: 0; width: 100%; cursor: pointer; }
+  .rc-select-dropdown { position: absolute; z-index: 1050; background: white; border: 1px solid #888; width: 220px; }
+  .rc-select-dropdown-hidden { display: none; }
+  .rc-select-item-option { padding: 6px 10px; cursor: pointer; }
+  .rc-select-item-option-active { background: #eef; }
+  #status { margin-top: 20px; }
+</style>
+<!--
+  A faithful stand-in for how React 17+ drives these widgets, without React itself:
+  - one 'click' listener on the root container (event delegation), as React's ChangeEventPlugin;
+  - the value tracker React installs on each input instance: a JS write to .checked is recorded,
+    so only a change the browser made itself (a real click) counts as a change;
+  - controlled inputs: after every event the DOM is put back to the state (restoreControlledState),
+    so a radio the app did not accept unticks again;
+  - rc-select: the list opens on mousedown of the selector, keeps focus with preventDefault on the
+    options' mousedown, picks on click, and closes when its search input loses focus.
+-->
+<div id="root">
+  <h2 id="question">Are you an existing customer?</h2>
+  <!-- As the Communications Ombudsman case portal draws it (12 Nov 2026): each radio its own name, hidden inside its
+       label with display:none, the visible part a span.radio-btn. Choosing sends the answer to the server and moves
+       to the next question when the reply arrives; until then the controlled radio shows the old state again. -->
+  <form class="radio-list" id="existing" novalidate>
+    <label for="choice-yes"><input type="radio" id="choice-yes" name="choice-yes" value="yes" data-question="existing"><span class="radio-btn">Yes</span></label>
+    <label for="choice-no"><input type="radio" id="choice-no" name="choice-no" value="no" data-question="existing"><span class="radio-btn">No</span></label>
+  </form>
+  <h2>Account type</h2>
+  <div id="account">
+    <label class="radio-btn hidden-input"><input type="radio" name="account" value="personal"><span class="dot"></span>Personal</label>
+    <label class="radio-btn hidden-input"><input type="radio" name="account" value="business"><span class="dot"></span>Business</label>
+  </div>
+  <h2>How should we contact you?</h2>
+  <div class="rc-select" id="contact">
+    <span class="rc-select-selection-search"><input class="rc-select-selection-search-input" role="combobox" aria-expanded="false" aria-haspopup="listbox" aria-controls="contact-list" aria-label="Contact method" readonly></span>
+    <span class="rc-select-selection-item">Choose</span>
+  </div>
+  <p id="status">existing=; account=; contact=</p>
+</div>
+<script>
+  const state = { existing: '', account: '', contact: '' };
+  // Every event and state change goes to the fixture server, so the test reads the app without attaching
+  // a second debugger client to this tab (a client that turns on focus emulation would hide focus effects).
+  const events = { push(entry) { this.list.push(entry); report(); }, list: [], at(i) { return this.list.at(i); } };
+  let seq = 0;
+  function report() { navigator.sendBeacon('/event', JSON.stringify({ seq: ++seq, state, events: events.list, focus: document.hasFocus() })); }
+  window.reactEvents = events.list;
+  window.reactState = state;
+  const root = document.getElementById('root');
+  const checkedProperty = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'checked');
+  function track(node) {
+    let current = String(checkedProperty.get.call(node));
+    Object.defineProperty(node, 'checked', { configurable: true, enumerable: checkedProperty.enumerable,
+      get() { return checkedProperty.get.call(this); },
+      set(value) { current = String(!!value); checkedProperty.set.call(this, value); } });
+    node._valueTracker = { get: () => current, set: value => { current = value; } };
+  }
+  function changed(node) {
+    const tracker = node._valueTracker, next = String(checkedProperty.get.call(node));
+    if (!tracker || tracker.get() === next) return false;
+    tracker.set(next);
+    return true;
+  }
+  const radios = [...document.querySelectorAll('input[type=radio]')];
+  radios.forEach(track);
+  function render() {
+    for (const input of radios) {
+      const question = input.dataset.question || input.name;
+      input.checked = state[question] === input.value; // through the tracker, as React's commit does
+      input.closest('label').classList.toggle('checked', input.checked);
+    }
+    document.querySelector('#contact .rc-select-selection-item').textContent = state.contact || 'Choose';
+    document.getElementById('status').textContent = `existing=${state.existing}; account=${state.account}; contact=${state.contact}`;
+  }
+  root.addEventListener('click', event => {
+    const input = event.target;
+    if (input instanceof HTMLInputElement && input.type === 'radio') {
+      const question = input.dataset.question;
+      events.push({ type: 'click', name: question || input.name, trusted: event.isTrusted, changed: false });
+      if (changed(input)) {
+        events.at(-1).changed = true;
+        // onSelect: the answer goes to the server; the page moves on when it replies.
+        if (question) setTimeout(() => { state[question] = input.value; history.pushState(null, '', '#account-type');
+          document.getElementById('question').textContent = 'Account type'; render(); report(); }, 400);
+        else { state[input.name] = input.value; report(); }
+      }
+      // restoreControlledState: after the event, the DOM shows the state again.
+      queueMicrotask(render);
+    }
+  });
+  // rc-select
+  const select = document.getElementById('contact');
+  const search = select.querySelector('input');
+  const list = document.createElement('div');
+  list.className = 'rc-select-dropdown rc-select-dropdown-hidden';
+  list.id = 'contact-list';
+  list.setAttribute('role', 'listbox');
+  for (const value of ['Email', 'Phone', 'Post']) {
+    const option = document.createElement('div');
+    option.className = 'rc-select-item rc-select-item-option';
+    option.setAttribute('title', value);
+    option.setAttribute('aria-selected', 'false');
+    option.textContent = value;
+    option.addEventListener('mousemove', () => {
+      for (const other of list.children) other.classList.toggle('rc-select-item-option-active', other === option);
+    });
+    option.addEventListener('mousedown', event => event.preventDefault());
+    option.addEventListener('click', event => {
+      events.push({ type: 'option', value, trusted: event.isTrusted });
+      state.contact = value; close(); render(); report();
+    });
+    list.append(option);
+  }
+  document.body.append(list);
+  function open() {
+    const box = select.getBoundingClientRect();
+    list.style.left = `${box.left + scrollX}px`; list.style.top = `${box.bottom + scrollY + 4}px`;
+    list.classList.remove('rc-select-dropdown-hidden');
+    search.setAttribute('aria-expanded', 'true');
+  }
+  function close() {
+    if (!list.classList.contains('rc-select-dropdown-hidden')) events.push({ type: 'close' });
+    list.classList.add('rc-select-dropdown-hidden');
+    search.setAttribute('aria-expanded', 'false');
+  }
+  select.addEventListener('mousedown', event => {
+    events.push({ type: 'select-mousedown', trusted: event.isTrusted });
+    if (event.target !== search) event.preventDefault();
+    search.focus();
+    if (list.classList.contains('rc-select-dropdown-hidden')) open(); else close();
+  });
+  search.addEventListener('blur', () => { events.push({ type: 'blur' }); setTimeout(() => { close(); report(); }, 0); });
+  window.addEventListener('blur', () => events.push({ type: 'window-blur' }));
+  window.addEventListener('focus', () => events.push({ type: 'window-focus' }));
+  render();
+</script>

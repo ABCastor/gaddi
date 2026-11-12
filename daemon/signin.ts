@@ -146,6 +146,15 @@ export async function getCredentials(item: LoginItem): Promise<{ username: strin
     return { username, password };
   } catch { throw new Error('1Password credentials unavailable'); }
 }
+// SECRET-FILL: only the password field. An item an agent created with op often has no username, and a fill needs none.
+export async function getPassword(item: LoginItem): Promise<string> {
+  try {
+    const value: unknown = JSON.parse(await op(['item', 'get', item.id, '--fields', 'label=password', '--reveal', '--format', 'json']));
+    const fields = Array.isArray(value) ? value : [value];
+    if (fields.length !== 1 || !isRecord(fields[0]) || typeof fields[0].value !== 'string' || !fields[0].value) throw new Error();
+    return fields[0].value;
+  } catch { throw new Error('1Password credentials unavailable'); }
+}
 export async function getOTP(item: LoginItem): Promise<string | undefined> {
   try {
     const value = (await op(['item', 'get', item.id, '--otp'])).trim();
@@ -192,13 +201,13 @@ export async function runSignin({ site: requestedSite, item, request, remember, 
   async function probe(): Promise<SigninProbe> {
     const value = await call('signinProbe', { signin: { site } });
     if (!isRecord(value) || typeof value.url !== 'string' || typeof value.signature !== 'string'
-      || ['username', 'password', 'confirmation', 'otp'].some(key => value[key] !== undefined && typeof value[key] !== 'string')
+      || ['username', 'usernameConfirmation', 'password', 'confirmation', 'otp', 'submit'].some(key => value[key] !== undefined && typeof value[key] !== 'string')
       || value.passwordPresent !== undefined && typeof value.passwordPresent !== 'boolean'
       || value.challenge !== undefined && typeof value.challenge !== 'boolean') throw new Error();
     if (signinSite(value.url) !== site) throw new Error();
     return value as unknown as SigninProbe;
   }
-  async function type(kind: 'username' | 'password' | 'confirmation' | 'otp', text: string): Promise<string | undefined> {
+  async function type(kind: 'username' | 'usernameConfirmation' | 'password' | 'confirmation' | 'otp', text: string): Promise<string | undefined> {
     const current = await probe();
     if (current.challenge || !current[kind]) return undefined;
     await call('signinType', { selector: current[kind], text, signin: { site, kind } });
@@ -249,6 +258,11 @@ export async function runSignin({ site: requestedSite, item, request, remember, 
       const selector = await type('username', username);
       if (!selector) return result('needs_you', 'Login form changed');
       page = await probe();
+      // A sign-up's "Confirm email" box takes the same username.
+      if (signup && page.usernameConfirmation) {
+        if (!await type('usernameConfirmation', username)) return result('needs_you', 'Confirmation field changed');
+        page = await probe();
+      }
       if (!page.password && !signup) {
         await submit('username', selector);
         page = await waitFor(current => !!current.password || !!current.otp);
@@ -262,7 +276,7 @@ export async function runSignin({ site: requestedSite, item, request, remember, 
       page = await probe();
       if (page.confirmation && !await type('confirmation', password)) return result('needs_you', 'Confirmation field changed');
       step = 'complete';
-      return result('filled', 'Saved login filled. Inspect the form, complete other fields, then click its submit through the ordinary gates.');
+      return result('filled', 'Saved login filled. Inspect the form, complete other fields, then click its submit through the ordinary gates (submit:true has Gaddi press it after the fill).');
     }
     const before = await submit('password', selector);
     let settled = await settleSignin(before);

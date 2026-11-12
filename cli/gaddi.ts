@@ -28,7 +28,8 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] [--why <purp
   close <id> [id...] | show <id> | group <task> <id> [id...]
   click [tab] <selector> | click [tab] --at x,y  (the point a screenshot shows, in the tab's own viewport;
       trusted input on what is really there, through a banner and inside an embedded page)
-  type [tab] <selector> <text> [--mode replace|append]
+  type [tab] <selector> <text> [--mode replace|append] | type [tab] <password-field> --secret <1Password item>
+      (the item's password goes from 1Password into the field; never typed as text, never shown)
   press [tab] <key> | select [tab] <selector> <value> | upload [tab] <selector> <path>
   --frame <id> with look, screenshot, click, type, press, hover, select, scroll, wait or upload acts
       inside a document look listed;
@@ -37,7 +38,7 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] [--why <purp
       that document to hold the focus. --at and --frame are alternatives, never both.
   scroll [tab] <dy|selector> [--dx N] [--dy N]  (wheel pixels; with a selector the wheel goes over that element)
   wait [tab] <JSON options>
-  signin [tab] [--item <title-or-id>] [--signup | --create '{"title":"...","username":"...","vault":"<vault-id>"}']
+  signin [tab] [--item <title-or-id>] [--signup | --create '{"title":"...","username":"...","vault":"<vault-id>"}'] [--submit]
   click [tab] <selector> --download <new-file-in-Downloads-or-temp>
   eval [tab] <expression> | emulate [tab] <JSON options>
   status | approvals | pending | cancel <id> | audit [n] | events | bridge status
@@ -50,7 +51,7 @@ const argv = process.argv.slice(2), args: string[] = [];
 let json = false, fullPage = false, foreground = false, visible = false;
 let approval: string | undefined, tab: number | undefined, group: string | undefined, item: string | undefined, why: string | undefined;
 let mode: 'replace' | 'append' | undefined;
-let signup = false, create: BrokerParams['create'], download: string | undefined;
+let signup = false, submit = false, create: BrokerParams['create'], download: string | undefined, fillItem: string | undefined;
 let at: { x: number; y: number } | undefined, frame: number | undefined;
 let zoom: { x: number; y: number; width: number; height: number } | undefined;
 const wheel: { dx?: number; dy?: number } = {};
@@ -63,6 +64,8 @@ for (let i = 0; i < argv.length; i++) {
     wheel[arg.slice(2) as 'dx' | 'dy'] = Number(value);
   }
   else if (arg === '--signup') signup = true;
+  else if (arg === '--submit') submit = true;
+  else if (arg === '--secret') { fillItem = argv[++i]; if (!fillItem?.trim()) die('--secret needs a 1Password item title or ID', 2); }
   else if (arg === '--create') {
     const value = parseJSON(argv[++i] || 'null');
     if (isRecord(value) && typeof value.title === 'string' && typeof value.username === 'string'
@@ -105,7 +108,9 @@ for (let i = 0; i < argv.length; i++) {
 }
 const cmd = args.shift() ?? '';
 if (mode && cmd !== 'type') die('--mode is only supported for type', 2);
-if ((signup || create) && cmd !== 'signin') die('--signup and --create apply only to signin',2);
+if ((signup || create || submit) && cmd !== 'signin') die('--signup, --create and --submit apply only to signin',2);
+if (submit && !signup && !create) die('--submit applies to --signup or --create',2);
+if (fillItem !== undefined && (cmd !== 'type' || mode)) die('--secret applies only to type, without --mode', 2);
 if (download !== undefined && cmd !== 'click') die('--download applies only to click',2);
 if (at && cmd !== 'click') die('--at applies only to click', 2);
 if (at && frame !== undefined) die('--at is a point in the tab, so it takes no --frame', 2);
@@ -145,7 +150,7 @@ if (item !== undefined && cmd !== 'signin') die('--item applies only to signin',
 let method = cmd;
 switch (cmd) {
   case 'look': if (visible) params.visible = true; break;
-  case 'signin': if (item !== undefined) params.item = item; break;
+  case 'signin': if (item !== undefined) params.item = item; if (submit) params.submit = true; break;
   case 'tabs': case 'html': case 'back': case 'status': break;
   case 'close': case 'show': case 'group': {
     if (tab !== undefined) die(`gaddi ${cmd}: use positional tab IDs`, 2);
@@ -163,7 +168,9 @@ switch (cmd) {
   case 'goto': params.url = take('URL'); break;
   case 'click': if (at) { if (args.length) die('click: --at takes no selector', 2); } else params.selector = take('selector'); break;
   case 'hover': params.selector = take('selector'); break;
-  case 'type': params.selector = take('selector'); params.text = take('text'); params.text += args.length ? ' ' + args.splice(0).join(' ') : ''; break;
+  case 'type': params.selector = take('selector');
+    if (fillItem !== undefined) { if (args.length) die('type --secret takes no text', 2); params.secret = fillItem; break; }
+    params.text = take('text'); params.text += args.length ? ' ' + args.splice(0).join(' ') : ''; break;
   case 'press': params.key = take('key'); break;
   case 'scroll': {
     // A bare number is dy, as before; --dx and --dy alone scroll the page, and with a selector go over it.

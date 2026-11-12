@@ -83,38 +83,38 @@ const TOOLS: ToolDefinition[] = [
     const note = '\n[Bookmarks truncated at 20,000 characters; narrow query.]';
     return pageResult('Chrome bookmarks', lines.length > 20000 ? lines.slice(0, 20000 - note.length) + note : lines);
   }),
-  tool('wait', 'Wait for text, selector/ref or URL part; timeout returns met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 }, frameId }, [], 'wait', pageJSON),
+  tool('wait', 'Wait for text, selector/ref or URL part; timeout: met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 }, frameId }, [], 'wait', pageJSON),
   tool('look', 'Read text/refs, floating menus/suggestions and frames; visible:true is viewport.', { tab, visible: B, frameId }, [], 'look',
     result => result?.note ? plainResult(result.note) : pageJSON(result)),
   {
-    name: 'browser_read', description: 'Markdown from a tab or URL in a temporary tab.',
+    name: 'browser_read', description: 'Markdown from a tab or URL (temporary tab).',
     inputSchema: obj({ tab, url: S, approval, why }),
     run: args => readBrowser(args, rpc),
   },
   tool('open', 'Open background URL in Gaddi; foreground selects it.', { url: S, group: S, foreground: B, approval, why }, ['url'], 'open', pageJSON),
   tool('goto', 'Navigate a tab to a URL.', { tab, url: S, approval, why }, ['url'], 'goto', pageJSON),
   tool('back', 'Go back in a tab.', { tab }, [], 'back', pageJSON),
-  tool('click', 'Click selector/at:{x,y}; version guards stale. download:path captures blob to Downloads/temp (20MB).', { tab, version, selector: S, at, frameId, download: S, approval, why }),
-  tool('type', 'Replace text; mode:append adds, preserving chips/mentions. Passwords denied.', { tab, version, selector: S, text: S, mode: { ...S, enum: ['replace', 'append'] }, frameId }, ['selector', 'text']),
-  tool('signin', '1Password. create:{title,username,vault}: new login; signup:true: fill existing. Signup never submits.', { tab, item: S, signup: B, create: { type: 'object', properties: { title: S, username: S, vault: S }, required: ['title','username','vault'], additionalProperties: false }, approval, why }),
+  tool('click', 'Click selector/at:{x,y}; version guards stale; download:path saves blob to Downloads/temp (20MB).', { tab, version, selector: S, at, frameId, download: S, approval, why }),
+  tool('type', 'Replace text; mode:append adds, preserving chips/mentions. secret: 1Password item fills a password.', { tab, version, selector: S, text: S, secret: S, mode: { ...S, enum: ['replace', 'append'] }, frameId, approval, why }, ['selector']),
+  tool('signin', '1Password. create:{title,username,vault}: new login; signup:true fills existing; submit:true sends.', { tab, item: S, signup: B, submit: B, create: { type: 'object', properties: { title: S, username: S, vault: S }, required: ['title','username','vault'], additionalProperties: false }, approval, why }),
   tool('press', 'Press key; frameId requires focus in that document.', { tab, version, key: S, frameId, approval, why }, ['key']),
   tool('hover', 'Hover selector.', { tab, version, selector: S, frameId }, ['selector']),
   tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector.', { tab, version, dx: wheel, dy: wheel, selector: S, frameId }),
   tool('select', 'Select option by value.', { tab, version, selector: S, value: S, frameId }, ['selector', 'value']),
   tool('upload', 'Attach local file to a field/label/drop zone; held.', { tab, version, selector: S, path: S, frameId, approval, why }, ['selector', 'path']),
-  tool('eval', 'Evaluate JS; password reads and user-policy matches denied.', { tab, expression: S }, ['expression'], 'eval', pageJSON),
+  tool('eval', 'Evaluate JS; password values hidden; policy matches denied.', { tab, expression: S }, ['expression'], 'eval', pageJSON),
   tool('emulate', 'Set viewport, theme or animation speed; reset clears.', {
     tab, width: { type: 'integer', minimum: 1 }, height: { type: 'integer', minimum: 1 }, mobile: B,
     colorScheme: { ...S, enum: ['light', 'dark', 'no-preference'] },
     animationSpeed: { type: 'number', exclusiveMinimum: 0, maximum: 1 }, reset: B,
   }),
-  tool('screenshot', 'Screenshot image/path; frameId crops; zoom magnifies; box locates tab points.', { tab, fullPage: B, frameId, zoom }, [], 'screenshot', async result => ({
+  tool('screenshot', 'Screenshot; frameId crops; zoom magnifies; box locates tab points.', { tab, fullPage: B, frameId, zoom }, [], 'screenshot', async result => ({
     content: [{ type: 'text', text: result.path },
       { type: 'image', mimeType: result.mimeType, data: (await readFile(result.path)).toString('base64') }],
   })),
-  tool('close', 'Close explicit tabs; report closed IDs and failures.', { tabs }, ['tabs']),
+  tool('close', 'Close explicit tabs by ID.', { tabs }, ['tabs']),
   tool('show', 'Request owner attention, without focus by default. Rendering never needs show.', { tab }, ['tab'], 'show', pageJSON),
-  tool('group', 'Group existing tabs by task; reuse title.', { tabs, group: S }, ['tabs', 'group'], 'group', pageJSON),
+  tool('group', 'Group tabs by task; reuse title.', { tabs, group: S }, ['tabs', 'group'], 'group', pageJSON),
   tool('approvals', 'Pending actions in Gaddi.', {}, [], 'approvals.list', pageJSON),
   {
     // Kept terse: tools/list has a token budget (tests/mcp/metadata.test.ts). The instructions below say the rest,
@@ -122,9 +122,9 @@ const TOOLS: ToolDefinition[] = [
     name: 'browser_grant', description: 'Ask owner (Touch ID) ONCE per chat, all rules. Phone grants: max 120 minutes and 20 rules.',
     inputSchema: obj({
       rules: { type: 'array', items: { type: 'string', maxLength: 300 }, minItems: 1, maxItems: 100,
-        description: '<upload|post|delete> <https URL prefix>; default 20, opt-in 100' },
+        description: '<upload|post|delete> <https URL prefix>; default 20, opt-in 100; standing: upload|signin <origin>' },
       minutes: { type: 'integer', minimum: 5, maximum: 720 },
-      label: { ...S, maxLength: 60 },
+      label: { ...S, maxLength: 60 }, standing: B,
     }, ['rules', 'minutes']),
     // The reply is always a HELD: there is nothing to retry, so it is worded for a grant, not for an action.
     run: async args => {
@@ -133,7 +133,7 @@ const TOOLS: ToolDefinition[] = [
     },
   },
   tool('status', 'Report broker and Chrome bridge status.'),
-  tool('extensions', 'List, restart or manage Chrome extensions; install, disable and remove may be held.', {
+  tool('extensions', 'Manage Chrome extensions; install, disable, remove may be held.', {
     operation: { ...S, enum: ['list', 'reload', 'enable', 'disable', 'uninstall', 'install'] }, extensionId: S, path: S, approval, why,
   }, [], 'extensions', result => pageResult('Chrome extensions', JSON.stringify(result, null, 2))),
 ];

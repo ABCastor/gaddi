@@ -15,8 +15,8 @@ import type { FakeDaemon } from '../bridge/fake-daemon.ts';
 // Only op and owner authentication are stand-ins. No installed service, vault or real account.
 // downloadHold: start the broker with an opt-in hold.downloads overlay and exercise only
 // the held capture path. Without it, the default policy is exercised: captures do not ask.
-export async function exerciseHelperBroker({site,daemon,state,username,password,reset,downloadHold=false}: {
-  site:string; daemon:Pick<FakeDaemon,'request'>; state:string; username:string; password:string; reset:()=>void; downloadHold?:boolean;
+export async function exerciseHelperBroker({site,daemon,state,username,password,reset,downloadHold=false,prefilled}: {
+  site:string; daemon:Pick<FakeDaemon,'request'>; state:string; username:string; password:string; reset:()=>void; downloadHold?:boolean; prefilled?:string;
 }) {
   const repo=path.resolve(import.meta.dirname,'../..'), home=path.join(state,'helper-broker'); fs.mkdirSync(home);
   const socket=path.join(os.tmpdir(),`gaddi-helper-broker-${process.pid}.sock`), lock=path.join(home,'locked'), saves=path.join(home,'saves');
@@ -28,7 +28,8 @@ if(fs.existsSync(${JSON.stringify(lock)})){setTimeout(()=>console.log('[]'),8000
  let input='';process.stdin.on('data',c=>input+=c);process.stdin.on('end',()=>{const value=JSON.parse(input);
  if(args[args.indexOf('--vault')+1]!=='aaaaaaaaaaaaaaaaaaaaaaaaaa'||!args.includes('--generate-password=letters,digits,symbols,32'))process.exit(2);
  fs.appendFileSync(${JSON.stringify(saves)},'saved\\n');console.log(JSON.stringify({id:'helper-new-item',title:value.title,vault:{id:'aaaaaaaaaaaaaaaaaaaaaaaaaa'}}));});
-}else if(args[1]==='list')console.log(JSON.stringify([{id:'helper-new-item',title:'Helper fixture',urls:[{href:${JSON.stringify(site)}}]}]));
+}else if(args[1]==='list')console.log(JSON.stringify([{id:'helper-new-item',title:'Helper fixture',urls:[{href:${JSON.stringify(site)}}]},{id:'other-site-item',title:'Other site',urls:[{href:'https://other.example'}]}]));
+else if(args.includes('label=password'))console.log(${JSON.stringify(JSON.stringify({label:'password',value:password}))});
 else console.log(${JSON.stringify(JSON.stringify([{label:'username',value:username},{label:'password',value:password}]))});
 `,{mode:0o700});
   fs.writeFileSync(path.join(home, 'agent-cred'), 'agent-value-from-file\n', { mode: 0o600 });
@@ -38,7 +39,11 @@ const env={...process.env,PATH:`${home}:${process.env.PATH}`,GADDI_HOME:home,GAD
   let entry=path.join(repo,'daemon/daemon.mjs');
   // Falsification mutants: each removes one guarantee so its assertion must go red.
   const mutations:Record<string,[string,string,string]>={
-    'create-hold':['daemon/daemon.ts',"creating ? { outcome: 'hold', reason: 'create and save a new 1Password login' }","creating ? { outcome: 'allow' }"],
+    'create-hold':['daemon/daemon.ts',"check: creating ? creationCheck(site) : checkSignin(policy, site)","check: creating ? { outcome: 'allow' } : checkSignin(policy, site)"],
+    // NEW-LOGIN honours Always allow: back to a creation that always asks.
+    'create-ignores-remember':['daemon/daemon.ts',"check: creating ? creationCheck(site) : checkSignin(policy, site)","check: creating ? { outcome: 'hold', reason: 'create and save a new 1Password login' } : checkSignin(policy, site)"],
+    // SECRET-FILL is judged like a sign-in: without that rule it would fill without asking.
+    'fill-ungated':['daemon/daemon.ts',"      check = checkSignin(policy, site);\n      gateKind = 'signin';","      gateKind = 'signin';"],
     'download-always-hold':['daemon/downloads.ts',"!policy.off && policy.hold.downloads === true ?","!policy.off ?"],
     'download-ignores-switch':['daemon/downloads.ts',"!policy.off && policy.hold.downloads === true ?","false ?"],
     'download-drops-click-hold':['daemon/daemon.ts',"check = strictest(check, checkDownload(policy));","check = checkDownload(policy);"],
@@ -59,7 +64,8 @@ const env={...process.env,PATH:`${home}:${process.env.PATH}`,GADDI_HOME:home,GAD
   let diagnostics='';broker.stderr.on('data',chunk=>diagnostics+=chunk);
   const clients=new Set<net.Socket>(); let bridge:net.Socket|undefined;
   const pause=(ms:number)=>new Promise(r=>setTimeout(r,ms));
-  const safe=(value:unknown)=>assert.ok(!JSON.stringify(value).includes(password),'helper public output must not contain the generated password');
+  const safe=(value:unknown)=>{assert.ok(!JSON.stringify(value).includes(password),'helper public output must not contain the generated password');
+    if(prefilled)assert.ok(!JSON.stringify(value).includes(prefilled),'helper public output must not contain a value a page put in a password field');};
   function call(method:string,params:BrokerParams={}):Promise<Reply>{
     return new Promise((resolve,reject)=>{
       const client=net.connect(socket);clients.add(client);let buffer='';const id=crypto.randomUUID();
@@ -70,11 +76,11 @@ const env={...process.env,PATH:`${home}:${process.env.PATH}`,GADDI_HOME:home,GAD
     });
   }
   async function result(method:string,params:BrokerParams={}){const reply=await call(method,params);assert.equal(reply.error,undefined,`helper ${method}`);return reply.result;}
-  async function approve(id:string){
+  async function approve(id:string,remember=false){
     const list=await result('approvals.list');assert.ok(isRecord(list)&&Array.isArray(list.pending));
     const approval=list.pending.find(a=>isRecord(a)&&a.id===id);assert.ok(isRecord(approval));
-    const ts=Date.now(),sig=crypto.sign('sha256',Buffer.from(approvalMessage('grant',approval,ts,false)),privateKey).toString('base64');
-    await result('approval.grant',{id,proof:{ts,sig}});
+    const ts=Date.now(),sig=crypto.sign('sha256',Buffer.from(approvalMessage('grant',approval,ts,remember)),privateKey).toString('base64');
+    await result('approval.grant',{id,proof:{ts,sig},remember});
   }
   async function action(method:string,params:BrokerParams){
     let reply=await call(method,params);
@@ -121,6 +127,73 @@ const env={...process.env,PATH:`${home}:${process.env.PATH}`,GADDI_HOME:home,GAD
     const page=await result('look',{tab});assert.ok(isRecord(page)&&String(page.text).includes('Signed in'),'fixture server accepted signup');
     await result('close',{tabs:[tab]});
     console.log('PASS public broker signup: signed create, one saved item, trusted fill, ordinary gated submit, server acceptance, no secret output');
+
+    // The journeys below need the real extension and pages (browser.test.ts passes prefilled); the fake transport
+    // of tests/downloads/broker.test.ts covers only the contracts above.
+    if (prefilled) {
+    // SECRET-FILL: a password field filled from a named 1Password item, judged like a sign-in, value never shown.
+    reset();const loginTab=await action('open',{url:site+'/login?sticky'});assert.ok(isRecord(loginTab)&&typeof loginTab.id==='number');
+    const literal=await call('type',{tab:loginTab.id,selector:'[name=password]',text:'typed-by-an-agent'});
+    assert.equal(literal.error?.code,'denied','ASSERT_FILL_LITERAL_STILL_DENIED');
+    const foreign=await call('type',{tab:loginTab.id,selector:'[name=password]',secret:'Other site'});
+    assert.ok(foreign.error&&/does not match this site/.test(foreign.error.message),'ASSERT_FILL_SITE_BOUND: '+JSON.stringify(foreign.error));
+    const notPassword=await call('type',{tab:loginTab.id,selector:'[name=username]',secret:'Helper fixture'});
+    assert.ok(notPassword.error&&/only a password field/.test(notPassword.error.message),'ASSERT_FILL_PASSWORD_FIELD_ONLY');
+    await action('type',{tab:loginTab.id,selector:'[name=username]',text:username});
+    const heldFill=await call('type',{tab:loginTab.id,selector:'[name=password]',secret:'Helper fixture'});
+    assert.equal(heldFill.error?.code,'held','ASSERT_FILL_HELD_LIKE_SIGNIN');
+    const fillCard=(await result('approvals.list') as {pending:{id:string;kind:string;site?:string}[]}).pending.find(a=>a.id===heldFill.error!.approval!.id);
+    assert.ok(fillCard&&fillCard.kind==='signin'&&fillCard.site===site,'ASSERT_FILL_CARD_IS_SIGNIN_REMEMBERABLE: '+JSON.stringify(fillCard));
+    await approve(heldFill.error!.approval!.id);
+    const filledField=await result('type',{tab:loginTab.id,selector:'[name=password]',secret:'Helper fixture',approval:heldFill.error!.approval!.id});
+    assert.ok(isRecord(filledField)&&filledField.typed===true,'ASSERT_FILL_TYPED');
+    await action('click',{tab:loginTab.id,selector:'button'});
+    for(let n=0;n<50;n++){const page=await result('look',{tab:loginTab.id});if(isRecord(page)&&String(page.text).includes('Signed in'))break;await pause(100);}
+    assert.ok(String((await result('look',{tab:loginTab.id}) as {text:string}).text).includes('Signed in'),'ASSERT_FILL_ACCEPTED_BY_SITE');
+    await result('close',{tabs:[loginTab.id]});
+    console.log('PASS public broker 1Password fill: held like a sign-in, site-bound, password fields only, literal passwords still denied, accepted, never shown');
+
+    // EVAL-PASSWORDS: evaluation runs on a page with a password field and never returns what it holds.
+    {
+      const evalTab=await action('open',{url:site+'/prefilled'});assert.ok(isRecord(evalTab)&&typeof evalTab.id==='number');
+      const values=await result('eval',{tab:evalTab.id,expression:'[...document.querySelectorAll("input")].map(i => i.value)'});
+      assert.ok(isRecord(values)&&Array.isArray(values.value),'ASSERT_EVAL_ON_PASSWORD_PAGE: '+JSON.stringify(values));
+      assert.deepEqual(values.value,['someone@example.test','(hidden)'],'ASSERT_EVAL_HIDES_PASSWORD_VALUES');
+      const named=await call('eval',{tab:evalTab.id,expression:'document.querySelector("[name=password]").value'});
+      // The one denial kept: an expression that reads a password (policy patterns in the broker, the word in the extension).
+      assert.ok(named.error&&(named.error.code==='denied'||/Refusing password access/.test(named.error.message)),'ASSERT_EVAL_PASSWORD_READ_DENIED: '+JSON.stringify(named));
+      await result('close',{tabs:[evalTab.id]});
+      console.log('PASS public broker eval on a password page: allowed, field values hidden, direct password reads denied');
+    }
+
+    // STANDING: an agent asks once; Always allow (Touch ID) makes sign-in and creation run without a card.
+    const standing=await result('grant.request',{standing:true,rules:['signin '+site,'upload '+site],minutes:5});
+    assert.ok(isRecord(standing)&&Array.isArray(standing.standing)&&standing.standing.length===2,'ASSERT_STANDING_REQUEST: '+JSON.stringify(standing));
+    for(const entry of standing.standing as {approval:string}[])await approve(entry.approval,true);
+    const view=await result('approvals.list') as {standing:{signin:string[];uploads:string[]}};
+    assert.ok(view.standing.signin.includes(site)&&view.standing.uploads.includes(site),'ASSERT_STANDING_VISIBLE: '+JSON.stringify(view.standing));
+    const again=await result('grant.request',{standing:true,rules:['upload '+site],minutes:5}) as {standing:{status:string}[]};
+    assert.equal(again.standing[0].status,'already allowed','ASSERT_STANDING_ALREADY');
+
+    // NEW-LOGIN + SIGNUP-SUBMIT on a remembered site: an Ombudsman-shaped form (Confirm email, invisible reCAPTCHA,
+    // no form element) is created, filled and sent with no card, and the site accepts it.
+    reset();const registerTab=await action('open',{url:site+'/register'});assert.ok(isRecord(registerTab)&&typeof registerTab.id==='number');
+    await action('click',{tab:registerTab.id,selector:'[name=privacy]'});
+    const created=await result('signin',{tab:registerTab.id,create:{title:'Helper register',username,vault:'aaaaaaaaaaaaaaaaaaaaaaaaaa'},submit:true});
+    assert.ok(isRecord(created)&&created.outcome==='submitted','ASSERT_REMEMBERED_CREATE_SUBMITS: '+JSON.stringify(created));
+    assert.equal(fs.readFileSync(saves,'utf8'),'saved\nsaved\n','exactly one more NEW item, without a card');
+    for(let n=0;n<50&&!String((await result('look',{tab:registerTab.id}) as {text:string}).text).includes('Signed in');n++)await pause(100);
+    assert.ok(String((await result('look',{tab:registerTab.id}) as {text:string}).text).includes('Signed in'),'ASSERT_REGISTER_ACCEPTED');
+    await result('close',{tabs:[registerTab.id]});
+    const cards=await result('approvals.list') as {pending:{kind:string;status:string}[]};
+    assert.ok(!cards.pending.some(a=>a.status==='pending'),'ASSERT_REMEMBERED_NO_CARD');
+    // A remembered site fills a password without a card too.
+    reset();const quietTab=await action('open',{url:site+'/login?sticky'});assert.ok(isRecord(quietTab)&&typeof quietTab.id==='number');
+    const quiet=await call('type',{tab:quietTab.id,selector:'[name=password]',secret:'Helper fixture'});
+    assert.equal(quiet.error,undefined,'ASSERT_REMEMBERED_FILL_NO_CARD: '+JSON.stringify(quiet.error));
+    await result('close',{tabs:[quietTab.id]});
+    console.log('PASS public broker standing grant: asked once, shown to agents; remembered site creates, fills and submits an Ombudsman-shaped sign-up with no card');
+    }
     }
 
     reset();const exportTab=await action('open',{url:site+'/download'});assert.ok(isRecord(exportTab)&&typeof exportTab.id==='number');

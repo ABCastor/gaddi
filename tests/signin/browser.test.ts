@@ -27,7 +27,23 @@ const secrets = [username, password];
 const noSecrets = (value: unknown) => assert.ok(secrets.every(secret => !JSON.stringify(value).includes(secret)), 'credential leaked in result');
 let browser: Browser | undefined, passed = 0, submissions = 0, credentialsAccepted = false;
 let signedIn = false;
+// A value a page put into its own password field, which the broker never saw: eval must not return it.
+const prefilled = `page-held-${crypto.randomUUID()}`;
+secrets.push(prefilled);
 const server = http.createServer((req, res) => {
+  if (req.method === 'POST' && req.url === '/register') {
+    let body = '';
+    req.on('data', chunk => { body += chunk; });
+    req.on('end', () => {
+      submissions++;
+      const fields = JSON.parse(body) as Record<string, unknown>;
+      credentialsAccepted = fields.email === username && fields.confirmEmail === username && fields.password === password && fields.privacy === true;
+      body = '';
+      signedIn = credentialsAccepted;
+      res.writeHead(credentialsAccepted ? 204 : 400); res.end();
+    });
+    return;
+  }
   if (req.method === 'POST') {
     let body = '';
     req.on('data', chunk => { body += chunk; });
@@ -48,6 +64,9 @@ const server = http.createServer((req, res) => {
     document.querySelector('button').onclick=()=>{const a=document.createElement('a');a.download='page-export.zip';a.href=URL.createObjectURL(new Blob(['fixture generated export'],{type:'application/zip'}));document.body.append(a);a.click();};
     </script>`); return; }
   if (req.url?.includes('signup') && !signedIn) { res.end(fs.readFileSync(path.join(repo,'tests/signin/fixtures/signup.html'))); return; }
+  if (req.url?.startsWith('/register') && !signedIn) { res.end(fs.readFileSync(path.join(repo,'tests/signin/fixtures/register.html'))); return; }
+  if (req.url?.startsWith('/prefilled')) { res.end(`<!doctype html><title>Prefilled</title><label>Email <input name="username" type="email" value="someone@example.test"></label>
+    <label>Password <input name="password" type="password"></label><script>document.querySelector('[name=password]').value=${JSON.stringify(prefilled)};</script>`); return; }
   if (signedIn) { res.end('<!doctype html><title>Account</title><main>Signed in</main>'); return; }
   if (req.url?.includes('aura')) { res.end(fs.readFileSync(path.join(repo, 'tests/signin/fixtures/aura-login.html'))); return; }
   res.end(`<!doctype html><title>Login</title><form method="post">
@@ -75,6 +94,20 @@ try {
     source = source.replace(marker, 'true');
   }
   fs.writeFileSync(bg, source);
+  // Disposable copy only: one sign-up guarantee removed, so the Ombudsman-shaped journey must go red.
+  const contentMutation = process.env.GADDI_SIGNIN_BREAK_CONTENT;
+  if (contentMutation) {
+    const content = path.join(extension, 'dist/extension/content.js');
+    const markers: Record<string, [string, string]> = {
+      CONFIRM: ['return (confirmationFound ??= { el: findUsernameConfirmation() }).el;', 'return undefined;'],
+      CAPTCHA: ["!el.closest('.grecaptcha-badge') && ", ''],
+    };
+    assert.ok(contentMutation in markers, 'known sign-up content mutation');
+    const [marker, replacement] = markers[contentMutation];
+    const original = fs.readFileSync(content, 'utf8');
+    assert.equal(original.split(marker).length, 2, 'sign-up content mutation point');
+    fs.writeFileSync(content, original.replace(marker, replacement));
+  }
   const auraMutation = process.env.GADDI_SIGNIN_BREAK_AURA;
   if (auraMutation) {
     const content = path.join(extension, 'dist/extension/content.js');
@@ -122,7 +155,8 @@ try {
   process.env.PATH = `${state}:${process.env.PATH}`;
 fs.writeFileSync(path.join(state, 'agent-cred'), 'agent-value-from-file\n', { mode: 0o600 });
 process.env.GADDI_OP_TOKEN_FILE = path.join(state, 'agent-cred'); process.env.GADDI_OP_HOME = path.join(state, 'op-home');
-  const cases = process.env.GADDI_SIGNIN_CASE ? [process.env.GADDI_SIGNIN_CASE]
+  // GADDI_SIGNIN_HELPER_ONLY=1: only the public-broker journeys (falsification runs of their guarantees).
+  const cases = process.env.GADDI_SIGNIN_HELPER_ONLY === '1' ? [] : process.env.GADDI_SIGNIN_CASE ? [process.env.GADDI_SIGNIN_CASE]
     : process.env.GADDI_SIGNIN_BREAK_LANDED === '1' ? ['?sticky']
     : auraMutation ? ['?aura'] : ['?plain', '?persistent', '?focus', '?sticky', '?aura', '?aura-sticky', '?signup'];
   for (const suffix of cases) {
@@ -176,7 +210,7 @@ process.env.GADDI_OP_TOKEN_FILE = path.join(state, 'agent-cred'); process.env.GA
     passed++; console.log(`PASS real sign-in reload ${suffix}, one submit, no secrets`);
   }
   if (!process.env.GADDI_SIGNIN_CASE && !process.env.GADDI_SIGNIN_BREAK_LANDED && !auraMutation) {
-    await exerciseHelperBroker({site,daemon,state,username,password,reset(){signedIn=false;submissions=0;credentialsAccepted=false;}});
+    await exerciseHelperBroker({site,daemon,state,username,password,prefilled,reset(){signedIn=false;submissions=0;credentialsAccepted=false;}});
     signedIn=false;
     const opened=await daemon.call('chrome.open',{url:site+'/download'}) as {id:number};
     const tab=opened.id, downloadCapture={id:crypto.randomUUID(),site};

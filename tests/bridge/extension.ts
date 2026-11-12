@@ -109,10 +109,10 @@ try {
   }
   if (process.env.GADDI_BRIDGE_BREAK_PRE_SCROLL_SIGNATURE === '1') {
     const source = fs.readFileSync(contentFile, 'utf8');
-    const order = "            el.scrollIntoView({ block: params.frameId === undefined ? 'center' : 'nearest', inline: 'center', behavior: 'instant' });\n            const before = action === 'clickCheck' ? '' : signature();";
+    const order = "            target.scrollIntoView({ block: params.frameId === undefined ? 'center' : 'nearest', inline: 'center', behavior: 'instant' });\n            const before = action === 'clickCheck' ? '' : signature();";
     assert.ok(source.includes(order), 'pre-scroll mutation point exists');
     fs.writeFileSync(contentFile, source.replace(order,
-      "            const before = action === 'clickCheck' ? '' : signature();\n            el.scrollIntoView({ block: params.frameId === undefined ? 'center' : 'nearest', inline: 'center', behavior: 'instant' });"));
+      "            const before = action === 'clickCheck' ? '' : signature();\n            target.scrollIntoView({ block: params.frameId === undefined ? 'center' : 'nearest', inline: 'center', behavior: 'instant' });"));
   }
   if (process.env.GADDI_BRIDGE_BREAK_SANDBOX_BAND === '1') {
     // Disposable copy only: the band is drawn once and never put back.
@@ -465,12 +465,15 @@ try {
   assert.equal((await call('chrome.bookmarks', { query: 'NEXT.HTML' })).bookmarks.length, 1);
   pass('bookmarks list and case-insensitive folder, title and URL queries read the test tree');
 
-  const evalDenied = await daemon.request('chrome.eval', { tab, expression: 'document.title' });
-  assert.match(evalDenied.error?.message || '', /password/);
   await page.locator('#password').evaluate(el => el.setAttribute('value', 'synthetic-password-marker'));
+  // EVAL-PASSWORDS: a password page is evaluated, and what its password field holds comes back hidden.
+  assert.equal(typeof (await call('chrome.eval', { tab, expression: 'document.title' })).value, 'string', 'eval runs on a password page');
+  const fieldValues = String((await call('chrome.eval', { tab, expression: "[...document.querySelectorAll('input')].map(el => el.value).join('|')" })).value);
+  assert.ok(!fieldValues.includes('synthetic-password-marker') && fieldValues.includes('(hidden)'), 'ASSERT_EVAL_HIDES_PASSWORDS');
+  assert.match((await daemon.request('chrome.eval', { tab, expression: "document.querySelector('#password').value" })).error?.message || '', /password/);
   assert.ok(!(await call('chrome.html', { tab })).html.includes('synthetic-password-marker'));
   assert.equal(await page.locator('#password').getAttribute('value'), 'synthetic-password-marker');
-  pass('password pages refuse eval and HTML redaction leaves the real DOM intact');
+  pass('password pages allow eval with their values hidden, refuse password reads, and HTML redaction leaves the real DOM intact');
 
   await call('chrome.hover', { tab, selector: '#icon' });
   assert.equal(await page.locator('#icon').evaluate(el => el.matches(':hover')), true);
