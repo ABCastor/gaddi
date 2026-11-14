@@ -11,7 +11,7 @@ mkdir -p "$COPY/tests/fixtures" "$COPY/tests/.state" "$REPO/tests/.state/logs"
 cp -R "$REPO/daemon" "$REPO/mcp" "$REPO/shared" "$REPO/policy" "$REPO/cli" "$COPY/"
 cp "$REPO"/tests/fixtures/*.ts "$COPY/tests/fixtures/"
 ln -s "$REPO/tests/mcp" "$COPY/tests/mcp"
-marker='    if (rest && !ORDER_OBJECT.test(rest)) continue;'
+marker='    if (!bare && rest && !ORDER_OBJECT.test(rest)) continue;'
 if [[ $(grep -cF "$marker" "$COPY/daemon/policy.ts") -ne 1 ]]; then echo 'FAIL choice mutation point is missing'; exit 1; fi
 node -e 'const fs=require("fs"),[f,m]=process.argv.slice(1);fs.writeFileSync(f,fs.readFileSync(f,"utf8").replace(m,""))' "$COPY/daemon/policy.ts" "$marker"
 LOG="$REPO/tests/.state/logs/click-verbs-choice-falsified.log"

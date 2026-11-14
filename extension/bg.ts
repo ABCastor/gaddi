@@ -1206,6 +1206,7 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
         return { ...result, selector: target.selector, name: target.name, tag: target.tag, type: target.type,
           autocomplete: target.autocomplete, href: target.href, submitName: target.submitName, matched: [], role: target.role,
           password: target.secret, disabled: target.disabled, choice: target.choice,
+          committed: target.committed,
           ...(resolved.frameId !== undefined ? { frameId: resolved.frameId } : {}),
           ...(resolved.frameUrl ? { frameUrl: resolved.frameUrl } : {}), ...(resolved.blind ? { blind: true } : {}) };
       }
@@ -1393,7 +1394,8 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
       const target = await resolvePoint(tab, at, check);
       // Invariant: the point still holds the control the gate named, or nothing is pressed.
       if (checked && (target.blind || target.target.name !== checked.name
-        || checked.href !== undefined && target.target.href !== checked.href))
+        || checked.href !== undefined && target.target.href !== checked.href
+        || checked.committed !== undefined && JSON.stringify(target.target.committed ?? null) !== JSON.stringify(checked.committed)))
         throw new Error('What sits at that point changed since it was checked; look again');
       const before = await onPage(tab, 'snapshot', params, check);
       await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at });

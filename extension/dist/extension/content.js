@@ -326,18 +326,138 @@ export async function pageTask(action, params = {}) {
         function describe(el) {
             // Invariant: clicking a child icon is described as clicking its interactive
             // ancestor, so it cannot hide the button/link name or destination from gates.
-            const interactive = el.closest('button, a[href], [role="button"], [role="link"], [role="menuitem"], [role="tab"], input[type="submit"], input[type="button"], input[type="image"], summary, label') || el;
-            const form = el.form || el.closest('form');
-            const submit = form && [...form.elements].find((control) => !control.disabled && ((control.tagName === 'BUTTON' && control.type === 'submit')
-                || (control.tagName === 'INPUT' && ['submit', 'image'].includes(control.type || ''))));
-            // Enter on a focused button/link activates that control, not the form's
-            // default button. Only implicit submission from a text field uses the default.
-            const activationTarget = ['button', 'link'].includes(roleOf(interactive)) ? interactive : submit;
+            const interactive = interactiveOf(el), { activationTarget } = activation(el, interactive);
             return { selector: selectorFor(el), tag: el.tagName.toLowerCase(), type: el.getAttribute('type') || (typeof el.type === 'string' ? el.type : ''),
                 autocomplete: el.getAttribute('autocomplete') || '', role: roleOf(el), name: accessibleName(interactive),
                 href: interactive.closest('a[href]')?.href || '', submitName: activationTarget ? nameOf(activationTarget) : '',
                 password: isPassword(el), disabled: el.matches(':disabled') || el.getAttribute('aria-disabled') === 'true',
                 choice: isChoice(el, interactive) };
+        }
+        // What the gates judge beyond a control's own name. Only for the one element an action is about: an outline
+        // describes every control, and these read the form or the page around each.
+        function gateFacts(el) {
+            const interactive = interactiveOf(el), { pressed, activationTarget } = activation(el, interactive);
+            // KEY-CHOICE: Space presses the focused button or menu item itself, never a form's default button.
+            const spaceTarget = ['button', 'menuitem'].includes(roleOf(pressed)) ? pressed : undefined;
+            const chosen = el.tagName === 'SELECT' && typeof params.value === 'string'
+                ? [...el.options].find(option => option.value === params.value) : undefined;
+            // A details summary only opens its section, and a link goes somewhere: neither sends a form.
+            const commitFrom = roleOf(interactive) === 'button' && interactive.tagName !== 'SUMMARY' ? interactive : undefined;
+            const enterFrom = activationTarget && roleOf(activationTarget) !== 'link' && activationTarget.tagName !== 'SUMMARY' ? activationTarget
+                : el.form ? el : undefined;
+            return {
+                // SELECT-CHOICE: the option this value picks (the first with that value, as the page's own select does).
+                ...(el.tagName === 'SELECT' && typeof params.value === 'string' ? { chosen: chosen ? optionNames(chosen) : [] } : {}),
+                // COMMIT-CHOICES: a button commits the choices that are on in its form (or dialog, or page); null is not a button.
+                committed: commitFrom ? committedChoices(commitFrom) : null,
+                // KEY-CHOICE: what a key on this focused element can choose, press, or commit.
+                keyChoices: keyChoices(el), spaceName: spaceTarget ? nameOf(spaceTarget) : '',
+                ...(enterFrom ? { enterCommits: committedChoices(enterFrom) } : {}),
+                ...(spaceTarget && spaceTarget.tagName !== 'SUMMARY' ? { spaceCommits: committedChoices(spaceTarget) } : {})
+            };
+        }
+        const INTERACTIVE = 'button, a[href], [role="button"], [role="link"], [role="menuitem"], [role="tab"], input[type="submit"], input[type="button"], input[type="image"], summary, label';
+        function interactiveOf(el) { return el.closest(INTERACTIVE) || el; }
+        function activeDescendant(el) {
+            const id = el.getAttribute('aria-activedescendant');
+            if (!id)
+                return null;
+            const root = el.getRootNode();
+            return 'getElementById' in root ? root.getElementById(id) : null;
+        }
+        // What Enter on el presses: a focused button, link or menu item itself (or the item a list or menu that keeps the
+        // focus points at, aria-activedescendant), else the form's default button for implicit submission from a field.
+        function activation(el, interactive) {
+            const form = el.form || el.closest('form');
+            const submit = form && [...form.elements].find((control) => !control.disabled && ((control.tagName === 'BUTTON' && control.type === 'submit')
+                || (control.tagName === 'INPUT' && ['submit', 'image'].includes(control.type || ''))));
+            const pointed = activeDescendant(el), pressed = pointed ? interactiveOf(pointed) : interactive;
+            return { pressed, activationTarget: ['button', 'link', 'menuitem'].includes(roleOf(pressed)) ? pressed : submit };
+        }
+        // Every element matching selector under root, through open shadow roots.
+        function deepAll(root, selector) {
+            const found = [...root.querySelectorAll(selector)];
+            for (const node of root.querySelectorAll('*'))
+                if (node.shadowRoot)
+                    found.push(...deepAll(node.shadowRoot, selector));
+            return found;
+        }
+        // Never cut short: the broker refuses a list too long to judge rather than judge part of it.
+        const unique = (names) => [...new Set(names.map(clean).filter(Boolean))];
+        // SELECT-CHOICE: the words a gate reads for one option: what the list shows, its text, its own label and its group's.
+        function optionNames(option) {
+            const group = option.parentElement?.tagName === 'OPTGROUP' ? option.parentElement.label : '';
+            return unique([option.label, option.text, option.getAttribute('aria-label') || '', group]);
+        }
+        const enabledOption = (option) => !option.disabled && !option.parentElement?.disabled;
+        const CHOICE_ROLES = '[role="checkbox"], [role="radio"], [role="switch"], [role="option"], [role="menuitemcheckbox"], [role="menuitemradio"]';
+        // COMMIT-CHOICES: the names of the choices that are on where a button acts: its form (with every control that names
+        // that form), else the dialog it sits in, else its whole document minus the choices of other forms (those go with
+        // their own buttons). Checked boxes and radios, selected options and ARIA choices marked checked or selected count,
+        // whoever turned them on (the page, a key, a click).
+        function committedChoices(button) {
+            const form = button.form || button.closest('form');
+            const scope = form ? [...form.elements]
+                : deepAll(button.closest('dialog, [role="dialog"], [role="alertdialog"]') || document, `input, select, ${CHOICE_ROLES}`)
+                    .filter(control => !control.form && !control.closest('form'));
+            if (form)
+                scope.push(...deepAll(form, CHOICE_ROLES));
+            const names = [];
+            for (const control of scope) {
+                if (control.matches(':disabled'))
+                    continue;
+                if (control.tagName === 'SELECT') {
+                    for (const option of control.selectedOptions)
+                        names.push(...optionNames(option));
+                }
+                else if (control.tagName === 'INPUT') {
+                    if (['checkbox', 'radio'].includes((control.type || '').toLowerCase()) && control.checked)
+                        names.push(nameOf(control));
+                }
+                else if (control.matches(CHOICE_ROLES) && (control.getAttribute('aria-checked') === 'true' || control.getAttribute('aria-selected') === 'true')) {
+                    names.push(nameOf(control));
+                }
+            }
+            return unique(names);
+        }
+        // KEY-CHOICE: every choice a key on this focused element could turn on. A select picks any enabled option by its
+        // letters or arrows; arrows move a radio to the others of its group; Space toggles a checkbox; a list or menu that
+        // points at an item picks that item.
+        function keyChoices(el) {
+            const names = [];
+            const group = (node) => {
+                const role = roleOf(node);
+                if (node.tagName === 'INPUT' && (node.type || '').toLowerCase() === 'radio') {
+                    const radios = node.form ? [...node.form.elements] : deepAll(node.getRootNode(), 'input[type="radio"]');
+                    const name = node.getAttribute('name');
+                    for (const radio of radios)
+                        if (radio === node || name && radio.tagName === 'INPUT' && (radio.type || '').toLowerCase() === 'radio'
+                            && radio.getAttribute('name') === name)
+                            names.push(nameOf(radio));
+                }
+                else if (['radio', 'option', 'menuitemradio'].includes(role)) {
+                    const container = node.closest('[role="radiogroup"], [role="listbox"], [role="menu"], [role="menubar"], [role="group"]');
+                    for (const item of container ? deepAll(container, CHOICE_ROLES) : [node])
+                        names.push(nameOf(item));
+                }
+                else if (isChoice(node, interactiveOf(node)))
+                    names.push(accessibleName(interactiveOf(node)));
+            };
+            if (el.tagName === 'SELECT') {
+                for (const option of el.options)
+                    if (enabledOption(option))
+                        names.push(...optionNames(option));
+                names.push(accessibleName(interactiveOf(el)));
+            }
+            else
+                group(el);
+            if (['listbox', 'radiogroup'].includes(roleOf(el)))
+                for (const item of deepAll(el, CHOICE_ROLES))
+                    names.push(nameOf(item));
+            const pointed = activeDescendant(el);
+            if (pointed)
+                group(pointed);
+            return unique(names);
         }
         // A click that toggles a choice performs nothing: the words of a checkbox, a radio, an
         // option or the label of one describe what is being chosen, not what the page will do.
@@ -392,9 +512,17 @@ export async function pageTask(action, params = {}) {
             const checked = params.checkedDescription;
             if (!checked)
                 return;
-            const current = describe(el);
-            if (enter ? current.submitName !== checked.submitName : current.name !== checked.name || current.href !== checked.href)
+            const facts = ['chosen', 'committed', 'keyChoices', 'spaceName', 'enterCommits', 'spaceCommits'];
+            // The page around the control is read again only when the gate judged it.
+            const current = { ...describe(el), ...(facts.some(key => key in checked) ? gateFacts(el) : {}) };
+            if (enter ? 'submitName' in checked && current.submitName !== checked.submitName : current.name !== checked.name || current.href !== checked.href)
                 throw new Error('Element changed since it was checked; look again');
+            // SELECT-CHOICE, COMMIT-CHOICES, KEY-CHOICE: the option, the choices a commit sends and what a key can pick are
+            // bound as the gate judged them; a page that swaps one in afterwards gets nothing done.
+            for (const key of facts) {
+                if (key in checked && JSON.stringify(current[key] ?? null) !== JSON.stringify(checked[key]))
+                    throw new Error('Element changed since it was checked; look again');
+            }
         }
         function fnvAccumulator() {
             let hash = 2166136261;
@@ -1004,7 +1132,7 @@ export async function pageTask(action, params = {}) {
             const hit = pointElement(at);
             if (!hit)
                 throw new Error('Nothing is at that point');
-            const described = describe(hit);
+            const described = { ...describe(hit), ...gateFacts(hit) };
             const frame = ['IFRAME', 'FRAME'].includes(hit.tagName);
             // The hit and its ancestors, so a caller can tell "the control I measured" from "something
             // else now sitting at that point"; document references keep this check inside one document.
@@ -1015,6 +1143,7 @@ export async function pageTask(action, params = {}) {
             return { selector: described.selector, name: described.name, tag: described.tag, role: described.role,
                 choice: described.choice === true, href: described.href, type: described.type, autocomplete: described.autocomplete,
                 submitName: described.submitName, secret: described.password, disabled: described.disabled,
+                committed: described.committed,
                 signature: signature(), chain, frame };
         }
         const el = resolve(params.selector);
@@ -1025,7 +1154,7 @@ export async function pageTask(action, params = {}) {
         // Inside an embedded document the gates judge that document's own site, so it says where it is.
         const topWindow = globalThis.top, embedded = topWindow != null && topWindow !== globalThis;
         if (action === 'describe')
-            return { ...describe(el), ...(embedded ? { frameUrl: location.href } : {}),
+            return { ...describe(el), ...gateFacts(el), ...(embedded ? { frameUrl: location.href } : {}),
                 matched: (params.denySelectors || []).filter(selector => el.matches(selector)) };
         if (action === 'captureBox') {
             if (!visible(el))
@@ -1156,6 +1285,7 @@ export async function pageTask(action, params = {}) {
                 throw new Error('Element is not an enabled select');
             if (typeof params.value !== 'string' || ![...el.options].some(option => option.value === params.value && !option.disabled && !option.parentElement?.disabled))
                 throw new Error('No enabled option with that value');
+            checkDescription(el);
             const before = signature();
             el.value = params.value;
             el.dispatchEvent(new Event('input', { bubbles: true }));

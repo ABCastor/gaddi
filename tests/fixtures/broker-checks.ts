@@ -2,7 +2,7 @@ import net from 'node:net';
 import type { Socket } from 'node:net';
 import type { ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { KeyObject } from 'node:crypto';
-import type { ChromeRequest, ElementDescription, TabInfo, WireError, Reply, IncomingParams, CloseResult } from '../../shared/protocol.ts';
+import type { ChromeRequest, ElementDescription, GateFacts, TabInfo, WireError, Reply, IncomingParams, CloseResult } from '../../shared/protocol.ts';
 import { checkedReply, checkedResult, checkedRequest, isRecord, parseJSON, isApproval } from './wire.ts';
 import type { PublicApproval, TestResult } from './wire.ts';
 type Client = ReturnType<typeof client>;
@@ -143,6 +143,11 @@ async function fakeBridge() {
     describeSelector: undefined as string | undefined,
     // What the next describe says the clicked control is called and where it leads (session grant checks).
     describeName: undefined as string | undefined, describeHref: undefined as string | undefined,
+    // SELECT-CHOICE, COMMIT-CHOICES, KEY-CHOICE: what the page says a select's value picks, which choices are on where a
+    // button or Enter acts, and what a key on the focused element could pick or press.
+    chosen: undefined as string[] | undefined, committed: undefined as string[] | undefined,
+    enterCommits: undefined as string[] | undefined, keyChoices: [] as string[], spaceName: '',
+    omitGateFacts: false,
     // What Chrome says an extension is (remote approval checks: an extension operation is never answered remotely).
     extension: undefined as Record<string, unknown> | undefined,
     capture: 'none' as 'none' | 'image' | 'error' | 'missing-box' | 'hang', captureWidth: 8, captureHeight: 8 };
@@ -187,14 +192,18 @@ async function fakeBridge() {
             ? POINTS[`${msg.params.at.x},${msg.params.at.y}`] : undefined;
           const s: unknown = at ? at.selector : msg.params.selector; assert.ok(typeof s === 'string');
           const names: Record<string, string> = { '#pay': 'Procedi al pagamento', '#confirm': 'Confirm order', '#del': 'Delete', '#send': 'Send', '#plain': 'Read more' };
-          const description: ElementDescription & { role: string; password: boolean; disabled: boolean; choice: boolean;
+          const description: ElementDescription & GateFacts & { role: string; password: boolean; disabled: boolean; choice: boolean;
             frameId?: number; frameUrl?: string; blind?: boolean } = {
             name: at?.name ?? control.describeName ?? (names[s] || (s.startsWith('a[href=') ? 'Pay' : 'Read more')),
             tag: ['#password', '#current', '#sensitive'].includes(s) ? 'input' : at?.tag ?? 'button',
             type: s === '#password' ? 'password' : 'text', autocomplete: s === '#current' ? 'current-password' : '',
             href: control.describeHref ?? (s === '#checkout-link' ? '/checkout?token=PRIVATE_LINK_QUERY' : s === '#read-link' ? '/article?token=PRIVATE_LINK_QUERY' : ''), submitName: control.focusSubmit,
             matched: s === '#sensitive' ? ['.sensitive'] : [], role: at?.role ?? 'button', password: false, disabled: false, choice: at?.choice === true,
-            ...(at?.frameUrl ? { frameId: 42, frameUrl: at.frameUrl } : {}), ...(at?.blind ? { blind: true } : {}) };
+            ...(at?.frameUrl ? { frameId: 42, frameUrl: at.frameUrl } : {}), ...(at?.blind ? { blind: true } : {}),
+            ...(typeof msg.params.value === 'string' && !control.omitGateFacts ? { chosen: control.chosen ?? ['Fixture option'] } : {}),
+            ...(control.omitGateFacts ? {} : { committed: control.committed ?? null }),
+            ...(control.enterCommits ? { enterCommits: control.enterCommits } : {}),
+            ...(control.omitGateFacts ? {} : { keyChoices: control.keyChoices, spaceName: control.spaceName }) };
           if (control.omitHref) delete description.href;
           if (control.omitSubmit) delete description.submitName;
           if (control.omitMatched) delete description.matched;
@@ -371,6 +380,119 @@ async function clickVerbs(c: Client, b: Bridge) {
   await result(c, 'goto', { url: 'https://never-seen.example/read' }); pass('URL-holds-retained-new-hosts-allowed');
   b.control.omitHref = true; await rejected(c, 'click', { selector: '#plain' }, 'error'); b.control.omitHref = false;
   b.control.omitSubmit = true; await rejected(c, 'press', { key: 'Return' }, 'error'); pass('missing-gate-metadata-fails-closed');
+}
+// SELECT-CHOICE, COMMIT-CHOICES and KEY-CHOICE: a native select, a form's chosen instructions and a key on a focused
+// control are judged as the click on that choice would be. Each block's first assertion names what a mutation breaks.
+async function choiceGates(c: Client, b: Bridge) {
+  const selects = () => b.calls.filter(m => m.method === 'chrome.select').length;
+  const clicks = () => b.calls.filter(m => m.method === 'chrome.click').length;
+  const presses = () => b.calls.filter(m => m.method === 'chrome.press').length;
+  const select = (chosen: string[], name = 'Plan', value = 'fixture') => {
+    b.control.chosen = chosen; b.control.describeName = name;
+    return c.call('select', { tab: 7, selector: '#choice', value, why: 'Fill the fixture form' });
+  };
+  // An order among the options is held before the page can see the change.
+  for (const [chosen, name] of [[['Delete all'], 'Account action'], [['Elimina il conto'], 'Azione'], [['Pay £10'], 'Top up'],
+    [['Files older than a month'], 'Delete'], [['Keep', 'Remove everything'], 'Cleanup']] as [string[], string][]) {
+    const reply = await select(chosen, name);
+    assert.equal(reply.error?.code, 'held', `ASSERT_SELECT_OPTION_HELD: ${chosen.join('/')} in ${name}: ${JSON.stringify(reply)}`);
+  }
+  assert.equal(selects(), 0, 'ASSERT_SELECT_OPTION_HELD: a held option never reaches the page');
+  const held = await pending(c, (await select(['Delete all'], 'Account action')).error!);
+  assert.equal(held.kind, 'select');
+  assert.equal(held.detail, 'Delete all (Account action)', 'ASSERT_SELECT_CARD: the card names the option and the list');
+  assert.match(held.reason, /^verb:delete/);
+  pass('a-select-option-named-as-an-order-is-held');
+  // Ordinary options are chosen without a card: a contract named with a leading verb, a country, a date.
+  for (const [chosen, name] of [[['Pay Monthly Mobile'], 'Service type'], [['Italy'], 'Country'], [['14 November 2026'], 'Date'],
+    [['Post Office collection'], 'Delivery']] as [string[], string][]) {
+    const reply = await select(chosen, name);
+    assert.equal(reply.error, undefined, `ASSERT_SELECT_ORDINARY_CHOSEN: ${chosen[0]}: ${JSON.stringify(reply.error)}`);
+  }
+  assert.equal(selects(), 4, 'ASSERT_SELECT_ORDINARY_CHOSEN');
+  const sent = b.calls.findLast(m => m.method === 'chrome.select');
+  assert.deepEqual(sent?.params.checkedDescription, { name: 'Delivery', href: '', chosen: ['Post Office collection'] },
+    'ASSERT_SELECT_BOUND: the page must still show the judged option when it is set');
+  pass('ordinary-options-are-chosen-and-bound-to-what-was-judged');
+  // The approval covers the option it showed: the same value picking another option is a different action.
+  await result(c, 'approval.grant', { id: held.id, proof: proof(held) });
+  assert.equal((await select(['Delete everything'], 'Account action')).error?.code, 'held', 'ASSERT_SELECT_APPROVAL_BOUND');
+  assert.equal((await c.call('select', { tab: 7, selector: '#choice', value: 'fixture', approval: held.id })).error?.code, 'approval-mismatch',
+    'ASSERT_SELECT_APPROVAL_BOUND: an approval for "Delete all" cannot set "Delete everything"');
+  b.control.chosen = ['Delete all'];
+  await result(c, 'select', { tab: 7, selector: '#choice', value: 'fixture', approval: held.id });
+  assert.equal(selects(), 5, 'ASSERT_SELECT_APPROVAL_BOUND: the approved option is set once');
+  pass('a-select-approval-covers-the-option-it-showed');
+  b.control.chosen = undefined; b.control.describeName = undefined;
+
+  // COMMIT-CHOICES: the button that sends a chosen instruction asks, whatever its own name.
+  const save = (committed: string[] | undefined, name = 'Save') => {
+    b.control.committed = committed; b.control.describeName = name;
+    return c.call('click', { tab: 7, selector: '#save' });
+  };
+  const before = clicks();
+  for (const committed of [['Delete files older than a month'], ['Keep my photos', 'Remove old backups'], ['Elimina i file vecchi'],
+    ['Close account and keep data'], ['Unsubscribe from all lists']]) {
+    const reply = await save(committed);
+    assert.equal(reply.error?.code, 'held', `ASSERT_COMMIT_CHOICE_HELD: ${committed.join(' + ')} then Save: ${JSON.stringify(reply)}`);
+  }
+  assert.equal(clicks(), before, 'ASSERT_COMMIT_CHOICE_HELD: the Save click never reaches the page');
+  const commitCard = await pending(c, (await save(['Delete files older than a month'])).error!);
+  assert.equal(commitCard.detail, 'Save, with “Delete files older than a month” chosen', 'ASSERT_COMMIT_CARD');
+  pass('a-plain-save-that-sends-a-chosen-instruction-is-held');
+  // Choices that name things, quiz prose and no choices at all leave Save and Continue alone.
+  // The last is the documented limit: over six words a choice reads as a sentence, as CHOICE-PROSE reads it when clicked.
+  for (const committed of [['Pay Monthly Mobile'], ['The windshield centre post reduces blind spots'], ['Send me updates'], ['Italy'], [],
+    ['Delete all files that are older than thirty days']]) {
+    const reply = await save(committed, 'Continue');
+    assert.equal(reply.error, undefined, `ASSERT_COMMIT_ORDINARY: ${committed.join(' + ')}: ${JSON.stringify(reply.error)}`);
+  }
+  assert.deepEqual(b.calls.findLast(m => m.method === 'chrome.click')?.params.checkedDescription,
+    { name: 'Continue', href: '', committed: ['Delete all files that are older than thirty days'] }, 'ASSERT_COMMIT_BOUND');
+  pass('ordinary-choices-leave-the-commit-alone-and-are-bound');
+  // Enter that submits the form commits the same choices.
+  b.control.committed = undefined; b.control.describeName = undefined;
+  b.control.focusSubmit = 'Save'; b.control.enterCommits = ['Remove old backups'];
+  const enterHeld = await c.call('press', { tab: 7, key: 'Enter' });
+  assert.equal(enterHeld.error?.code, 'held', `ASSERT_ENTER_COMMIT_HELD: ${JSON.stringify(enterHeld)}`);
+  assert.match(enterHeld.error!.message, /enter-submits:remove/);
+  b.control.enterCommits = ['Pay Monthly Mobile'];
+  await result(c, 'press', { tab: 7, key: 'Enter' });
+  b.control.enterCommits = undefined; b.control.focusSubmit = 'Search';
+  pass('enter-that-sends-a-chosen-instruction-is-held');
+
+  // KEY-CHOICE: a key on a focused select, radio or checkbox can pick what a click would have to ask for.
+  const keys = presses();
+  b.control.keyChoices = ['Keep', 'Delete all', 'Account action'];
+  for (const key of ['ArrowDown', 'd', 'End', ' ', 'Enter']) {
+    const reply = await c.call('press', { tab: 7, key });
+    assert.equal(reply.error?.code, 'held', `ASSERT_KEY_CHOICE_HELD: ${key}: ${JSON.stringify(reply)}`);
+  }
+  assert.equal(presses(), keys, 'ASSERT_KEY_CHOICE_HELD: no key reached the page');
+  for (const key of ['Tab', 'Shift+Tab', 'Escape']) await result(c, 'press', { tab: 7, key });
+  b.control.keyChoices = ['Italy', 'France', 'Pay Monthly Mobile', 'Country'];
+  for (const key of ['ArrowDown', 'f']) await result(c, 'press', { tab: 7, key });
+  assert.deepEqual(b.calls.findLast(m => m.method === 'chrome.press')?.params.checkedDescription,
+    { keyChoices: ['Italy', 'France', 'Pay Monthly Mobile', 'Country'] }, 'ASSERT_KEY_BOUND');
+  b.control.keyChoices = [];
+  pass('a-key-that-could-pick-an-order-is-held-ordinary-lists-are-not');
+  // Space presses the focused button: judged on its name as Enter on it is.
+  b.control.spaceName = 'Delete all';
+  for (const key of [' ', 'Space', 'Shift+Space']) {
+    const reply = await c.call('press', { tab: 7, key });
+    assert.equal(reply.error?.code, 'held', `ASSERT_SPACE_PRESS_HELD: ${JSON.stringify(key)}: ${JSON.stringify(reply)}`);
+  }
+  b.control.spaceName = 'Send'; await rejected(c, 'press', { tab: 8, key: 'Space' }, 'denied');
+  b.control.spaceName = 'Open menu'; await result(c, 'press', { tab: 7, key: 'Space' });
+  b.control.spaceName = '';
+  pass('space-on-a-focused-button-is-judged-by-its-name');
+  // The facts are required: a page that does not say them gets nothing done.
+  b.control.omitGateFacts = true;
+  for (const [method, params] of [['press', { key: 'ArrowDown' }], ['click', { selector: '#plain' }], ['select', { selector: '#choice', value: 'x' }]] as const) {
+    assert.equal((await c.call(method, { tab: 7, ...params })).error?.code, 'error', `ASSERT_GATE_FACTS_REQUIRED: ${method}`);
+  }
+  b.control.omitGateFacts = false; b.control.chosen = undefined;
+  pass('missing-choice-facts-fail-closed');
 }
 async function passwords(c: Client, b: Bridge) {
   await result(c, 'type', { selector: '#plain', text: 'PRIVATE_TYPED_TEXT' });
@@ -744,7 +866,9 @@ import fs from 'node:fs'; fs.writeFileSync(${JSON.stringify(openLog)}, JSON.stri
   pass('active-tab-change-cannot-retarget-described-action');
   for (const [method, params] of [['hover', { selector: '#plain' }], ['scroll', { dy: -100 }], ['scroll', { selector: '#plain' }], ['select', { selector: '#plain', value: 'one' }], ['back', {}], ['emulate', { width: 390, height: 844, mobile: true, colorScheme: 'dark' }], ['emulate', { reset: true }]] as [string, IncomingParams][]) {
     await result(c, method, { tab: 7, ...params });
-    assert.deepEqual(b.calls.at(-1)!, { ...b.calls.at(-1)!, method: 'chrome.' + method, params: { browser: defaultBrowser, tab: 7, ...params } });
+    // SELECT-CHOICE: a select also carries what its gate judged, the list's name and the option the value picks.
+    const bound = method === 'select' ? { checkedDescription: { name: 'Read more', href: '', chosen: ['Fixture option'] } } : {};
+    assert.deepEqual(b.calls.at(-1)!, { ...b.calls.at(-1)!, method: 'chrome.' + method, params: { browser: defaultBrowser, tab: 7, ...params, ...bound } });
   }
   assert.equal((await cli('eval', '7', 'document.title')).value, 'fixture-result');
   assert.equal((await cli('scroll', '-200')).ok, true);
@@ -2379,6 +2503,7 @@ try {
   await startDaemon();
   const c = client(); await result(c, 'status'); const b = await fakeBridge();
   if (scenario === 'click-verbs') await clickVerbs(c, b);
+  else if (scenario === 'choice-gates') await choiceGates(c, b);
   else if (scenario === 'password') await passwords(c, b);
   else if (scenario === 'eval-overlay') await evalOverlay(c, b);
   else if (scenario === 'eval-write') await evalWrite(c, b);

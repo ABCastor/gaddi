@@ -13,8 +13,8 @@ export interface ChromeParams {
   expression?: string; dx?: number; dy?: number; fullPage?: boolean; width?: number; height?: number;
   mobile?: boolean; reset?: boolean; colorScheme?: 'light' | 'dark' | 'no-preference';
   animationSpeed?: number; value?: string; denySelectors?: string[];
-  _description?: { name?: string; href?: string; submitName?: string };
-  checkedDescription?: { name?: string; href?: string; submitName?: string };
+  _description?: CheckedDescription;
+  checkedDescription?: CheckedDescription;
   visible?: boolean; settleMs?: number; gone?: boolean; timeout?: number;
   // A point in the tab's own viewport, as a screenshot shows it: the place a person
   // would click. Used where a selector cannot be trusted to land (a banner over the
@@ -91,6 +91,13 @@ interface ApprovalRef { id: string; reason: string; expires: string }
 export interface WireError { code?: string; message: string; approval?: ApprovalRef }
 export interface Reply<T = unknown> { id: RequestId; result?: T; error?: WireError }
 export interface TabInfo { id?: number; tabId?: number; tab?: number; url?: string; title?: string; active?: boolean; group?: string; groupId?: number; windowId?: number; index?: number; frozen?: boolean; discarded?: boolean }
+// What the gate judged, bound to the action: the page must still say the same when the input goes in.
+export interface CheckedDescription { name?: string; href?: string; submitName?: string;
+  chosen?: string[]; committed?: string[] | null; keyChoices?: string[]; spaceName?: string; enterCommits?: string[]; spaceCommits?: string[] }
+// The gate facts beyond a control's own name (policy.ts): SELECT-CHOICE `chosen` is the option a select's value picks;
+// COMMIT-CHOICES `committed` (a button), `enterCommits` and `spaceCommits` (a key) are the choices that are on where it
+// acts; KEY-CHOICE `keyChoices` is everything a key on the focused element could pick and `spaceName` what Space presses.
+export interface GateFacts { chosen?: string[]; committed?: string[] | null; keyChoices?: string[]; spaceName?: string; enterCommits?: string[]; spaceCommits?: string[] }
 export interface ElementDescription {
   name?: string; tag?: string; type?: string; autocomplete?: string;
   href?: string; submitName?: string; matched?: string[]; selector?: string;
@@ -104,7 +111,7 @@ export interface ElementDescription {
 export interface PointTarget {
   selector: string; name: string; tag: string; role: string; choice: boolean; href: string;
   type: string; autocomplete: string; submitName: string; secret: boolean; disabled: boolean;
-  signature: string;
+  signature: string; committed: string[] | null;
   // The point's element and its ancestors, as document references: a caller can tell whether the
   // point is the control it measured or sits inside it (an icon inside a button).
   chain: string[];
@@ -144,7 +151,7 @@ export interface PageResults {
   wait: { met: boolean };
   captureBox: { box: ImageBox; clip: ImageBox; pixelRatio: number; selector: string; beyondViewport: boolean };
   animationSpeed: { animationSpeed: number | undefined };
-  describe: Required<ElementDescription> & { role: string; password: boolean; disabled: boolean;
+  describe: Required<ElementDescription> & GateFacts & { role: string; password: boolean; disabled: boolean;
     frameId?: number; frameUrl?: string; blind?: boolean };
   // What a point lands on inside one document: the gate's facts, plus the embedded
   // document's content box when the point falls on a frame (bg.ts follows it inwards).
@@ -207,7 +214,7 @@ export interface TextPage { tab: number; url: string; text: string; version?: st
   sandbox?: string }
 // Where a click by point landed and what the gates judge: the deepest element under the
 // point, and the embedded document holding it when there is one.
-export interface PointDescription extends Required<ElementDescription> {
+export interface PointDescription extends Required<ElementDescription>, GateFacts {
   role: string; password: boolean; disabled: boolean; frameId?: number; frameUrl?: string; blind?: boolean;
 }
 interface InputResult { tab: number; url: string; changed: boolean; version?: string; navigating?: boolean; note?: string }

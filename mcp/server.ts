@@ -83,7 +83,7 @@ const TOOLS: ToolDefinition[] = [
     const note = '\n[Bookmarks truncated at 20,000 characters; narrow query.]';
     return pageResult('Chrome bookmarks', lines.length > 20000 ? lines.slice(0, 20000 - note.length) + note : lines);
   }),
-  tool('wait', 'Wait for text, selector/ref or URL part; timeout: met:false.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 }, frameId }, [], 'wait', pageJSON),
+  tool('wait', 'Wait for text, selector/ref or URL part.', { tab, text: S, selector: S, url: S, gone: B, timeout: { type: 'number', minimum: 0, maximum: 20000 }, frameId }, [], 'wait', pageJSON),
   tool('look', 'Read text/refs, floating menus/suggestions and frames; visible:true is viewport.', { tab, visible: B, frameId }, [], 'look',
     result => result?.note ? plainResult(result.note) : pageJSON(result)),
   {
@@ -100,12 +100,13 @@ const TOOLS: ToolDefinition[] = [
   tool('press', 'Press key; frameId requires focus in that document.', { tab, version, key: S, frameId, approval, why }, ['key']),
   tool('hover', 'Hover selector.', { tab, version, selector: S, frameId }, ['selector']),
   tool('scroll', 'Scroll by dx/dy wheel pixels (over selector if given), or to a selector.', { tab, version, dx: wheel, dy: wheel, selector: S, frameId }),
-  tool('select', 'Select option by value.', { tab, version, selector: S, value: S, frameId }, ['selector', 'value']),
+  // SELECT-CHOICE: an option named as an order ("Delete all") is held like the click on that choice would be.
+  tool('select', 'Select option by value.', { tab, version, selector: S, value: S, frameId, approval, why }, ['selector', 'value']),
   tool('upload', 'Attach local file to a field/label/drop zone; held.', { tab, version, selector: S, path: S, frameId, approval, why }, ['selector', 'path']),
   // EVAL-READONLY: reads run; a script that would change anything is refused, and the refusal tells the agent that
-  // write:true asks the owner for that exact script. Kept this short (and without why) for the tools/list budget.
-  tool('eval', 'Read-only JS.', { tab, expression: S, write: B, approval }, ['expression'], 'eval', pageJSON),
-  tool('emulate', 'Set viewport, theme or animation speed; reset clears.', {
+  // write:true asks the owner for that exact script. Kept this short for the tools/list budget.
+  tool('eval', 'Read-only JS.', { tab, expression: S, write: B, approval, why }, ['expression'], 'eval', pageJSON),
+  tool('emulate', 'Viewport, theme or animation speed; reset clears.', {
     tab, width: { type: 'integer', minimum: 1 }, height: { type: 'integer', minimum: 1 }, mobile: B,
     colorScheme: { ...S, enum: ['light', 'dark', 'no-preference'] },
     animationSpeed: { type: 'number', exclusiveMinimum: 0, maximum: 1 }, reset: B,
@@ -124,7 +125,7 @@ const TOOLS: ToolDefinition[] = [
     name: 'browser_grant', description: 'Ask owner (Touch ID) ONCE per chat, all rules. Phone grants: max 120 minutes and 20 rules.',
     inputSchema: obj({
       rules: { type: 'array', items: { type: 'string', maxLength: 300 }, minItems: 1, maxItems: 100,
-        description: '<upload|post|delete> <https URL prefix>; default 20, opt-in 100; standing: upload|signin <origin>' },
+        description: '<upload|post|delete> <https URL prefix>; standing: upload|signin <origin>' },
       minutes: { type: 'integer', minimum: 5, maximum: 720 },
       label: { ...S, maxLength: 60 }, standing: B,
     }, ['rules', 'minutes']),
@@ -135,7 +136,7 @@ const TOOLS: ToolDefinition[] = [
     },
   },
   tool('status', 'Report broker and Chrome bridge status.'),
-  tool('extensions', 'Manage Chrome extensions; install, disable, remove may be held.', {
+  tool('extensions', 'Chrome extensions; install/disable/remove may be held.', {
     operation: { ...S, enum: ['list', 'reload', 'enable', 'disable', 'uninstall', 'install'] }, extensionId: S, path: S, approval, why,
   }, [], 'extensions', result => pageResult('Chrome extensions', JSON.stringify(result, null, 2))),
 ];

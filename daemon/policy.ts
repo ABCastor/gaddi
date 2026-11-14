@@ -358,7 +358,7 @@ const ORDER_OBJECT = new RegExp('^(?:[£$€¥]|\\d|l[\'’]|(?:my|your|our|his|
 // A verb that LEADS a short name, as a whole word, and gives an order there (CHOICE-PROSE): the name is a label for an
 // action. Used for choices, where a verb anywhere in the prose is an accident of the sentence, not the intent, and a
 // verb that starts a name ("Pay Monthly Mobile") is the name of the thing chosen.
-export function leadingVerb(name: unknown, verbs: string[]): string | null {
+export function leadingVerb(name: unknown, verbs: string[], bare = false): string | null {
   const text = fold(name);
   if (!text || text.split(' ').length > CHOICE_WORDS) return null;
   let best: string | null = null;
@@ -368,12 +368,32 @@ export function leadingVerb(name: unknown, verbs: string[]): string | null {
     // Whole word only: "poster" does not begin with the verb "post".
     if (text.length > verb.length && !/^[^a-z0-9]/.test(text.slice(verb.length))) continue;
     const rest = text.slice(verb.length).replace(/^[\s:;,.!\-–—]+/, '');
-    if (rest && !ORDER_OBJECT.test(rest)) continue;
+    if (!bare && rest && !ORDER_OBJECT.test(rest)) continue;
     if (!best || verb.length > fold(best).length) best = v;
   }
   return best;
 }
-export interface ClickControl { choice?: boolean }
+// COMMIT-CHOICES: the hold verbs that also begin the names of things a person picks: a contract ("Pay Monthly Mobile"),
+// a payment method ("Paga con carta"), a delivery option ("Post Office collection", "Send by courier"), a privacy
+// setting ("Share with friends only"). A lexical gate cannot tell "Pay statement balance" from "Pay Monthly Mobile",
+// so a chosen name led by one of these is not judged again when the form is sent: CHOICE-PROSE judged it when it was
+// clicked, picked by a key or selected. Money and sends keep their own buttons, Enter, payment pages and links as
+// gates, and no grant or zone ever waives them.
+const NAMING_VERBS = ['send', 'send now', 'invia', 'invia ora', 'pay', 'pay now', 'paga', 'paga ora', 'procedi al pagamento',
+  'vai al pagamento', 'conferma pagamento', 'buy', 'buy now', 'acquista', 'acquista ora', 'compra', 'compra ora', 'place order',
+  'place your order', 'confirm order', 'complete purchase', 'checkout', 'proceed to checkout', 'ordina ora', 'ordina adesso',
+  'invia ordine', 'effettua ordine', 'completa ordine', 'conferma ordine', 'concludi ordine', "concludi l'ordine",
+  'concludi acquisto', "procedi all'acquisto", 'vai alla cassa', 'transfer', 'make transfer', 'confirm transfer', 'bonifico',
+  'esegui bonifico', 'conferma bonifico', 'trasferisci', 'disponi', 'conferma disposizione', 'withdraw', 'deposit', 'preleva',
+  'versa', 'ricarica', 'post', 'publish', 'pubblica', 'share', 'condividi'];
+// COMMIT-CHOICES: a choice that is on when a button sends its form is an instruction the button carries out. Every
+// other hold verb (delete, remove, close account, change password, unsubscribe, any verb the owner adds) that leads
+// its short name holds that button, whatever follows the verb: "Delete files older than a month" then "Save" asks.
+// The naming verbs above are left to CHOICE-PROSE, so a chosen "Pay Monthly Mobile" never holds the "Continue" after it.
+export function commitVerb(name: unknown, verbs: string[]): string | null {
+  return leadingVerb(name, verbs.filter(verb => !NAMING_VERBS.includes(fold(verb))), true);
+}
+export interface ClickControl { choice?: boolean; commit?: boolean }
 export function rx(pattern: string) { try { return new RegExp(pattern, 'i'); } catch { return null; } }
 // Action URL holds apply on every host.
 export function checkNavigation(policy: Policy, url: string) {
@@ -391,7 +411,7 @@ export function checkClick(policy: Policy, host: string, accessibleName: string,
   // A choice (a checkbox, a radio, an option, or the label of one) is gated on what it names
   // only when the verb leads its name. Its words are the answer being chosen: "the windshield
   // centre post reduces blind spots" is a quiz answer, not a request to publish anything.
-  const verbIn = (verbs: string[]) => control.choice ? leadingVerb(name, verbs) : matchVerb(name, verbs);
+  const verbIn = (verbs: string[]) => control.commit ? commitVerb(name, verbs) : control.choice ? leadingVerb(name, verbs) : matchVerb(name, verbs);
   for (const rule of (policy.deny.verbs_on_hosts || [])) {
     const r = rx(rule.host);
     if (!r || !r.test(host || '')) continue;
@@ -401,6 +421,20 @@ export function checkClick(policy: Policy, host: string, accessibleName: string,
   const v = verbIn(policy.hold.verbs);
   if (v) return HOLD(`verb:${v}`);
   return ALLOW();
+}
+// Several names judged as one action (SELECT-CHOICE, COMMIT-CHOICES, KEY-CHOICE): the strictest outcome, and the names it
+// rests on, so the card can say which option or choice asks.
+export function checkNames(policy: Policy, host: string, names: readonly string[], control: ClickControl) {
+  const rank = { allow: 0, hold: 1, deny: 2 } as const;
+  let check: PolicyCheck = ALLOW();
+  const held: string[] = [];
+  for (const name of names) {
+    const judged = checkClick(policy, host, name, control);
+    if (judged.outcome === 'allow') continue;
+    held.push(name);
+    if (rank[judged.outcome] > rank[check.outcome]) check = judged;
+  }
+  return { check, held };
 }
 
 function normKey(key: string) {

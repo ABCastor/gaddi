@@ -188,6 +188,17 @@ if ! rg -q 'AssertionError.*ASSERT_CHOICE_NAME' "$LOG"; then
 fi
 echo 'FALSIFIED choice: forgetting that a radio is a choice fails ASSERT_CHOICE_NAME'
 
+# SELECT-CHOICE, COMMIT-CHOICES, KEY-CHOICE: each fact the gates read, emptied in a disposable copy, fails its check.
+for pair in commit:ASSERT_COMMIT_FACTS option:ASSERT_SELECT_FACTS keys:ASSERT_KEY_FACTS; do
+  mode=${pair%%:*} assertion=${pair#*:}
+  LOG=tests/.state/logs/bridge-gate-facts-$mode-falsified.log
+  if GADDI_CHOICES_ONLY=1 GADDI_BRIDGE_BREAK_GATE_FACTS=$mode node tests/bridge/extension.ts >"$LOG" 2>&1; then
+    echo "FAIL emptying the $mode facts did not fail $assertion"; exit 1
+  fi
+  if ! rg -q "AssertionError.*$assertion" "$LOG"; then cat "$LOG"; echo "FAIL $mode facts falsification failed for an unrelated reason"; exit 1; fi
+  echo "FALSIFIED gate facts: emptying the $mode facts fails $assertion"
+done
+
 LOG=tests/.state/logs/bridge-hscroll-falsified.log
 if GADDI_BRIDGE_BREAK_HSCROLL=1 node tests/bridge/extension.ts >"$LOG" 2>&1; then
   echo 'FAIL horizontal scroll mutation passed'; exit 1

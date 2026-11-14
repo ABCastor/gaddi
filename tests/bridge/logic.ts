@@ -44,7 +44,7 @@ interface FixtureNode {
   dispatchEvent?: (event: Event) => void; value?: string; contains?: (el: unknown) => boolean;
   getBoundingClientRect?: () => { left: number; right: number; top: number; bottom: number };
 }
-interface FixtureForm { elements: FixtureNode[] }
+interface FixtureForm { elements: FixtureNode[]; querySelectorAll?(selector: string): FixtureNode[] }
 interface FixtureDocument {
   activeElement: FixtureNode | { tagName: string } | null;
   body: { innerText: string; textContent: string }; getElementsByTagName(selector: string): FixtureNode[]; querySelectorAll(selector: string): FixtureNode[];
@@ -1359,7 +1359,8 @@ const makeButton = (name: string): FixtureNode => ({ ...node, tagName: 'BUTTON',
   getAttribute(attr) { return attr === 'aria-label' ? name : null; } });
 const preview = makeButton('Preview');
 const pay = makeButton('Pay');
-const form = { elements: [preview, pay] };
+// A real form is a ParentNode too: the gates look for ARIA choices inside it (COMMIT-CHOICES).
+const form = { elements: [preview, pay], querySelectorAll: () => [] };
 pay.form = form;
 pay.closest = selector => selector === 'form' ? form : selector === 'a[href]' ? null : pay;
 doc.activeElement = pay;

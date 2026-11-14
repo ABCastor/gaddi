@@ -39,6 +39,7 @@ import { autonomousSetup } from './autonomy-browser.ts';
 import { uploadChecks } from './upload.ts';
 import { hscrollChecks } from './hscroll.ts';
 import { frameChecks } from './frames.ts';
+import { choiceChecks } from './choices.ts';
 import { sandboxBandChecks } from './sandbox-band.ts';
 
 const repo = fileURLToPath(new URL('../..', import.meta.url));
@@ -106,6 +107,14 @@ try {
     const marker = 'function isChoice(el, interactive) {';
     assert.ok(source.includes(marker), 'choice mutation point exists');
     fs.writeFileSync(contentFile, source.replace(marker, `${marker} return false;`));
+  }
+  // COMMIT-CHOICES, SELECT-CHOICE, KEY-CHOICE: each fact the gates read must be able to fail.
+  for (const [mode, marker] of [['commit', 'function committedChoices(button) {'], ['option', 'function optionNames(option) {'],
+    ['keys', 'function keyChoices(el) {']] as const) {
+    if (process.env.GADDI_BRIDGE_BREAK_GATE_FACTS !== mode) continue;
+    const source = fs.readFileSync(contentFile, 'utf8');
+    assert.ok(source.includes(marker), `${mode} gate-fact mutation point exists`);
+    fs.writeFileSync(contentFile, source.replace(marker, `${marker} return [];`));
   }
   if (process.env.GADDI_BRIDGE_BREAK_PRE_SCROLL_SIGNATURE === '1') {
     const source = fs.readFileSync(contentFile, 'utf8');
@@ -250,7 +259,7 @@ try {
       return;
     }
     const file = (req.url?.split(/[?#]/)[0] || '').replace(/^\//, '');
-    const filename = ['autonomy.html', 'foreign.html', 'upload.html', 'version.html', 'approval.html', 'state.html', 'actions.html', 'hscroll.html', 'frames.html', 'input.html', 'popups.html', 'busy.html', 'bands.html', 'next.html'].includes(file)
+    const filename = ['autonomy.html', 'foreign.html', 'upload.html', 'version.html', 'approval.html', 'state.html', 'actions.html', 'hscroll.html', 'frames.html', 'choices.html', 'input.html', 'popups.html', 'busy.html', 'bands.html', 'next.html'].includes(file)
       ? file : req.url === '/' ? 'index.html' : null;
     if (!filename) { res.writeHead(404); res.end(); return; }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -738,6 +747,8 @@ try {
       await guardedBenchmark({ context, daemon, url });
     } else if (process.env.GADDI_FRAMES_ONLY === '1') {
       await frameChecks({ context, daemon, url, inner, pass });
+    } else if (process.env.GADDI_CHOICES_ONLY === '1') {
+      await choiceChecks({ context, daemon, url, pass });
     } else {
     await approvalPicture({ context, daemon, url, pass, captureDirectory: path.join(repo, 'tests/.state/context-captures-native') });
     await typeReplacement({ context, daemon, url, pass });
@@ -754,6 +765,7 @@ try {
     await uploadChecks({ context, daemon, url, pass });
     await hscrollChecks({ context, daemon, url, pass });
     await frameChecks({ context, daemon, url, inner, pass });
+    await choiceChecks({ context, daemon, url, pass });
     await sandboxBandChecks({ context, daemon, url, pass });
     }
     await browser.close();

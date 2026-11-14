@@ -63,7 +63,7 @@ try {
     if (request.id === 'attach') return;
     let value: unknown = {};
     if (request.method === 'chrome.tabs') value = { tabs: [{ id: 7, url: page, title: 'Fixture' }] };
-    else if (request.method === 'chrome.describe') value = { name, submitName, href, tag: 'BUTTON', type: 'text', autocomplete: '', selector: '@abcdef:1' };
+    else if (request.method === 'chrome.describe') value = { name, submitName, href, tag: 'BUTTON', type: 'text', autocomplete: '', selector: '@abcdef:1', committed: null, keyChoices: [], spaceName: '' };
     else if (request.method === 'chrome.type') { typed.push(request); value = { typed: true }; }
     else if (request.method === 'chrome.press') { dispatched.push('press'); value = { pressed: true }; }
     else if (request.method === 'chrome.click') { dispatched.push('click'); value = { clicked: true }; }

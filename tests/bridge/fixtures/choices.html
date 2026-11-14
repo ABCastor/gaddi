@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Choices fixture</title>
+<main>
+  <form id="retention" onsubmit="event.preventDefault()">
+    <label><input type="radio" name="keep" id="keep" checked> Keep everything</label>
+    <label><input type="radio" name="keep" id="purge"> Delete files older than a month</label>
+    <label><input type="checkbox" id="plan" checked> Pay Monthly Mobile</label>
+    <label for="action">Account action</label>
+    <select id="action" name="action">
+      <option value="">Choose…</option>
+      <option value="del">Delete all</option>
+      <option value="off" disabled>Switched off</option>
+      <optgroup label="Delete"><option value="old">files older than a year</option></optgroup>
+    </select>
+    <input id="note" type="text" aria-label="Note">
+    <button id="save">Save</button>
+  </form>
+  <form id="other"><label><input type="checkbox" id="elsewhere" checked> Remove my old backups</label><button id="other-save">Apply</button></form>
+  <div id="loose">
+    <div role="checkbox" aria-checked="true" tabindex="0" id="aria-box">Remove watermark</div>
+    <button id="menu" type="button">Open menu</button>
+  </div>
+  <div role="listbox" id="list" tabindex="0" aria-activedescendant="opt-b" aria-label="Bulk action">
+    <div role="option" id="opt-a">Archive</div><div role="option" id="opt-b">Elimina tutto</div>
+  </div>
+  <select id="acting" aria-label="Plan change" onchange="window.acted = (window.acted || 0) + 1">
+    <option value="keep">Keep plan</option><option value="close">Close account</option>
+  </select>
+</main>

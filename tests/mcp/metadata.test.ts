@@ -91,8 +91,11 @@ try {
   assert.ok(mcpFrames.includes('select') && mcpFrames.includes('upload'), 'ASSERT_FRAME_PARITY: select and upload reach a frame');
   console.log('PASS ASSERT_FRAME_PARITY');
   const estimate = Math.ceil(JSON.stringify(listed).length / 4);
-  console.log(`MCP tools/list: ${listed.tools.length} tools, ${estimate} total estimated tokens (JSON characters / 4; limit 2500)`);
-  assert.ok(estimate < 2500, 'tools/list token budget exceeded');
+  // 2,525 since 14 Nov 2026 (was 2,500): every holdable tool takes why, and select and eval became holdable
+  // (SELECT-CHOICE, EVAL-READONLY). Four redundant description phrases were cut first; the rest is that rule's cost.
+  const BUDGET = 2525;
+  console.log(`MCP tools/list: ${listed.tools.length} tools, ${estimate} total estimated tokens (JSON characters / 4; limit ${BUDGET})`);
+  assert.ok(estimate < BUDGET, 'tools/list token budget exceeded');
   const instructions = client.getInstructions();
   assert.ok(instructions);
   const words = instructions.trim().split(/\s+/).length;
@@ -120,7 +123,7 @@ try {
   assert.equal(create.additionalProperties,false);
   assert.deepEqual(schema('signin').properties.signup,{type:'boolean'});
   // Every tool whose call can be held takes the agent's one-line purpose, for the user's card; no other tool does.
-  const holdable = ['read', 'open', 'goto', 'click', 'type', 'press', 'signin', 'upload', 'extensions'];
+  const holdable = ['read', 'open', 'goto', 'click', 'type', 'press', 'select', 'signin', 'upload', 'eval', 'extensions'];
   for (const tool of listed.tools) {
     const why = isRecord(tool.inputSchema.properties) ? tool.inputSchema.properties.why : undefined;
     if (holdable.includes(tool.name.slice(8))) assert.deepEqual(why, { type: 'string' }, `ASSERT_WHY_SCHEMA: ${tool.name}`);

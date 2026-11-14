@@ -27,7 +27,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, setSandbox, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf, UPLOAD_HOLD } from './policy.ts';
+import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, setSandbox, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkNames, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf, UPLOAD_HOLD } from './policy.ts';
 import { signinSite, listLogins, chooseLogin, runSignin, createLogin, getPassword, PASSWORD_UNAVAILABLE } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
 import { redactURLs, redactURLText } from '../shared/url-redaction.ts';
@@ -241,6 +241,14 @@ const HOLD = (reason: string): PolicyCheck => ({ outcome: 'hold', reason });
 function strictest(first: PolicyCheck, second: PolicyCheck): PolicyCheck {
   const rank = { allow: 0, hold: 1, deny: 2 } as const;
   return rank[second.outcome] > rank[first.outcome] ? second : first;
+}
+// A list of names the extension gave the gates (SELECT-CHOICE, COMMIT-CHOICES, KEY-CHOICE). Absent is none; anything
+// else than names refuses the action rather than judging less than the page holds.
+function gateNames(value: unknown, field: string): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length > 2000 || value.some(name => typeof name !== 'string'))
+    throw new Error(`chrome.describe must return ${field} as a list of names`);
+  return value as string[];
 }
 // The address whose rules judge an action: an embedded document's own address when the action
 // happens inside one, and only when it is an ordinary web page (an about:, blob: or data: frame
@@ -503,6 +511,14 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   }
   let targetSelector: string | undefined;
   let check: PolicyCheck = { outcome: 'allow' }, detail = method, gateKind = method;
+  // Names judged together on the document that acts and on the tab around it; neither's rules can be escaped.
+  const judgeNames = (names: string[], control: { choice?: boolean; commit?: boolean }, scopeURL: string) => {
+    const own = checkNames(policy, hostOf(scopeURL), names, control);
+    if (scopeURL === pageURL) return own;
+    const around = checkNames(policy, hostOf(pageURL), names, control);
+    return { check: strictest(own.check, around.check), held: [...new Set([...own.held, ...around.held])] };
+  };
+  const quoted = (names: string[]) => names.slice(0, 3).map(name => `“${cleanDetail(name)}”`).join(', ') + (names.length > 3 ? ', …' : '');
   let secretFill: { item: { id: string; title: string; urls: string[] }; site: string } | undefined;
   if (['click', 'type', 'hover', 'select', 'upload'].includes(method) && !at) args.selector = requiredString(params.selector, 'selector');
   if (params.write !== undefined && method !== 'eval') throw new Error('write applies only to eval');
@@ -524,6 +540,12 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
         : checkClick(policy, hostOf(scopeURL), info.name, control);
       // Neither the tab's own rules nor the acting document's can be escaped: the stricter wins.
       if (info.blind !== true && scopeURL !== pageURL) check = strictest(check, checkClick(policy, hostOf(pageURL), info.name, control));
+      // COMMIT-CHOICES: a button carries out the choices that are on where it acts ("Delete files older than a month",
+      // then "Save"): an instruction among them holds the button as its own name would.
+      if (info.blind !== true && info.committed !== null && !Array.isArray(info.committed)) throw new Error('chrome.describe must return committed');
+      const committed = gateNames(info.committed ?? undefined, 'committed');
+      const commit = info.blind === true ? { check: { outcome: 'allow' } as PolicyCheck, held: [] } : judgeNames(committed, { commit: true }, scopeURL);
+      check = strictest(check, commit.check);
       const destination = info.href ? new URL(info.href, scopeURL).href : '';
       const generated = download && /^(?:blob:|filesystem:)/.test(destination);
       if (generated && new URL(destination.replace(/^filesystem:/, '')).origin !== new URL(scopeURL).origin)
@@ -531,12 +553,14 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       if (check.outcome === 'allow' && info.href && !generated) check = checkNavigation(policy, navigationURL(destination));
       if (check.outcome === 'allow' && scopeURL !== pageURL) check = checkNavigation(policy, navigationURL(scopeURL));
       check = checkRememberedSend(policy, scopeURL, method, check, info.name, destination);
-      check = grantCheck(check, { kind: 'click', name: info.name, destination }, scopeURL);
-      detail = `${cleanDetail(info.name)}${at ? ` at ${at.x},${at.y}` : ''}${scopeURL !== pageURL ? ` in ${cleanURL(scopeURL)}` : ''}`
+      // A grant reads every name the click acts on, so a granted "delete" never carries an ungranted choice with it.
+      check = grantCheck(check, { kind: 'click', name: [info.name, ...commit.held].join(' ; '), destination }, scopeURL);
+      detail = `${cleanDetail(info.name)}${commit.held.length ? `, with ${quoted(commit.held)} chosen` : ''}`
+        + `${at ? ` at ${at.x},${at.y}` : ''}${scopeURL !== pageURL ? ` in ${cleanURL(scopeURL)}` : ''}`
         + `${info.href ? ' -> ' + cleanURL(destination) : ''}`;
       if (at) meta.point = { x: at.x, y: at.y, ...(scopeURL !== pageURL ? { frame: cleanURL(scopeURL) } : {}) };
       // Bind the resolved accessible name and destination too, so a changed button requires new approval.
-      args._description = { name: info.name, href: info.href };
+      args._description = { name: info.name, href: info.href, ...(Array.isArray(info.committed) ? { committed } : {}) };
     } else if (params.secret !== undefined) {
       // SECRET-FILL: the password of one 1Password login goes from op straight into one password field of the site that
       // login belongs to. The agent names the item; it never sees, sends or receives the value. The same rule as a
@@ -567,26 +591,49 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     }
   } else if (method === 'press') {
     args.key = requiredString(params.key, 'key');
-    let submitName = '', scopeURL = pageURL;
-    if (/^(enter|return)$/i.test(args.key)) {
-      const info = await request('describe', { ...args, selector: ':focus' });
-      if (!isRecord(info) || typeof info.submitName !== 'string') throw new Error('chrome.describe must return submitName');
-      submitName = info.submitName;
-      targetSelector = typeof info.selector === 'string' ? info.selector : ':focus';
-      // Enter inside an embedded document submits that document's form, on its own site.
-      scopeURL = actingURL(info.frameUrl, pageURL);
+    const enter = /^(enter|return)$/i.test(args.key);
+    // KEY-CHOICE: Space presses the focused button as Enter does; Tab and Escape only move the focus or close.
+    const space = /^(?:(?:alt|control|ctrl|meta|command|cmd|shift)\+)*(?: |space|spacebar)$/i.test(args.key);
+    const moves = /^(?:shift\+)?(?:tab|escape|esc)$/i.test(args.key);
+    // Every key is judged on what holds the focus: a key picks options, toggles choices and presses buttons too.
+    const info = await request('describe', { ...args, selector: ':focus' });
+    if (!isRecord(info) || typeof info.submitName !== 'string') throw new Error('chrome.describe must return submitName');
+    if (!Array.isArray(info.keyChoices) || typeof info.spaceName !== 'string') throw new Error('chrome.describe must return keyChoices and spaceName');
+    const keyChoices = gateNames(info.keyChoices, 'keyChoices'), enterCommits = gateNames(info.enterCommits, 'enterCommits');
+    const spaceCommits = gateNames(info.spaceCommits, 'spaceCommits');
+    // Space on a focused button is that button's press; Enter is the focused control's or its form's.
+    const submitName = enter ? info.submitName : space ? info.spaceName : '';
+    targetSelector = typeof info.selector === 'string' ? info.selector : ':focus';
+    // A key inside an embedded document acts on that document's own site.
+    const scopeURL = actingURL(info.frameUrl, pageURL);
+    if (submitName) {
       const denied = strictest(checkClick(policy, hostOf(pageURL), submitName), checkClick(policy, hostOf(scopeURL), submitName));
       if (denied.outcome === 'deny') check = denied;
     }
     // A key's own rules apply on the tab and on the document that acts; neither can be escaped.
-    check = strictest(check, checkPress(policy, hostOf(pageURL), args.key, submitName));
+    // Space on a button is judged by the button's name exactly as Enter on it would be.
+    const keyRules = (host: string) => strictest(checkPress(policy, host, args.key!, submitName),
+      space && submitName ? checkPress(policy, host, 'Enter', submitName) : { outcome: 'allow' });
+    check = strictest(check, keyRules(hostOf(pageURL)));
     if (scopeURL !== pageURL) {
-      check = strictest(check, checkPress(policy, hostOf(scopeURL), args.key, submitName));
+      check = strictest(check, keyRules(hostOf(scopeURL)));
       check = strictest(check, checkNavigation(policy, navigationURL(scopeURL)));
     }
+    // The choices this key could turn on (KEY-CHOICE) and the ones the press would send (COMMIT-CHOICES), each read
+    // as its click would be. A press hold carries the Enter reason, so grants and zones treat it as they treat Enter.
+    const picked = moves ? { check: { outcome: 'allow' } as PolicyCheck, held: [] as string[] } : judgeNames(keyChoices, { choice: true }, scopeURL);
+    const sent = judgeNames(enter ? enterCommits : space ? spaceCommits : [], { commit: true }, scopeURL);
+    for (const judged of [picked.check, sent.check]) check = strictest(check, judged.outcome === 'hold' && judged.reason?.startsWith('verb:')
+      ? { outcome: 'hold', reason: 'enter-submits:' + judged.reason.slice('verb:'.length) } : judged);
+    const held = [...new Set([...picked.held, ...sent.held])];
     check = checkRememberedSend(policy, scopeURL, method, check, submitName);
-    check = grantCheck(check, { kind: 'press', name: submitName }, scopeURL);
-    detail = args.key; args._description = { submitName };
+    check = grantCheck(check, { kind: 'press', name: [submitName, ...held].filter(Boolean).join(' ; ') }, scopeURL);
+    detail = `${args.key}${held.length ? `, with ${quoted(held)} ${sent.held.length ? 'chosen' : 'within reach'}` : ''}`;
+    // Bound as judged; a fact that is empty or absent is left out, so a plain key keeps its existing action and wire shape.
+    const bound = { ...(enter ? { submitName: info.submitName } : {}), ...(keyChoices.length ? { keyChoices } : {}),
+      ...(space && info.spaceName ? { spaceName: info.spaceName } : {}),
+      ...(enter && info.enterCommits !== undefined ? { enterCommits } : {}), ...(space && info.spaceCommits !== undefined ? { spaceCommits } : {}) };
+    if (Object.keys(bound).length) args._description = bound;
   } else if (method === 'goto') {
     args.url = navigationURL(params.url); detail = args.url; check = zoneNavigation(checkNavigation(policy, args.url), args.url, meta);
   } else if (method === 'eval') {
@@ -602,6 +649,22 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
         throw new Error(`a script to approve must be at most ${EVAL_WRITE_LIMIT} characters, so the card can show all of it`);
       args.write = true; detail = args.expression;
     }
+  } else if (method === 'select') {
+    if (typeof params.value !== 'string') throw new Error('value must be a string'); args.value = params.value;
+    // SELECT-CHOICE: a page can act the moment its select changes, so the option this value picks, and the select's
+    // own name, are judged as a click on that choice would be (CHOICE-PROSE), on the document that holds the select.
+    const info = await request('describe', args);
+    if (!isRecord(info) || typeof info.name !== 'string' || !Array.isArray(info.chosen)) throw new Error('chrome.describe must return the select name and chosen option');
+    const chosen = gateNames(info.chosen, 'chosen');
+    targetSelector = typeof info.selector === 'string' ? info.selector : args.selector;
+    const scopeURL = actingURL(info.frameUrl, pageURL);
+    const judged = judgeNames([info.name, ...chosen], { choice: true }, scopeURL);
+    check = judged.check;
+    if (check.outcome === 'allow' && scopeURL !== pageURL) check = checkNavigation(policy, navigationURL(scopeURL));
+    check = grantCheck(check, { kind: 'click', name: [info.name, ...chosen].join(' ; ') }, scopeURL);
+    detail = `${cleanDetail(chosen[0] ?? params.value)}${info.name ? ` (${cleanDetail(info.name)})` : ''}`
+      + `${scopeURL !== pageURL ? ` in ${cleanURL(scopeURL)}` : ''}`;
+    args._description = { name: info.name, href: typeof info.href === 'string' ? info.href : '', chosen };
   } else if (method === 'scroll') {
     if (params.selector !== undefined) args.selector = requiredString(params.selector, 'selector');
     Object.assign(args, wheelParams(params));
@@ -647,15 +710,14 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       args.animationSpeed = params.animationSpeed;
     }
   }
-  if (method === 'select') {
-    if (typeof params.value !== 'string') throw new Error('value must be a string'); args.value = params.value;
-  }
   // DOWNLOAD: the capture adds a hold only when policy sets hold.downloads (default off).
   // The original action's stricter deny/hold is always retained; a held click signs the file path too.
   if (download) { check = strictest(check, checkDownload(policy)); detail += ` -> ${download} (up to 20 MB)`; }
   await gate({ kind: gateKind, meta, detail, check, approval: params.approval, targetSelector, remoteScope,
     capture: targetSelector ? () => bridge.request('chrome.approvalCapture', { tab: resolvedTab,
-      selector: targetSelector, checkedDescription: args._description, ...(method === 'press' ? { key: args.key } : {}) },
+      selector: targetSelector, checkedDescription: args._description, ...(method === 'press' ? { key: args.key } : {}),
+      // The picture is of the judged option: the page checks the value's option against it.
+      ...(method === 'select' ? { value: args.value } : {}) },
       connection, Math.min(deadline, Date.now() + 3000)) : undefined,
     // An approval covers this exact file: its name, size and content digest.
     action: { method, caller: meta.caller, url: pageURL, ...args,
@@ -666,7 +728,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   if (zone && !grantId && !params.approval) { meta.zone = zone; if (sandbox) meta.sandbox = true; }
   if (allowance && !grantId && !params.approval) meta.allowance = allowance;
   // Add the wire field only after gating so existing approval action hashes stay valid.
-  if (method === 'click' || method === 'press' && /^(enter|return)$/i.test(args.key!)) args.checkedDescription = args._description;
+  if (method === 'click' || method === 'press' || method === 'select') args.checkedDescription = args._description;
   if (targetSelector && targetSelector !== ':focus') args.selector = targetSelector;
   delete args._description;
   if (secretFill) {
