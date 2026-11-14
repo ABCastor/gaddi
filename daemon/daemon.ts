@@ -50,6 +50,8 @@ const socket = process.env.GADDI_SOCKET || path.join(home, 'gaddi.sock');
 const auditPath = process.env.GADDI_AUDIT || path.join(home, 'audit.jsonl');
 const statePath = process.env.GADDI_STATE || path.join(home, 'state.json');
 const TEXT_LIMIT = 20000, HTML_LIMIT = 5 * 1024 * 1024;
+// EVAL-READONLY: the longest script the owner is asked to approve; the card shows all of it.
+const EVAL_WRITE_LIMIT = 2000;
 const AGENT_GROUP_PREFIX = '● ';
 const AUDIT_MAX_BYTES = 10 * 1024 * 1024;
 const log = (...args: unknown[]) => console.error(new Date().toISOString(), '[gaddi]', ...redactURLs(args));
@@ -503,6 +505,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   let check: PolicyCheck = { outcome: 'allow' }, detail = method, gateKind = method;
   let secretFill: { item: { id: string; title: string; urls: string[] }; site: string } | undefined;
   if (['click', 'type', 'hover', 'select', 'upload'].includes(method) && !at) args.selector = requiredString(params.selector, 'selector');
+  if (params.write !== undefined && method !== 'eval') throw new Error('write applies only to eval');
   if (method === 'click' || method === 'type') {
     const info = await request('describe', { ...args, ...(method === 'type' ? { denySelectors: policy.deny.type_into || [] } : {}) });
     if (!isRecord(info) || typeof info.name !== 'string' || typeof info.tag !== 'string') throw new Error('bridge returned invalid element description');
@@ -587,7 +590,18 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   } else if (method === 'goto') {
     args.url = navigationURL(params.url); detail = args.url; check = zoneNavigation(checkNavigation(policy, args.url), args.url, meta);
   } else if (method === 'eval') {
-    args.expression = requiredString(params.expression, 'expression'); check = checkEval(policy, args.expression);
+    args.expression = requiredString(params.expression, 'expression');
+    if (params.write !== undefined && typeof params.write !== 'boolean') throw new Error('write must be boolean');
+    // EVAL-READONLY: the extension runs a script read-only unless this call carries write. A script that writes can
+    // click, submit, send and navigate in ways no gate can read, so it is the owner's call every time: held for this
+    // exact script (no grant, zone, sandbox, remembered site or phone answers it). With the gates off it runs as before.
+    const write = params.write === true || policy.off === true;
+    check = checkEval(policy, args.expression, write);
+    if (write) {
+      if (check.outcome === 'hold' && args.expression.length > EVAL_WRITE_LIMIT)
+        throw new Error(`a script to approve must be at most ${EVAL_WRITE_LIMIT} characters, so the card can show all of it`);
+      args.write = true; detail = args.expression;
+    }
   } else if (method === 'scroll') {
     if (params.selector !== undefined) args.selector = requiredString(params.selector, 'selector');
     Object.assign(args, wheelParams(params));

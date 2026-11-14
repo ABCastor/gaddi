@@ -91,7 +91,8 @@ try {
       return {visibility:during.visibility,focus:during.focus,frames:during.frames-before.frames,after:stopped.visibility,acknowledgements};
     } finally {chrome.debugger.onEvent.removeListener(ack);await chrome.debugger.detach({tabId:tab});}
   },agent.id);
-  const during=(await call('chrome.eval',{tab:agent.id,expression:'new Promise(resolve => { const start=globalThis.renderFrames; setTimeout(() => resolve({visibility:document.visibilityState,focus:document.hasFocus(),frames:globalThis.renderFrames-start}),1500); })'})).value as {visibility:string;focus:boolean;frames:number};
+  // A timer is a side effect, so this measurement runs as an approved writing script (EVAL-READONLY).
+  const during=(await call('chrome.eval',{tab:agent.id,write:true,expression:'new Promise(resolve => { const start=globalThis.renderFrames; setTimeout(() => resolve({visibility:document.visibilityState,focus:document.hasFocus(),frames:globalThis.renderFrames-start}),1500); })'})).value as {visibility:string;focus:boolean;frames:number};
   assert.equal(during.visibility,'visible','ASSERT_RENDER_VISIBLE');assert.ok(during.frames>0,'ASSERT_RENDER_FRAMES');
   await new Promise(r=>setTimeout(r,100));const after=await measure();
   assert.deepEqual(after,{visibility:'hidden',focus:false,frames:0},'ASSERT_RENDER_STOP');

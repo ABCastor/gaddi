@@ -138,6 +138,12 @@ connectNative();
 
 const tabQueues = new Map<number | string, Promise<unknown>>(), attached = new Map<number, DebuggerSession>(), emulations = new Map<number, ChromeParams>();
 const PAGE_TASK_TIMEOUT_MS = 25000;
+// What an agent reads when its script would have changed something (EVAL-READONLY). The engine does not say which call.
+const EVAL_READ_ONLY = 'EVAL_READ_ONLY: eval only reads; this script would change the page or reach the network'
+  + ' (a click, submit, event, navigation, request, storage, timer, or an assignment outside the script). Nothing ran.'
+  + ' Act with click/type/press/select/scroll, which the gates check, or ask the owner to approve this exact script with write:true.'
+  + ' Some reads count too: use querySelector for getElementById, and avoid matches, closest, matchMedia, Object.assign,'
+  + ' object spread, Object.fromEntries, new URL, var and function declarations (const and arrow functions are fine).';
 const AGENT_GROUP_PREFIX = '● ';
 let browser: NonNullable<ChromeParams['browser']> = { window: 'own', show: 'attention' };
 const agentWindow = createAgentWindow();
@@ -1224,11 +1230,21 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
       if (typeof params.expression !== 'string' || !params.expression.trim()) throw new Error('expression is required');
       // Invariant: password expressions are refused in addition to the page's password-field check.
       if (/password/i.test(params.expression)) throw new Error('Refusing password access');
+      // EVAL-READONLY: an evaluation only reads, unless the broker approved this exact script to write. V8 itself runs
+      // it in side-effect-free mode (the mode DevTools uses to preview an expression as you type): any call or store
+      // the engine cannot prove harmless is aborted before it happens, uncatchably, wherever it is reached from (a
+      // click, submit, dispatched event, navigation, request, storage, timer, promise callback, getter, eval, another
+      // frame, or the serialisation of the result). The block lets top-level let/const/class stay local to the script.
+      const write = params.write === true;
       return rendered(async send => {
         // Invariant: what password fields hold, before and after the evaluation, never leaves in its result.
         const before = await onPage(tab, 'evalCheck', {}, check);
-        const evaluated = await send('Runtime.evaluate', { expression: params.expression!,
-          returnByValue: true, awaitPromise: true, timeout: 10000 });
+        const evaluated = await send('Runtime.evaluate', write
+          ? { expression: params.expression!, returnByValue: true, awaitPromise: true, timeout: 10000 }
+          : { expression: `{\n${params.expression!}\n}`, returnByValue: true, awaitPromise: true, timeout: 10000,
+            throwOnSideEffect: true /* EVAL_READONLY_TEST_POINT */ });
+        if (!write && evaluated.exceptionDetails && /side-effect/i.test(`${evaluated.exceptionDetails.exception?.description ?? ''} ${evaluated.exceptionDetails.text ?? ''}`))
+          throw new Error(EVAL_READ_ONLY);
         if (evaluated.exceptionDetails) throw new Error('Page evaluation failed');
         if (evaluated.result?.subtype === 'error') throw new Error('Page evaluation failed');
         const after = await onPage(tab, 'evalCheck', {}, check);

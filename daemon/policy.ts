@@ -38,6 +38,7 @@ const HOLD = (reason: string): PolicyCheck => ({ outcome: 'hold', reason });
 const DENY = (reason: string): PolicyCheck => ({ outcome: 'deny', reason });
 // The one reason string an upload hold carries; session grants recognise an upload by it.
 export const UPLOAD_HOLD = 'upload of a local file';
+export const EVAL_WRITE_HOLD = 'page script that can change the page';
 
 // Deep merge: objects recurse, arrays and scalars from the overlay replace the base.
 function merge(base: unknown, overlay: unknown): unknown {
@@ -348,8 +349,15 @@ function matchVerb(name: unknown, verbs: string[]) {
 // How many words a choice's name may have and still be read as an action label. "Delete all my
 // files" is a label; "post the letter to the right address" is a sentence, and a quiz answer.
 const CHOICE_WORDS = 6;
-// A verb that LEADS a short name, as a whole word: the name is a label for an action. Used for
-// choices, where a verb anywhere in the prose is an accident of the sentence, not the intent.
+// What follows a verb when it gives an order: its object ("Delete ALL my files", "Pay £10", "Elimina IL conto"),
+// or nothing at all ("Delete", "Send now"). Any other word makes the verb part of a name: "Pay Monthly Mobile" is a
+// kind of phone contract, "Post Office collection" a delivery option, "Paga con carta" a payment method.
+const ORDER_OBJECT = new RegExp('^(?:[£$€¥]|\\d|l[\'’]|(?:my|your|our|his|her|their|its|the|this|that|these|those|all|every|everything'
+  + '|any|a|an|it|them|me|us|now|selected|il|lo|la|i|gli|le|un|uno|una|mio|mia|miei|mie|tuo|tua|questo|questa|questi|queste'
+  + '|quello|quella|tutto|tutta|tutti|tutte|ora|adesso|subito)(?:[^a-z0-9]|$))');
+// A verb that LEADS a short name, as a whole word, and gives an order there (CHOICE-PROSE): the name is a label for an
+// action. Used for choices, where a verb anywhere in the prose is an accident of the sentence, not the intent, and a
+// verb that starts a name ("Pay Monthly Mobile") is the name of the thing chosen.
 export function leadingVerb(name: unknown, verbs: string[]): string | null {
   const text = fold(name);
   if (!text || text.split(' ').length > CHOICE_WORDS) return null;
@@ -359,6 +367,8 @@ export function leadingVerb(name: unknown, verbs: string[]): string | null {
     if (!verb || !text.startsWith(verb)) continue;
     // Whole word only: "poster" does not begin with the verb "post".
     if (text.length > verb.length && !/^[^a-z0-9]/.test(text.slice(verb.length))) continue;
+    const rest = text.slice(verb.length).replace(/^[\s:;,.!\-–—]+/, '');
+    if (rest && !ORDER_OBJECT.test(rest)) continue;
     if (!best || verb.length > fold(best).length) best = v;
   }
   return best;
@@ -454,12 +464,14 @@ export function checkExtension(policy: Policy, operation: string, ownRepo = fals
   return ALLOW();
 }
 
-export function checkEval(policy: Policy, expression: string) {
+// EVAL-READONLY: a script that reads runs; one that writes (the extension refuses side effects in any other) is the
+// owner's call for that exact script, every time. The deny patterns win over both.
+export function checkEval(policy: Policy, expression: string, write = false) {
   if (policy.off) return ALLOW('policy-off');
   const src = String(expression || '');
   for (const p of (policy.deny.eval_patterns || [])) {
     const r = rx(p);
     if (r && r.test(src)) return DENY(`eval-pattern:${p}`);
   }
-  return ALLOW();
+  return write ? HOLD(EVAL_WRITE_HOLD) : ALLOW();
 }

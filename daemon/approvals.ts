@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { ImageBox } from '../shared/protocol.ts';
 import { isRecord } from '../shared/protocol.ts';
+import { redactURLText } from '../shared/url-redaction.ts';
 import type { createProofVerifier, approvalMessage } from './proof.ts';
 import { signinSite } from './signin.ts';
 import { sendRule, uploadSite, UPLOAD_HOLD } from './policy.ts';
@@ -213,7 +214,10 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
       // A session grant's text is built by the broker from validated parts (no queries; its label is cleaned
       // first) and is exactly what the user signs, so it is stored as built and never rewritten.
       detail: kind === 'grant' ? detail : cleanDetail(detail), reason: cleanDetail(reason), actionHash: hash, status: 'pending',
-      createdAt: new Date(now).toISOString(), expiresAt: new Date(now + (extendedWait ? waitMinutes : ttlMinutes) * 60000).toISOString() };
+      createdAt: new Date(now).toISOString(), expiresAt: new Date(now + (extendedWait ? waitMinutes : ttlMinutes) * 60000).toISOString(),
+      // EVAL-READONLY: a script to approve is shown as it runs (cleanDetail would eat `?.` and `a ? b : c`), only its
+      // credential-bearing URL values redacted, as every broker output is.
+      ...(kind === 'eval' ? { detail: redactURLText(detail) } : {}) };
     savePicture(a, picture);
     entries.set(a.id, a);
     deadlines.set(a, performance.now() + (extendedWait ? waitMinutes : ttlMinutes) * 60000);

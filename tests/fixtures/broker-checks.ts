@@ -124,6 +124,11 @@ const POINTS: Record<string, { selector: string; name?: string; role?: string; t
   // SANDBOX: a payment frame of another site inside a sandbox page, and a sandbox page framed by another site.
   '15,15': { selector: '#frame-elements', name: 'Pay now', frameUrl: 'https://js.payments.example/elements' },
   '16,16': { selector: '#frame-sandbox', name: 'Pay now', frameUrl: 'https://unseen.example/embed/pay' },
+  // CHOICE-PROSE: a service-type answer whose name starts with "Pay" (case.ombudsman-services.org, 12 Nov 2026),
+  // a real payment button, and a choice that does give an order.
+  '17,17': { selector: '#service-type', name: 'Pay Monthly Mobile', role: 'radio', tag: 'input', choice: true },
+  '18,18': { selector: '#pay-ten', name: 'Pay £10', role: 'button', tag: 'button' },
+  '19,19': { selector: '#wipe', name: 'Delete all my files', role: 'checkbox', tag: 'input', choice: true },
 };
 // Independent expected broker policy: callers cannot override the user's choice.
 const defaultBrowser = { window: scenario === 'sessions' && mode !== 'own' ? 'shared' : 'own', show: 'attention' } as const;
@@ -333,6 +338,17 @@ async function clickVerbs(c: Client, b: Bridge) {
   // A choice whose name IS the action still asks: "Delete" on a checkbox is a deletion.
   await rejected(c, 'click', { tab: 7, at: { x: 11, y: 11 } }, 'held');
   pass('a-choice-named-as-an-action-is-still-held');
+  // A choice whose name merely starts with a hold verb names the thing chosen: no card, so no workaround is needed.
+  const clicks = b.calls.filter(m => m.method === 'chrome.click').length;
+  const chosen = await c.call('click', { tab: 7, at: { x: 17, y: 17 } });
+  assert.equal(chosen.error, undefined, `ASSERT_CHOICE_NAME_NOT_ORDER: ${JSON.stringify(chosen.error)}`);
+  assert.equal(b.calls.filter(m => m.method === 'chrome.click').length, clicks + 1, 'ASSERT_CHOICE_NAME_NOT_ORDER: "Pay Monthly Mobile" is chosen');
+  // ...while a real payment button, and a choice that gives an order to its object, still ask.
+  const payTen = await rejected(c, 'click', { tab: 7, at: { x: 18, y: 18 } }, 'held');
+  assert.match(payTen.message, /verb:pay/, 'ASSERT_PAY_BUTTON_HELD: "Pay £10" is a payment');
+  await rejected(c, 'click', { tab: 7, at: { x: 19, y: 19 } }, 'held');
+  assert.equal(b.calls.filter(m => m.method === 'chrome.click').length, clicks + 1, 'held clicks never reach Chrome');
+  pass('a-choice-named-with-a-leading-verb-is-chosen-but-payment-buttons-and-orders-are-held');
   // An embedded document judges its own address: a harmless name inside a checkout page is held.
   const frameful = await rejected(c, 'click', { tab: 7, at: { x: 12, y: 12 } }, 'held');
   assert.match(frameful.message, /checkout/, 'the hold names the embedded address the owner is judging');
@@ -390,6 +406,42 @@ async function evalOverlay(c: Client, b: Bridge) {
   pass('same-expressions-forward-without-overlay');
 }
 // AUTH-WAIT: drive the actual broker over its private socket, with fixture Chrome only.
+// EVAL-READONLY: a read reaches the page without the write flag, so the extension runs it side-effect free; a script
+// that writes is the owner's call for that exact script, every time, and never a phone or remembered permission.
+async function evalWrite(c: Client, b: Bridge) {
+  const evals = () => b.calls.filter(m => m.method === 'chrome.eval');
+  assert.equal((await result(c, 'eval', { tab: 7, expression: 'document.title' })).value, 'fixture-result');
+  assert.equal(evals().at(-1)?.params.write, undefined, 'ASSERT_EVAL_READ_FORWARD: a read is sent without write');
+  pass('a-read-runs-without-a-card-and-without-write');
+  const script = "document.querySelector('#pay')?.click(); location.href = ok ? '/a' : '/b'";
+  const held = await rejected(c, 'eval', { tab: 7, expression: script, write: true, why: 'Pay the fixture' }, 'held');
+  assert.equal(evals().length, 1, 'ASSERT_EVAL_WRITE_HELD: a script that writes never reaches the page unapproved');
+  const card = await pending(c, held);
+  assert.equal(card.kind, 'eval');
+  assert.equal(card.detail, script, 'ASSERT_EVAL_WRITE_CARD: the card shows the script exactly as it would run');
+  assert.equal(card.reason, 'page script that can change the page');
+  assert.ok(card.remote !== true && card.rememberable !== true, 'ASSERT_EVAL_WRITE_OWNER_ONLY: no phone, no Always allow');
+  // A repeat keeps its card; an unsigned answer is refused; the approval covers this script and no other.
+  assert.equal((await rejected(c, 'eval', { tab: 7, expression: script, write: true }, 'held')).approval!.id, card.id);
+  await rejected(c, 'approval.grant', { id: card.id }, 'proof-invalid');
+  await result(c, 'approval.grant', { id: card.id, proof: proof(card) });
+  await rejected(c, 'eval', { tab: 7, expression: script + '; fetch("/pay", { method: "POST" })', write: true, approval: card.id }, 'approval-mismatch');
+  await rejected(c, 'eval', { tab: 7, expression: script, approval: card.id }, 'approval-mismatch');
+  assert.equal(evals().length, 1, 'a different script or a read cannot spend the approval');
+  await result(c, 'eval', { tab: 7, expression: script, write: true, approval: card.id });
+  assert.equal(evals().at(-1)?.params.write, true, 'ASSERT_EVAL_WRITE_APPROVED: the approved script runs with write');
+  assert.equal(evals().at(-1)?.params.expression, script);
+  await rejected(c, 'eval', { tab: 7, expression: script, write: true, approval: card.id }, 'approval-used');
+  pass('a-writing-script-is-held-shown-bound-to-itself-and-single-use');
+  // Shapes and limits: the flag is a boolean; a script too long for the card is refused before any card; the
+  // password deny still wins over write.
+  for (const write of ['yes', 1, null]) assert.match((await c.call('eval', { tab: 7, expression: '1', write })).error!.message, /write must be boolean/);
+  assert.match((await c.call('eval', { tab: 7, expression: 'x'.repeat(2001), write: true })).error!.message, /at most 2000 characters/);
+  await rejected(c, 'eval', { tab: 7, expression: "document.querySelector('input[type=password]').value", write: true }, 'denied');
+  assert.match((await c.call('click', { tab: 7, selector: '#plain', write: true })).error!.message, /write applies only to eval/);
+  assert.equal(evals().length, 2, 'none of these reached the page');
+  pass('write-shape-length-and-deny-patterns');
+}
 async function approvalWait(c: Client, b: Bridge) {
   b.control.describeName = 'Post';
   const held = await pending(c, await rejected(c, 'click', { tab: 7, selector: '#post' }, 'held'));
@@ -2329,6 +2381,7 @@ try {
   if (scenario === 'click-verbs') await clickVerbs(c, b);
   else if (scenario === 'password') await passwords(c, b);
   else if (scenario === 'eval-overlay') await evalOverlay(c, b);
+  else if (scenario === 'eval-write') await evalWrite(c, b);
   else if (scenario === 'approval') await approvalChecks(c, b);
   else if (scenario === 'approval-wait') await approvalWait(c, b);
   else if (scenario === 'approval-picture') await approvalPictures(c, b);

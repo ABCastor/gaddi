@@ -8,6 +8,8 @@ export interface ChromeParams {
   operation?: ExtensionOperation | 'get'; extensionId?: string;
   tab?: number; tabs?: number[]; url?: string; query?: string; group?: string;
   foreground?: boolean; selector?: string; text?: string; key?: string; mode?: 'replace' | 'append';
+  // EVAL-READONLY: run this script with its side effects. The broker sets it only on an approved (or policy-off) call.
+  write?: boolean;
   expression?: string; dx?: number; dy?: number; fullPage?: boolean; width?: number; height?: number;
   mobile?: boolean; reset?: boolean; colorScheme?: 'light' | 'dark' | 'no-preference';
   animationSpeed?: number; value?: string; denySelectors?: string[];

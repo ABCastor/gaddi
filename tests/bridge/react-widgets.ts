@@ -122,7 +122,8 @@ try {
   // The list closes when its input loses focus, as rc-select's does when the window loses focus between two agent
   // actions. The option the agent picked from its last look is then hidden: it is still chosen, through the page.
   await click(tab, '#contact');
-  await daemon.call('chrome.eval', { tab, expression: 'document.activeElement.blur(), true' });
+  // Setup through an approved writing script (EVAL-READONLY): a read-only one may not move the focus.
+  await daemon.call('chrome.eval', { tab, write: true, expression: 'document.activeElement.blur(), true' });
   await waitFor(async () => (await appState(), reported.events.filter(event => (event as { type: string }).type === 'close').length >= 2), 'list closed');
   let picked: { changed?: boolean; note?: string } | undefined;
   try { picked = await click(tab, '#contact-list [title="Phone"]'); } catch (error) { assert.fail(`ASSERT_REACT_HIDDEN_OPTION click refused: ${String(error)}`); }

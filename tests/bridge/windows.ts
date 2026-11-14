@@ -144,7 +144,8 @@ const chrome = {
     getTargets:async()=>[...tabs.values()].map(tab=>({id:`target:${tab.id}`,tabId:tab.id})),
     onEvent:event(),onDetach:event(),attach:async()=>{},detach:async(target:any)=>{rendering.delete(target.tabId);},
     sendCommand:async(target:any,method:string,params:any)=>{
-      if(method==='Runtime.evaluate'&&params.expression==='1')assert.notEqual(tabs.get(target.tabId)?.status,'loading','discarded renderer must finish reload before action');
+      // A read-only evaluation reaches Chrome inside a block (EVAL-READONLY): `{\n1\n}`.
+      if(method==='Runtime.evaluate'&&/^\{?\s*1\s*\}?$/.test(String(params.expression)))assert.notEqual(tabs.get(target.tabId)?.status,'loading','discarded renderer must finish reload before action');
       commands.push({tab:target.tabId,method,params});
       if(method==='Emulation.setFocusEmulationEnabled')rendering.set(target.tabId,params.enabled);
       if(method==='Page.getFrameTree')return {frameTree:{frame:{id:'frame',loaderId:'old',url:tabs.get(target.tabId).url}}};
@@ -155,7 +156,7 @@ const chrome = {
         chrome.debugger.onEvent.emit(target,'Page.lifecycleEvent',{frameId:'frame',loaderId:'new',name:'DOMContentLoaded'});
         return {loaderId:'new'};
       }
-      if(method==='Runtime.evaluate' && params.expression === 'blocked')return new Promise(resolve=>{releaseEval=resolve;});
+      if(method==='Runtime.evaluate' && /^\{?\s*blocked\s*\}?$/.test(String(params.expression)))return new Promise(resolve=>{releaseEval=resolve;});
       if(method==='Runtime.evaluate')return {result:{value:rendering.get(target.tabId)===true}};
       return {};
     },
@@ -230,7 +231,8 @@ try {
   await test('RENDER',async()=>{const reply=await call('chrome.eval',{tab:opened.id,expression:'document.visibilityState'});assert.equal(reply.value,true);});
   await test('CLEANUP',()=>{assert.notEqual(rendering.get(opened.id),true);assert.equal(vm.runInContext(`attached.has(${opened.id})`,world),false);});
   await test('PAINT',()=>{
-    const evaluation=commands.findIndex(c=>c.tab===opened.id&&c.method==='Runtime.evaluate'&&c.params.expression==='document.visibilityState');
+    const evaluation=commands.findIndex(c=>c.tab===opened.id&&c.method==='Runtime.evaluate'&&/^\{?\s*document\.visibilityState\s*\}?$/.test(c.params.expression));
+    assert.ok(evaluation>0,'the read itself was sent');
     assert.ok(commands.slice(0,evaluation).some(c=>c.tab===opened.id&&c.method==='Runtime.evaluate'&&c.params.expression.includes('requestAnimationFrame')));
   });
   await test('OWNER',async()=>{

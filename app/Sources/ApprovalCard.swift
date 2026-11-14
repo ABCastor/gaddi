@@ -259,6 +259,8 @@ enum ApprovalWords {
         if let word = after("verb:") { return "Held because its name contains “\(word)”." }
         if let word = after("enter-submits:") { return "Held because Enter would activate a button or link with “\(word)” in its name." }
         if after("url-pattern:") != nil { return "Held because this address is on the protected list." }
+        // EVAL-READONLY: daemon/policy.ts EVAL_WRITE_HOLD. The script is on the card, exactly as it would run.
+        if reason == "page script that can change the page" { return "Held because a script can click, submit, send and navigate on this page, and Gaddi cannot check what it will do. Approve only a script you have read." }
         if let key = after("key:") { return "Held because \(key.components(separatedBy: " on ").first ?? key) is guarded on this site." }
         return "Held because this action needs your approval."
     }
@@ -319,6 +321,7 @@ final class ApprovalCard: NSStackView {
         var facts: [NSTextField] = []
         if let project = approval.project { facts.append(fact("Project", project)) }
         facts.append(approval.why.map { fact("Why", "“\($0)” (the agent’s words)") } ?? fact("Why", "the agent gave no reason", quiet: true))
+        if approval.kind == "eval" { facts.append(fact("Script", approval.detail)) }
         if let allows = approval.allows { facts.append(fact("If you approve", allows)) }
         let because = NSTextField(wrappingLabelWithString: ApprovalWords.reason(approval.reason))
         because.font = Typeface.interface(13); because.textColor = Palette.inkSoft

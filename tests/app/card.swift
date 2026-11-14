@@ -152,8 +152,7 @@ import AppKit
             let reason: String
         }
         let source = "on workspace.example.com/project/messages"
-        // Eval has no current HOLD policy. This fixture exercises a possible stored
-        // approval without changing that policy or claiming a live eval hold exists.
+        // EVAL-READONLY: a script that writes is held, and its card shows the script itself.
         let fixtures = [
             // Who asked and why, at the longest the broker lets through (80, 60 and 160 characters).
             Fixture(approval: make("context", detail: "Delete forever", reason: "verb:delete", context: [
@@ -182,9 +181,9 @@ import AppKit
             Fixture(approval: make("goto", kind: "goto", detail: "https://accounts.example.com/billing/settings", reason: "url-pattern:billing", picture: false),
                 heading: "Navigate this tab", place: "to accounts.example.com/billing/settings",
                 reason: "Held because this address is on the protected list."),
-            Fixture(approval: make("eval-synthetic", kind: "eval", detail: "eval", reason: "manual-review:script", picture: false),
+            Fixture(approval: make("eval-write", kind: "eval", detail: "document.querySelector('#pay')?.click()", reason: "page script that can change the page", picture: false),
                 heading: "Run a script", place: source,
-                reason: "Held because this action needs your approval."),
+                reason: "Held because a script can click, submit, send and navigate on this page, and Gaddi cannot check what it will do. Approve only a script you have read."),
             Fixture(approval: make("extension-disable", kind: "extension.disable", detail: "Fixture extension", reason: "extension:disable", url: "chrome://extensions", picture: false),
                 heading: "Disable extension “Fixture extension”", place: "in Chrome",
                 reason: "Held because this action needs your approval."),
@@ -228,6 +227,7 @@ import AppKit
                               : visible.contains("Why  “\(approval.why!)” (the agent’s words)") && visible.contains("Project  \(approval.project!)")
                                 && visible.contains("If you approve  \(approval.allows!)")),
                           "\(id): who asked, the project, why and what approving allows are visible")
+                    check(approval.kind != "eval" || visible.contains("Script  \(approval.detail)"), "\(id): the script to run is on the card, as it runs")
                     check(labels.allSatisfy { fits($0, within: card) }, "\(id): every text line fits without clipping")
                     let heading = labels.first { $0.stringValue == fixture.heading }!
                     let attributes = heading.attributedStringValue.attributes(at: 0, effectiveRange: nil)

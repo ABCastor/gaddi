@@ -45,7 +45,8 @@ export async function pageRecovery({ context, worker, daemon, url, blockedCount,
   const frozen = await call('chrome.open', { url: fixtureURL, group: '● Recovery · tests' });
   const frozenPage = await waitFor(() => context.pages().find(page => page.url() === fixtureURL), 'frozen fixture page');
   const freezer = await context.newCDPSession(frozenPage);
-  await call('chrome.eval', { tab: frozen.id, expression: 'window.recoveryMarker = "same document"' });
+  // Setup through an approved writing script (EVAL-READONLY); the reads below stay read-only.
+  await call('chrome.eval', { tab: frozen.id, write: true, expression: 'window.recoveryMarker = "same document"' });
   for (const action of ['read', 'eval'] as const) {
     await freezer.send('Page.setWebLifecycleState', { state: 'frozen' });
     await waitFor(async () => (await worker.evaluate(id => chrome.tabs.get(id), frozen.id)).frozen === true,

@@ -378,7 +378,8 @@ try {
   pass(`chrome.screenshot captures a ${viewportImage.width}x${viewportImage.height} JPEG at CSS size without raising the tab`);
 
   const bandsTab = (await call('chrome.open', { url: `${url}bands.html` })).id;
-  const bandViewport = (await call('chrome.eval', { tab: bandsTab,
+  // Test setup through an approved writing script (EVAL-READONLY): the broker sets write only after the owner's approval.
+  const bandViewport = (await call('chrome.eval', { tab: bandsTab, write: true,
     expression: 'scrollTo(0, 1200); ({ width: innerWidth, height: innerHeight, contentHeight: document.documentElement.scrollHeight, y: scrollY })' })).value as { width: number; height: number; contentHeight: number; y: number };
   assert.equal(bandViewport.y, 1200, 'fixture scrolled by exactly one band');
   assert.ok(bandViewport.height < 1200, 'lower band fills the viewport');
@@ -596,7 +597,7 @@ try {
   assert.deepEqual((await call('chrome.eval', { tab, expression: 'window.fixtureState' })).value, { source: 'next fixture' });
   const baseWidth = await page.evaluate(() => document.documentElement.clientWidth);
   // Read through the same bridge that applies/resets the override.
-  const darkNow = async () => (await call('chrome.eval', { tab, expression: "matchMedia('(prefers-color-scheme: dark)').matches" })).value;
+  const darkNow = async () => (await call('chrome.eval', { tab, write: true, expression: "matchMedia('(prefers-color-scheme: dark)').matches" })).value;
   const baseDark = await darkNow();
   await call('chrome.emulate', { tab, width: 420, height: 700, mobile: false, colorScheme: baseDark ? 'light' : 'dark' });
   await call('chrome.screenshot', { tab });
@@ -702,7 +703,8 @@ try {
   }, 'single-client native host attaches', 20000);
   backgroundGuard.check();
   const singleTab = (await call('chrome.open', { url: `${url}next.html` })).id;
-  const inspect = async (expression: string) => (await call('chrome.eval', { tab: singleTab, expression })).value;
+  // matchMedia and the marker are not side-effect free, so this inspector runs as an approved writing script (EVAL-READONLY).
+  const inspect = async (expression: string) => (await call('chrome.eval', { tab: singleTab, write: true, expression })).value;
   const nativeState = await inspect(`({ dark: matchMedia('(prefers-color-scheme: dark)').matches,
     width: document.documentElement.clientWidth, height: innerHeight })`) as { dark: boolean; width: number; height: number };
   await inspect('window.resetMarker = "keep this document"');

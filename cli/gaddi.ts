@@ -40,7 +40,8 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] [--why <purp
   wait [tab] <JSON options>
   signin [tab] [--item <title-or-id>] [--signup | --create '{"title":"...","username":"...","vault":"<vault-id>"}'] [--submit]
   click [tab] <selector> --download <new-file-in-Downloads-or-temp>
-  eval [tab] <expression> | emulate [tab] <JSON options>
+  eval [tab] <expression> [--write]  (read-only; --write asks the owner to approve this exact script, which may change the page)
+  emulate [tab] <JSON options>
   status | approvals | pending | cancel <id> | audit [n] | events | bridge status
   remote | remote off  (approving some holds from another device: show its state, or turn it off; turning it on needs Touch ID in the Gaddi app)
   extensions [list | reload|enable|disable|uninstall <id|self> | install <folder>]
@@ -51,7 +52,7 @@ const argv = process.argv.slice(2), args: string[] = [];
 let json = false, fullPage = false, foreground = false, visible = false;
 let approval: string | undefined, tab: number | undefined, group: string | undefined, item: string | undefined, why: string | undefined;
 let mode: 'replace' | 'append' | undefined;
-let signup = false, submit = false, create: BrokerParams['create'], download: string | undefined, fillItem: string | undefined;
+let signup = false, submit = false, write = false, create: BrokerParams['create'], download: string | undefined, fillItem: string | undefined;
 let at: { x: number; y: number } | undefined, frame: number | undefined;
 let zoom: { x: number; y: number; width: number; height: number } | undefined;
 const wheel: { dx?: number; dy?: number } = {};
@@ -65,6 +66,7 @@ for (let i = 0; i < argv.length; i++) {
   }
   else if (arg === '--signup') signup = true;
   else if (arg === '--submit') submit = true;
+  else if (arg === '--write') write = true;
   else if (arg === '--secret') { fillItem = argv[++i]; if (!fillItem?.trim()) die('--secret needs a 1Password item title or ID', 2); }
   else if (arg === '--create') {
     const value = parseJSON(argv[++i] || 'null');
@@ -112,6 +114,7 @@ if ((signup || create || submit) && cmd !== 'signin') die('--signup, --create an
 if (submit && !signup && !create) die('--submit applies to --signup or --create',2);
 if (fillItem !== undefined && (cmd !== 'type' || mode)) die('--secret applies only to type, without --mode', 2);
 if (download !== undefined && cmd !== 'click') die('--download applies only to click',2);
+if (write && cmd !== 'eval') die('--write applies only to eval', 2);
 if (at && cmd !== 'click') die('--at applies only to click', 2);
 if (at && frame !== undefined) die('--at is a point in the tab, so it takes no --frame', 2);
 // The daemon decides what a frame means; the CLI must not narrow the surface it offers, or the
@@ -185,7 +188,7 @@ switch (cmd) {
   }
   case 'select': params.selector = take('selector'); params.value = take('value'); break;
   case 'upload': params.selector = take('selector'); params.path = take('path'); break;
-  case 'eval': params.expression = take('expression'); params.expression += args.length ? ' ' + args.splice(0).join(' ') : ''; break;
+  case 'eval': params.expression = take('expression'); params.expression += args.length ? ' ' + args.splice(0).join(' ') : ''; if (write) params.write = true; break;
   case 'wait': {
     const options = parseJSON(take('JSON options'));
     if (!isRecord(options) || Object.keys(options).some(key => !['text', 'selector', 'url', 'gone', 'timeout'].includes(key))) die('wait requires JSON wait options', 2);
