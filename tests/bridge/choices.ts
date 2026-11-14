@@ -60,6 +60,17 @@ export async function choiceChecks({ context, daemon, url, pass }: {
   assert.deepEqual(onNote.enterCommits, ['Delete files older than a month', 'Pay Monthly Mobile', 'Choose…'],
     'ASSERT_KEY_FACTS: Enter in a field submits its form');
   pass('key facts: options, radio groups, active items and the buttons Space and Enter press');
+  // KEY-SHORTCUT reads the focus's tag and role: with nothing focused it is the body, which is no field; a text input
+  // and an editable region are textboxes.
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  const none = await focused();
+  assert.deepEqual([none.tag, none.role], ['body', ''], 'ASSERT_SHORTCUT_FACTS: nothing focused is the body');
+  for (const [selector, tag] of [['#note', 'input'], ['#editor', 'div']]) {
+    await page.focus(selector);
+    const field = await focused();
+    assert.deepEqual([field.tag, field.role], [tag, 'textbox'], `ASSERT_SHORTCUT_FACTS: ${selector} is a text field`);
+  }
+  pass('shortcut facts: no focus is the body, a text input and an editable region are textboxes');
 
   // The select is set only while the page still shows the option the gate judged.
   const acting = await describe('#acting', { value: 'close' });

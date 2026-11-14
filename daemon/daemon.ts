@@ -595,6 +595,11 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     // KEY-CHOICE: Space presses the focused button as Enter does; Tab and Escape only move the focus or close.
     const space = /^(?:(?:alt|control|ctrl|meta|command|cmd|shift)\+)*(?: |space|spacebar)$/i.test(args.key);
     const moves = /^(?:shift\+)?(?:tab|escape|esc)$/i.test(args.key);
+    // KEY-SHORTCUT: a letter, digit or sign, Delete or Backspace (any modifiers) with no text field focused is a site's
+    // shortcut, not typing (Gmail `#` deletes the open conversation), so the owner decides. Space, Tab, Escape, arrows
+    // and Page/Home/End only move; any key in a text field, a select or an editable region is text. Held like a guarded
+    // key (`key:`), which no grant, zone or sandbox waives.
+    const shortcut = /^(?:(?:alt|control|ctrl|meta|command|cmd|shift)\+)*(?:\S|delete|backspace)$/iu.test(args.key);
     // Every key is judged on what holds the focus: a key picks options, toggles choices and presses buttons too.
     const info = await request('describe', { ...args, selector: ':focus' });
     if (!isRecord(info) || typeof info.submitName !== 'string') throw new Error('chrome.describe must return submitName');
@@ -615,6 +620,11 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     const keyRules = (host: string) => strictest(checkPress(policy, host, args.key!, submitName),
       space && submitName ? checkPress(policy, host, 'Enter', submitName) : { outcome: 'allow' });
     check = strictest(check, keyRules(hostOf(pageURL)));
+    // The page says what holds the focus: a field, a select or an editable region (roleOf names one textbox) takes text.
+    const editable = ['textarea', 'select'].includes(String(info.tag).toLowerCase())
+      || ['textbox', 'searchbox', 'combobox', 'spinbutton'].includes(String(info.role).toLowerCase());
+    const keyHeld = shortcut && !editable && policy.off !== true;
+    if (keyHeld) check = strictest(check, HOLD(`key:${args.key} with no text field focused`));
     if (scopeURL !== pageURL) {
       check = strictest(check, keyRules(hostOf(scopeURL)));
       check = strictest(check, checkNavigation(policy, navigationURL(scopeURL)));
@@ -628,7 +638,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     const held = [...new Set([...picked.held, ...sent.held])];
     check = checkRememberedSend(policy, scopeURL, method, check, submitName);
     check = grantCheck(check, { kind: 'press', name: [submitName, ...held].filter(Boolean).join(' ; ') }, scopeURL);
-    detail = `${args.key}${held.length ? `, with ${quoted(held)} ${sent.held.length ? 'chosen' : 'within reach'}` : ''}`;
+    detail = held.length ? `${args.key}, with ${quoted(held)} ${sent.held.length ? 'chosen' : 'within reach'}`
+      : keyHeld ? `Key "${args.key}" with no text field focused` : args.key;
     // Bound as judged; a fact that is empty or absent is left out, so a plain key keeps its existing action and wire shape.
     const bound = { ...(enter ? { submitName: info.submitName } : {}), ...(keyChoices.length ? { keyChoices } : {}),
       ...(space && info.spaceName ? { spaceName: info.spaceName } : {}),

@@ -37,3 +37,5 @@ mutate key daemon.ts 'judgeNames(keyChoices, { choice: true }, scopeURL)' 'judge
   ASSERT_KEY_CHOICE_HELD enter-that-sends-a-chosen-instruction-is-held
 mutate space daemon.ts "const submitName = enter ? info.submitName : space ? info.spaceName : '';" "const submitName = enter ? info.submitName : '';" \
   ASSERT_SPACE_PRESS_HELD a-key-that-could-pick-an-order-is-held-ordinary-lists-are-not
+mutate shortcut daemon.ts '    if (keyHeld) check = strictest(check, HOLD(`key:${args.key} with no text field focused`));' '' \
+  ASSERT_SHORTCUT_KEY_HELD a-key-that-could-pick-an-order-is-held-ordinary-lists-are-not

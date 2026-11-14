@@ -148,6 +148,8 @@ async function fakeBridge() {
     chosen: undefined as string[] | undefined, committed: undefined as string[] | undefined,
     enterCommits: undefined as string[] | undefined, keyChoices: [] as string[], spaceName: '',
     omitGateFacts: false,
+    // KEY-SHORTCUT: what the focused element is (tag, role), so a key can land in a field or outside one.
+    describeTag: undefined as string | undefined, describeRole: undefined as string | undefined,
     // What Chrome says an extension is (remote approval checks: an extension operation is never answered remotely).
     extension: undefined as Record<string, unknown> | undefined,
     capture: 'none' as 'none' | 'image' | 'error' | 'missing-box' | 'hang', captureWidth: 8, captureHeight: 8 };
@@ -195,10 +197,10 @@ async function fakeBridge() {
           const description: ElementDescription & GateFacts & { role: string; password: boolean; disabled: boolean; choice: boolean;
             frameId?: number; frameUrl?: string; blind?: boolean } = {
             name: at?.name ?? control.describeName ?? (names[s] || (s.startsWith('a[href=') ? 'Pay' : 'Read more')),
-            tag: ['#password', '#current', '#sensitive'].includes(s) ? 'input' : at?.tag ?? 'button',
+            tag: ['#password', '#current', '#sensitive'].includes(s) ? 'input' : at?.tag ?? control.describeTag ?? 'button',
             type: s === '#password' ? 'password' : 'text', autocomplete: s === '#current' ? 'current-password' : '',
             href: control.describeHref ?? (s === '#checkout-link' ? '/checkout?token=PRIVATE_LINK_QUERY' : s === '#read-link' ? '/article?token=PRIVATE_LINK_QUERY' : ''), submitName: control.focusSubmit,
-            matched: s === '#sensitive' ? ['.sensitive'] : [], role: at?.role ?? 'button', password: false, disabled: false, choice: at?.choice === true,
+            matched: s === '#sensitive' ? ['.sensitive'] : [], role: at?.role ?? control.describeRole ?? 'button', password: false, disabled: false, choice: at?.choice === true,
             ...(at?.frameUrl ? { frameId: 42, frameUrl: at.frameUrl } : {}), ...(at?.blind ? { blind: true } : {}),
             ...(typeof msg.params.value === 'string' && !control.omitGateFacts ? { chosen: control.chosen ?? ['Fixture option'] } : {}),
             ...(control.omitGateFacts ? {} : { committed: control.committed ?? null }),
@@ -462,6 +464,7 @@ async function choiceGates(c: Client, b: Bridge) {
   pass('enter-that-sends-a-chosen-instruction-is-held');
 
   // KEY-CHOICE: a key on a focused select, radio or checkbox can pick what a click would have to ask for.
+  b.control.describeTag = 'select'; b.control.describeRole = 'combobox';
   const keys = presses();
   b.control.keyChoices = ['Keep', 'Delete all', 'Account action'];
   for (const key of ['ArrowDown', 'd', 'End', ' ', 'Enter']) {
@@ -474,8 +477,31 @@ async function choiceGates(c: Client, b: Bridge) {
   for (const key of ['ArrowDown', 'f']) await result(c, 'press', { tab: 7, key });
   assert.deepEqual(b.calls.findLast(m => m.method === 'chrome.press')?.params.checkedDescription,
     { keyChoices: ['Italy', 'France', 'Pay Monthly Mobile', 'Country'] }, 'ASSERT_KEY_BOUND');
-  b.control.keyChoices = [];
+  b.control.keyChoices = []; b.control.describeTag = undefined; b.control.describeRole = undefined;
   pass('a-key-that-could-pick-an-order-is-held-ordinary-lists-are-not');
+  // KEY-SHORTCUT: a printable key, Delete or Backspace with no text field focused is a site's shortcut (Gmail `#`
+  // deletes the open conversation): held, with the card naming the key. Keys that only move, and any key in a field, go.
+  const shortcuts = presses();
+  for (const [tag, role] of [['body', ''], ['button', 'button'], ['input', 'checkbox'], ['div', 'row']]) {
+    b.control.describeTag = tag; b.control.describeRole = role;
+    for (const key of ['#', 'e', 'Shift+3', 'Delete', 'Backspace', 'Shift+Delete', 'Meta+Backspace', 'Control+a']) {
+      const reply = await c.call('press', { tab: 8, key });
+      assert.equal(reply.error?.code, 'held', `ASSERT_SHORTCUT_KEY_HELD: ${key} on ${tag}: ${JSON.stringify(reply)}`);
+      if (key === '#' && tag === 'body') assert.equal((await pending(c, reply.error!)).detail, 'Key "#" with no text field focused', 'ASSERT_SHORTCUT_CARD');
+    }
+  }
+  assert.equal(presses(), shortcuts, 'ASSERT_SHORTCUT_KEY_HELD: no shortcut reached the page');
+  b.control.describeTag = 'body'; b.control.describeRole = '';
+  for (const key of ['Tab', 'Shift+Tab', 'Escape', 'Esc', 'ArrowDown', 'ArrowLeft', 'Up', 'PageDown', 'PageUp', 'Home', 'End', 'Space', ' ']) {
+    await result(c, 'press', { tab: 8, key });
+  }
+  for (const [tag, role] of [['input', 'textbox'], ['input', 'searchbox'], ['input', 'combobox'], ['input', 'spinbutton'], ['textarea', 'textbox'],
+    ['select', 'combobox'], ['select', 'listbox'], ['div', 'textbox'], ['body', 'textbox']]) {
+    b.control.describeTag = tag; b.control.describeRole = role;
+    for (const key of ['#', 'e', 'Shift+3', 'Delete', 'Backspace', 'Meta+Backspace', 'Tab', 'ArrowLeft']) await result(c, 'press', { tab: 8, key });
+  }
+  b.control.describeTag = undefined; b.control.describeRole = undefined;
+  pass('a-shortcut-key-outside-a-text-field-is-held-moves-and-typing-are-not');
   // Space presses the focused button: judged on its name as Enter on it is.
   b.control.spaceName = 'Delete all';
   for (const key of [' ', 'Space', 'Shift+Space']) {
