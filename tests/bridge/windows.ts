@@ -225,7 +225,9 @@ try {
     assert.ok(!listed.tabs.some((t:any)=>t.url==='chrome-extension://gaddi/placeholder.html'));
   });
   await test('ATTENTION',async()=>{
-    await call('chrome.show',{tab:opened.id});assert.deepEqual(windowUpdates.at(-1),{id:opened.windowId,drawAttention:true});
+    // HANDOFF-SHOW: Gaddi's window is created minimized, so show restores it (no bounds) and asks for attention, never focus.
+    assert.equal(windows.get(opened.windowId).state,'minimized');
+    await call('chrome.show',{tab:opened.id});assert.deepEqual(windowUpdates.at(-1),{id:opened.windowId,state:'normal',drawAttention:true});
     assert.equal(windows.get(1).focused,true);assert.equal(windows.get(opened.windowId).focused,false);
   });
   await test('RENDER',async()=>{const reply=await call('chrome.eval',{tab:opened.id,expression:'document.visibilityState'});assert.equal(reply.value,true);});

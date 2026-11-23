@@ -74,6 +74,8 @@ function fixture() {
     noEffects: new Map(), navigationURL: (url: string) => url, groupTitle: () => '● Fixture',
     requiredString: (value: string) => value, gate: async () => {}, checkNavigation: () => ({}), zoneNavigation: (check: unknown) => check, checkEval: () => ({}),
     signinSecrets: { redact: (value: unknown) => value },
+    // OWNER-NEEDED bookkeeping (daemon/owner-needed.ts, tested by tests/signin/owner-needed.test.sh): no live notices here.
+    ownerNotices: { size: () => 0, present() {}, closed() {}, reattached() {}, signin() {} },
     // A reattach also tells Chrome recovery the extension is back (daemon/chrome-heal.ts).
     chromeHeal: { attached: () => {}, ensure: async () => null, status: () => ({}) },
   });

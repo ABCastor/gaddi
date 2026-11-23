@@ -18,6 +18,7 @@ import { readUpload, UPLOAD_CHUNK } from '../../daemon/uploads.ts';
 import { signinSite, listLogins, chooseLogin, runSignin, createLogin, getPassword, opDiagnostic, PASSWORD_UNAVAILABLE } from '../../daemon/signin.ts';
 import type { LoginItem } from '../../daemon/signin.ts';
 import { createSigninSecrets } from '../../daemon/signin-secrets.ts';
+import { createOwnerNotices } from '../../daemon/owner-needed.ts';
 import { wakeApprovalApp } from '../../daemon/approval-wake.ts';
 import { createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString } from '../../daemon/grants.ts';
 import { createRemote } from '../../daemon/remote.ts';
@@ -230,7 +231,7 @@ try {
     loadPolicy, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf,
     createApprovals, GateError, approvalRef, cleanURL, cleanDetail, approvalContext, createProofVerifier, approvalMessage,
     createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString, createRemote,
-    readUpload, UPLOAD_CHUNK, signinSite, listLogins, chooseLogin, runSignin, createLogin, getPassword, opDiagnostic, PASSWORD_UNAVAILABLE, createSigninSecrets,
+    readUpload, UPLOAD_CHUNK, signinSite, listLogins, chooseLogin, runSignin, createLogin, getPassword, opDiagnostic, PASSWORD_UNAVAILABLE, createSigninSecrets, createOwnerNotices,
     createBridge: () => bridge, isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, waitParams, FRAME_TOOLS, redactURLs, redactURLText,
     createChromeHeal: () => ({ attached: () => {}, ensure: async () => null, status: () => ({}) }), chromeControls: () => ({}),
     wakeApprovalApp: (pending: readonly unknown[]) => wakeApprovalApp(pending, { launcher: '/usr/bin/true' }),

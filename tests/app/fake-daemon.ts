@@ -26,6 +26,11 @@ const answered = { id: 'answered1', kind: 'click', tab: 42, caller: 'Marcus task
 const grants = [{ id: 'g1', caller: 'Café task', label: 'Update the profile', rules: ['upload https://example.test/profile'],
   createdAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 3_600_000).toISOString(), mine: false }];
 let malformedSent = false;
+// OWNER-NEEDED: one live notice, then withdrawn; two malformed rows (a URL path and query, a multi-line reason) are dropped.
+const notice = (id: string, origin: string, reason = 'finish signing in (security key, passkey or phone)') => ({ id, tab: 42, origin, step: 'password', reason,
+  expiresAt: new Date(Date.now() + 600_000).toISOString() });
+let notices = [notice('own-key', 'https://example.test'), notice('own-leak', 'https://example.test/u/2fa?user=CANARY_NOTICE_QUERY'),
+  notice('own-lines', 'https://example.test', 'line one\nCANARY_NOTICE_LINE')];
 const started = Date.now();
 function log(value: unknown) { if (record) fs.appendFileSync(record, JSON.stringify(value) + '\n'); }
 function reply(socket: net.Socket, id: unknown, result: unknown) { socket.write(JSON.stringify({ id, result }) + '\n'); }
@@ -74,6 +79,8 @@ const server = net.createServer(socket => {
           setTimeout(() => {
             pending.push(approval('a1')); event(socket, 'approval.pending', { approval: pending.at(-1), tab: 42 }, true);
           }, 250);
+          setTimeout(() => event(socket, 'owner.needed', notices[0]), 300);
+          setTimeout(() => { notices = []; event(socket, 'owner.withdrawn', { id: 'own-key', tab: 42, why: 'signed_in' }); }, 700);
           // The broker's Chrome recovery notice reaches the app as an ordinary event.
           setTimeout(() => event(socket, 'browser.notice', { kind: 'chrome-recovery', text: 'Chrome had stopped (crash or quit); Gaddi reopened it.' }), 400);
           setTimeout(() => {
@@ -92,6 +99,8 @@ const server = net.createServer(socket => {
         if (mode === 'snapshot-error' && Date.now() - started < 2000) {
           socket.end(JSON.stringify({ id, error: { message: 'transient snapshot failure' } }) + '\n');
         } else { reply(socket, id, { pending, recent: [answered], grants }); }
+      } else if (method === 'owner.notices') {
+        reply(socket, id, { notices });
       } else if (method === 'zones.list') {
         reply(socket, id, { sites: ['https://sandbox.example.test', 'https://zone.example.test'], sandbox: ['https://sandbox.example.test'] });
       } else if (method === 'remote.status') {

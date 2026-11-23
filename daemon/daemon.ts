@@ -30,6 +30,7 @@ import crypto from 'node:crypto';
 import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, setSandbox, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkNames, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf, UPLOAD_HOLD } from './policy.ts';
 import { signinSite, listLogins, chooseLogin, runSignin, createLogin, getPassword, opDiagnostic, PASSWORD_UNAVAILABLE } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
+import { createOwnerNotices } from './owner-needed.ts';
 import { redactURLs, redactURLText } from '../shared/url-redaction.ts';
 import { downloadTarget, saveDownload, checkDownload, DOWNLOAD_LIMIT } from './downloads.ts';
 import { readUpload, UPLOAD_CHUNK } from './uploads.ts';
@@ -77,7 +78,7 @@ const signinSecrets = createSigninSecrets();
 // One sink for responses, errors, events and stored metadata, independent of policy or sign-in.
 const publicOutput = (value: unknown) => redactURLs(signinSecrets.redact(value, undefined, false));
 const subscribers = new Set<Socket>(), connections = new Set<Socket>();
-const nonAuditedMethods = new Set(['status', 'approvals.list', 'signin.remembered', 'sends.remembered', 'uploads.remembered', 'zones.list', 'bridge.status', 'bridge.health', 'events.subscribe', 'session.begin', 'remote.status']);
+const nonAuditedMethods = new Set(['status', 'approvals.list', 'signin.remembered', 'sends.remembered', 'uploads.remembered', 'zones.list', 'bridge.status', 'bridge.health', 'events.subscribe', 'session.begin', 'remote.status', 'owner.notices']);
 interface Session { caller: string; owned: Set<number>; lastActivity: number; endedAt?: number }
 const sessions = new Map<string, Session>();
 // A tab put in front of the user is his from then on, whichever agent brought it forward.
@@ -136,6 +137,7 @@ function rememberShown(tab: number) {
   shown.add(tab);
 }
 function forgetClosed(tabs: unknown[]) {
+  ownerNotices.closed(tabs);
   for (const id of tabs) if (typeof id === 'number') {
     signinSecrets.clear(id);
     shown.delete(id);
@@ -154,6 +156,8 @@ function emit(event: string, data: unknown) {
     for (const session of sessions.values()) session.owned.clear();
     shown.clear();
     tabActivity.clear();
+    // OWNER-NEEDED: a notice names a tab number, which the new Chrome may give to another page.
+    ownerNotices.reattached();
     chromeHeal.attached();
     // SANDBOX: a fresh extension knows no sandbox; it is told the list so its pages show the red band again.
     if ((policy.zones?.sandbox ?? []).length) queueMicrotask(pushSandbox);
@@ -161,6 +165,8 @@ function emit(event: string, data: unknown) {
   if (event === 'approval.pending') {
     if (isRecord(data)) wakeApprovalApp([data.approval], { log });
   }
+  // OWNER-NEEDED: the app may be asleep; it reads the live notices itself when it starts.
+  if (event === 'owner.needed') wakeApprovalApp([], { log, notice: true });
   const line = JSON.stringify(publicOutput({ event, ts: new Date().toISOString(), data })) + '\n';
   for (const conn of subscribers) {
     if (conn.destroyed || conn.writableLength > 1024 * 1024) { subscribers.delete(conn); conn.destroy(); }
@@ -168,6 +174,8 @@ function emit(event: string, data: unknown) {
   }
 }
 const bridge = createBridge({ emit });
+// OWNER-NEEDED (owner-needed.ts): "Gaddi needs you on <origin>: <reason>", one per tab and step, ten minutes at most.
+const ownerNotices = createOwnerNotices({ emit, ttlMs: positiveMillis(process.env.GADDI_OWNER_NOTICE_MS, 10 * 60_000) });
 // A stopped Chrome is reopened when an agent next needs it (chrome-heal.ts holds the guards).
 const chromeHeal = createChromeHeal({ ...chromeControls(), log,
   connected: () => bridge.status().connected,
@@ -470,7 +478,9 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   }
   if (method === 'signin') {
     let site = '';
-    const finish = (result: SigninResult) => { meta.signin = result; return result; };
+    // OWNER-NEEDED: every sign-in answer passes here, so a needs_you the owner must act on is noticed (once per tab and
+    // step) and a later signed_in on the same tab withdraws it. The notice never changes what the agent is told.
+    const finish = (result: SigninResult) => { meta.signin = result; ownerNotices.signin(resolvedTab, result, grantSession(params)); return result; };
     try {
       site = signinSite(pageURL);
       if (params.signup !== undefined && typeof params.signup !== 'boolean') throw new Error();
@@ -1084,6 +1094,7 @@ function releaseSession(key: string) {
   if (open > 0) { liveSessions.set(key, open); return; }
   liveSessions.delete(key);
   grants.endSession(key);
+  ownerNotices.sessionEnded(key);
   for (const request of pendingGrantsOf(key)) approvals.cancel(request.id);
 }
 
@@ -1130,6 +1141,16 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
     }
     return {};
   }),
+  // OWNER-NEEDED: the live notices, for the app's snapshot. Read-only.
+  'owner.notices': () => ({ notices: ownerNotices.list() }),
+  // OWNER-NEEDED: the owner clicked a notice. It shows that notice's tab through the same path as browser_show and
+  // nothing else: it is not consent, it answers no approval, and it does not end the notice (signed_in, close,
+  // session end or expiry do). A notice that has ended shows nothing.
+  'owner.show': (params, _conn, meta) => {
+    const notice = ownerNotices.get(params.id);
+    if (!notice) throw new Error('that notice has ended');
+    return serial(() => browserCall('show', { tab: notice.tab, caller: 'Gaddi' }, meta));
+  },
   status: () => ({ version: 3, pid: process.pid, uptimeSeconds: Math.round((Date.now() - startedAt) / 1000),
     socket, audit: auditPath, bridge: browserBridgeStatus(), pendingApprovals: approvals.list().pending.length,
     policy: { off: policy.off, sources: policy.sources } }),
@@ -1307,6 +1328,12 @@ async function sweepSharedSessions() {
   }
 }
 async function sweepSessions() {
+  // OWNER-NEEDED: a tab the owner closed in Chrome ends its notice; only asked while a notice is live. A failed or
+  // malformed answer ends nothing (tabList throws) and never stops the session sweep below.
+  if (ownerNotices.size() && bridge.status().connected) {
+    try { ownerNotices.present(tabList(await bridge.request('chrome.tabs', { browser: policy.browser })).map(tabId)); }
+    catch { log('owner notice tab check failed; will retry'); }
+  }
   if (policy.browser.window === 'shared') return sweepSharedSessions();
   if (!bridge.status().connected) return;
   const connection = bridge.connection(), now = Date.now();
@@ -1469,6 +1496,7 @@ async function main() {
 function shutdown() {
   clearInterval(sessionTimer);
   signinSecrets.stop();
+  ownerNotices.stop();
   approvals.stop();
   grants.stop();
   for (const conn of connections) conn.destroy();

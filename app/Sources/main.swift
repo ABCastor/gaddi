@@ -19,7 +19,13 @@ func headlessCheck() -> Never {
         if let notice = browserNotice(name, data) { print("NOTICE \(notice)") }
         if name == "approval.pending" { seenPending = true }
     }
+    var notices = Set<String>()
+    model.onOwnerNotice = { notice in print("OWNER-NEEDED \(notice.text) tab=\(notice.tab) step=\(notice.step)"); fflush(stdout) }
     model.onSnapshot = { snapshot in
+        // OWNER-NEEDED: a notice the broker withdrew is named once.
+        let live = Set(snapshot.ownerNotices.map(\.id))
+        for id in notices.subtracting(live).sorted() { print("OWNER-WITHDRAWN \(id)") }
+        notices = live
         let current = Set(snapshot.approvals.map(\.id))
         for id in opened.subtracting(current).sorted() { print("RESOLVED approval=\(id)") }
         opened = current

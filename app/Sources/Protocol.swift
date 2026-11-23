@@ -308,6 +308,33 @@ struct Snapshot: Equatable {
     var remoteApprovable = Set<String>()
     /// The last answers that device gave, newest first.
     var remoteDecisions: [RemoteDecision] = []
+    /// OWNER-NEEDED: sign-ins waiting for the owner's own hand (security key, passkey, phone, code, 1Password).
+    var ownerNotices: [OwnerNotice] = []
+}
+
+/// OWNER-NEEDED: the broker's "Gaddi needs you on <origin>: <reason>". It is information, never a decision: clicking it
+/// only asks the broker to show that tab (owner.show), dismissing it does nothing, and neither counts as consent or as
+/// a completed sign-in. Anything that is not an exact http(s) origin with a short one-line reason is refused, so a
+/// notice can never carry a URL path or query, a username or a secret.
+struct OwnerNotice: Equatable {
+    let id: String
+    let tab: Int
+    let origin: String
+    let step: String
+    let reason: String
+    let expiresAt: Date
+    init?(_ row: JSONObject) {
+        guard let id = string(row["id"]), id.hasPrefix("own-"), approvalRequestID(id) != nil,
+              let tab = row["tab"] as? Int, tab >= 0,
+              let origin = string(row["origin"]), let url = URL(string: origin), ["http", "https"].contains(url.scheme ?? ""),
+              url.host != nil, url.user == nil, url.password == nil, url.path.isEmpty, url.query == nil, url.fragment == nil,
+              let step = string(row["step"]), !step.isEmpty, step.count <= 32, step.allSatisfy({ $0.isLetter || $0.isNumber }),
+              let reason = string(row["reason"]), !reason.isEmpty, reason.count <= 120, !reason.contains(where: \.isNewline),
+              let expiresAt = instant(row["expiresAt"]) else { return nil }
+        self.id = id; self.tab = tab; self.origin = origin; self.step = step; self.reason = reason; self.expiresAt = expiresAt
+    }
+    var expired: Bool { expiresAt <= Date() }
+    var text: String { "Gaddi needs you on \(origin): \(reason)" }
 }
 
 /// Visibility follows authoritative pending snapshots, never notification delivery.
@@ -362,10 +389,12 @@ final class BrowserModel {
     let queue = DispatchQueue(label: "gaddi.model")
     var onSnapshot: ((Snapshot) -> Void)?
     var onPending: ((Approval) -> Void)?
+    var onOwnerNotice: ((OwnerNotice) -> Void)?
     var onEvent: ((String, JSONObject) -> Void)?
     var onConnection: ((Bool, String) -> Void)?
     private var snapshot = Snapshot()
     private var knownPending = Set<String>()
+    private var knownNotices = Set<String>()
     private var refreshTimer: DispatchSourceTimer?
 
     func start() {
@@ -432,6 +461,15 @@ final class BrowserModel {
                 guard parsed.count == objects.count else { throw AppError("Daemon returned an invalid session grant") }
                 next.grants = parsed.filter { !$0.expired }.sorted { ($0.expiresAt, $0.id) < ($1.expiresAt, $1.id) }
             }
+            // OWNER-NEEDED: a broker that does not know owner notices is simply older; a malformed row is dropped,
+            // because a notice only shows a tab and can never decide anything.
+            do {
+                let answer = try client.call("owner.notices")
+                guard let rows = answer["notices"] as? [JSONObject] else { throw AppError("Daemon returned an invalid owner notice list") }
+                next.ownerNotices = rows.compactMap(OwnerNotice.init).filter { !$0.expired }.sorted { $0.id < $1.id }
+            } catch {
+                if !error.localizedDescription.contains("unknown method") { throw error }
+            }
             // Approving from the user's other device has its own status. A broker that does not know the call is
             // simply older, and nothing is on. Any other failure, and a malformed answer, is an error: a switch the
             // owner cannot see is authority he cannot end, so the panel must not guess "off".
@@ -456,6 +494,8 @@ final class BrowserModel {
                 onPending?(approval)
             }
             knownPending = Set(next.approvals.map(\.id))
+            for notice in next.ownerNotices where !knownNotices.contains(notice.id) { onOwnerNotice?(notice) }
+            knownNotices = Set(next.ownerNotices.map(\.id))
         } catch { onConnection?(false, error.localizedDescription) }
     }
     private func handle(_ event: JSONObject) {
@@ -463,7 +503,8 @@ final class BrowserModel {
         let data = event["data"] as? JSONObject ?? event
         onEvent?(name, data)
         switch name {
-        case "approval.pending", "approval.resolved", "signin.remembered", "sends.remembered", "uploads.remembered", "grants.changed", "remote.changed", "zones.changed":
+        case "approval.pending", "approval.resolved", "signin.remembered", "sends.remembered", "uploads.remembered", "grants.changed", "remote.changed", "zones.changed",
+             "owner.needed", "owner.withdrawn":
             refresh()
         default: break
         }

@@ -14,7 +14,7 @@ for mutation in INSTRUCTIONS DESCRIPTION; do
 import fs from 'node:fs';
 import assert from 'node:assert/strict';
 const [file,mutation]=process.argv.slice(2);
-const before=mutation==='INSTRUCTIONS'?'Rendering never needs show; show only requests owner attention':'Request owner attention, without focus by default. Rendering never needs show.';
+const before=mutation==='INSTRUCTIONS'?'Rendering never needs show; show only requests owner attention':'Show tab, restoring if minimized, without focus by default. Rendering never needs show.';
 const after='Bring tabs to the front to render them.';
 const source=fs.readFileSync(file,'utf8');assert.equal(source.split(before).length,2);fs.writeFileSync(file,source.replace(before,after));
 NODE

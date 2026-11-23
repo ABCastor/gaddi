@@ -116,7 +116,7 @@ const TOOLS: ToolDefinition[] = [
       { type: 'image', mimeType: result.mimeType, data: (await readFile(result.path)).toString('base64') }],
   })),
   tool('close', 'Close explicit tabs by ID.', { tabs }, ['tabs']),
-  tool('show', 'Request owner attention, without focus by default. Rendering never needs show.', { tab }, ['tab'], 'show', pageJSON),
+  tool('show', 'Show tab, restoring if minimized, without focus by default. Rendering never needs show.', { tab }, ['tab'], 'show', pageJSON),
   tool('group', 'Group tabs by task; reuse title.', { tabs, group: S }, ['tabs', 'group'], 'group', pageJSON),
   tool('approvals', 'Pending actions in Gaddi.', {}, [], 'approvals.list', pageJSON),
   {

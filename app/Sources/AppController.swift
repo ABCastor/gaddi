@@ -116,9 +116,11 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
                 let resolved = Set(self.snapshot.approvals.map(\.id)).subtracting(snapshot.approvals.map(\.id))
                 // One banner per agent: it goes when that agent has nothing left waiting.
                 let quiet = Set(self.snapshot.approvals.map(\.who)).subtracting(snapshot.approvals.map(\.who)).map(Self.bannerID)
+                // OWNER-NEEDED: a notice the broker withdrew (signed in, tab closed, session ended, expired) leaves the screen.
+                let ended = Set(self.snapshot.ownerNotices.map(\.id)).subtracting(snapshot.ownerNotices.map(\.id)).map(Self.ownerBannerID)
                 let notifications = UNUserNotificationCenter.current()
-                notifications.removeDeliveredNotifications(withIdentifiers: Array(resolved) + quiet)
-                notifications.removePendingNotificationRequests(withIdentifiers: Array(resolved) + quiet)
+                notifications.removeDeliveredNotifications(withIdentifiers: Array(resolved) + quiet + ended)
+                notifications.removePendingNotificationRequests(withIdentifiers: Array(resolved) + quiet + ended)
                 self.snapshot = snapshot; self.connected = true; self.connectionText = "Connected"
                 self.render()
                 self.presentPendingApprovals()
@@ -126,6 +128,9 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
         }
         model.onPending = { [weak self] approval in
             DispatchQueue.main.async { self?.notify(approval) }
+        }
+        model.onOwnerNotice = { [weak self] notice in
+            DispatchQueue.main.async { self?.notifyOwner(notice) }
         }
         model.onEvent = { [weak self] name, data in
             guard let text = browserNotice(name, data) else { return }
@@ -335,6 +340,18 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     }
     static func bannerID(_ who: String) -> String { "agent:" + who }
     static let chromeBannerID = "gaddi:chrome-recovery"
+    static func ownerBannerID(_ id: String) -> String { "owner:" + id }
+    private func notifyOwner(_ notice: OwnerNotice) {
+        // One banner per notice; the broker already sends at most one per tab and step.
+        let content = UNMutableNotificationContent()
+        content.title = "Gaddi needs you"
+        content.body = notice.text + ". Click to show the tab."
+        content.sound = .default
+        content.userInfo = ["owner": notice.id]
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: Self.ownerBannerID(notice.id), content: content, trigger: nil)) { error in
+            if let error { diagnostic("Owner notice failed: \(error.localizedDescription)") }
+        }
+    }
     private func notifyBrowser(_ text: String) {
         // One banner, replaced in place: the broker already sends at most one per incident.
         let content = UNMutableNotificationContent()
@@ -370,6 +387,18 @@ final class AppController: NSObject, NSApplicationDelegate, UNUserNotificationCe
     }
     func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
                                 withCompletionHandler completionHandler: @escaping () -> Void) {
+        // OWNER-NEEDED: a click on an owner notice asks the broker to show its tab (the browser_show path) and nothing
+        // else: no approval, no consent, no "done". Only the default action (a click) gets here; a dismissal is never
+        // delivered, because no category asks for it.
+        if let owner = response.notification.request.content.userInfo["owner"] as? String {
+            if response.actionIdentifier == UNNotificationDefaultActionIdentifier, owner.hasPrefix("own-"), approvalRequestID(owner) != nil {
+                model.queue.async { [weak self] in
+                    do { _ = try self?.model.client.call("owner.show", ["id": owner]) }
+                    catch { diagnostic("Owner notice tab not shown: \(error.localizedDescription)") }
+                }
+            }
+            completionHandler(); return
+        }
         DispatchQueue.main.async {
             let raw = response.notification.request.content.userInfo["id"] as? String ?? response.notification.request.identifier
             if let id = approvalRequestID(raw) { self.ownerAsked = true; self.requestApproval(id) }

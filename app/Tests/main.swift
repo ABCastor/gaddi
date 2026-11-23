@@ -167,6 +167,19 @@ check(zoneTexts.filter { $0 == "Make sandbox" }.count == 1 && zoneTexts.filter {
 check(zoneTexts.contains { $0.hasPrefix("On a sandbox, agents also pay") }, "the section warns what a sandbox allows")
 check(!texts(ZoneList(["https://staging.example.com"], canAdd: true, canRemove: true, add: { _ in }, remove: { _ in })).contains("SANDBOX"),
       "a plain zone is not marked as a sandbox")
+// OWNER-NEEDED: a notice is an exact origin and a one-line reason; anything else never reaches the screen.
+let ownerRow: JSONObject = ["id": "own-1a2b", "tab": 42, "origin": "https://example.test", "step": "password",
+    "reason": "finish signing in (security key, passkey or phone)", "expiresAt": "2099-01-01T00:00:00.000Z"]
+check(OwnerNotice(ownerRow)?.text == "Gaddi needs you on https://example.test: finish signing in (security key, passkey or phone)",
+      "owner notice reads 'Gaddi needs you on <origin>: <reason>'")
+for (label, change) in [("a URL path", ["origin": "https://example.test/u/2fa"]), ("a URL query", ["origin": "https://example.test?user=CANARY"]),
+                        ("credentials in the origin", ["origin": "https://user:pw@example.test"]), ("a non-web scheme", ["origin": "file:///etc"]),
+                        ("a multi-line reason", ["reason": "one\ntwo"]), ("an overlong reason", ["reason": String(repeating: "x", count: 121)]),
+                        ("an approval-shaped id", ["id": "a1"]), ("an unsafe id", ["id": "own-a|b"]), ("an odd step", ["step": "pass word"]),
+                        ("no expiry", ["expiresAt": "soon"])] as [(String, JSONObject)] {
+    check(OwnerNotice(ownerRow.merging(change) { $1 }) == nil, "owner notice with \(label) is refused")
+}
+check(OwnerNotice(ownerRow.merging(["expiresAt": "2000-01-01T00:00:00.000Z"]) { $1 })?.expired == true, "an owner notice past its bound is expired")
 check(SocketClient.socketPath == ProcessInfo.processInfo.environment["GADDI_SOCKET"], "GADDI_SOCKET overrides all defaults")
 // Either home is disposable; the point is that the live broker's socket can never be named.
 guard SocketClient.socketPath.contains("/tests/.state/") || SocketClient.socketPath.hasPrefix("/tmp/gaddi-test-")

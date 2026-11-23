@@ -264,6 +264,17 @@ async function findGroup(title: unknown, check: Check) {
   const id = await agentWindow.get(check);
   return groups.find(group => group.title === title && group.windowId === id);
 }
+// HANDOFF-SHOW: an explicit handoff (show, or open with foreground:true) must put the tab where the owner can see it.
+// Agents work in Gaddi's own window, which the owner may keep minimized; an active tab in a minimized window is still
+// invisible, so the handoff restores that one window from minimized. Invariants: only the window holding the tab is
+// touched (no other window is restored or focused); `state: 'normal'` with no bounds keeps the owner's own size and
+// position; focus itself stays the show policy's choice. Background calls (open without foreground, look, click, type)
+// never come here, so the window stays as the owner left it.
+async function handOff(windowId: number, update: chrome.windows.UpdateInfo, check: Check) {
+  const current = await chrome.windows.get(windowId);
+  check();
+  await chrome.windows.update(windowId, { ...(current.state === 'minimized' ? { state: 'normal' } : {}), ...update });
+}
 // Call under the shared groups queue so open and group cannot create duplicate titles.
 async function joinGroup(ids: number[], title: string | undefined, group: chrome.tabGroups.TabGroup | undefined, foreground: boolean, check: Check) {
   const groupOperation = async () => {
@@ -1058,7 +1069,7 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
     const tab = (await chrome.tabs.update(params.tab, { active: true }))!;
     // macOS may refuse focus (locked screen, another app in front); drawAttention then bounces the Dock icon.
     check();
-    await chrome.windows.update(tab.windowId, { ...(browser.show === 'front' ? { focused: true } : {}), drawAttention: true });
+    await handOff(tab.windowId, { ...(browser.show === 'front' ? { focused: true } : {}), drawAttention: true }, check);
     return tabInfo(tab);
   }
   if (method === 'chrome.group') {
@@ -1095,6 +1106,9 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
         throw error;
       }
       if (browser.window === 'own') await agentWindow.cleanupTabs(params.foreground === true ? opened.id : undefined);
+      check();
+      // HANDOFF-SHOW: a foreground open is a handoff; it restores the window but takes no focus.
+      if (params.foreground === true) await handOff(opened.windowId, {}, check);
       return opened;
     });
     return await queued(opened.id, async check => {

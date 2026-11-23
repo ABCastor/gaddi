@@ -15,6 +15,7 @@ import { createProofVerifier, approvalMessage } from '../../daemon/proof.ts';
 import { readUpload, UPLOAD_CHUNK } from '../../daemon/uploads.ts';
 import { signinSite, listLogins, chooseLogin, runSignin } from '../../daemon/signin.ts';
 import { createSigninSecrets } from '../../daemon/signin-secrets.ts';
+import { createOwnerNotices } from '../../daemon/owner-needed.ts';
 import { wakeApprovalApp } from '../../daemon/approval-wake.ts';
 import { createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString } from '../../daemon/grants.ts';
 import { createRemote } from '../../daemon/remote.ts';
@@ -64,7 +65,7 @@ const context = vm.createContext({
   loadPolicy, checkNavigation, checkClick, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf,
   createApprovals, GateError, approvalRef, cleanURL, cleanDetail, approvalContext, createProofVerifier, approvalMessage,
   createGrants, checkGrant, parseGrantRequest, grantDetail, isGrantSpec, ruleString, createRemote,
-  readUpload, UPLOAD_CHUNK, signinSite, listLogins, chooseLogin, runSignin, createSigninSecrets,
+  readUpload, UPLOAD_CHUNK, signinSite, listLogins, chooseLogin, runSignin, createSigninSecrets, createOwnerNotices,
   createBridge: () => bridge, isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, waitParams, FRAME_TOOLS, redactURLs, redactURLText,
   // Chrome recovery is not under test here: a connected bridge never needs it.
   createChromeHeal: () => ({ attached: () => {}, ensure: async () => null, status: () => ({}) }), chromeControls: () => ({}),
