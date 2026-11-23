@@ -106,7 +106,7 @@ const TOOLS: ToolDefinition[] = [
   tool('select', 'Select option by value.', { tab, version, selector: S, value: S, frameId, approval, why }, ['selector', 'value']),
   tool('upload', 'Attach local file to a field/label/drop zone; held.', { tab, version, selector: S, path: S, frameId, approval, why }, ['selector', 'path']),
   // EVAL-READONLY: reads run; a script that would change anything is refused, and the refusal tells the agent that
-  // write:true asks the owner for that exact script. Kept this short for the tools/list budget.
+  // write:true asks the user for that exact script. Kept this short for the tools/list budget.
   tool('eval', 'Read-only JS.', { tab, expression: S, write: B, approval, why }, ['expression'], 'eval', pageJSON),
   tool('emulate', 'Viewport, theme or animation speed; reset clears.', {
     tab, width: { type: 'integer', minimum: 1 }, height: { type: 'integer', minimum: 1 }, mobile: B,

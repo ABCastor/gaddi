@@ -315,7 +315,7 @@ struct Snapshot: Equatable {
     var remoteApprovable = Set<String>()
     /// The last answers that device gave, newest first.
     var remoteDecisions: [RemoteDecision] = []
-    /// OWNER-NEEDED: sign-ins waiting for the owner's own hand (security key, passkey, phone, code, 1Password).
+    /// OWNER-NEEDED: sign-ins waiting for the user's own hand (security key, passkey, phone, code, 1Password).
     var ownerNotices: [OwnerNotice] = []
 }
 

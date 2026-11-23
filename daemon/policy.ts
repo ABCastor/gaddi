@@ -387,7 +387,7 @@ const NAMING_VERBS = ['send', 'send now', 'invia', 'invia ora', 'pay', 'pay now'
   'esegui bonifico', 'conferma bonifico', 'trasferisci', 'disponi', 'conferma disposizione', 'withdraw', 'deposit', 'preleva',
   'versa', 'ricarica', 'post', 'publish', 'pubblica', 'share', 'condividi'];
 // COMMIT-CHOICES: a choice that is on when a button sends its form is an instruction the button carries out. Every
-// other hold verb (delete, remove, close account, change password, unsubscribe, any verb the owner adds) that leads
+// other hold verb (delete, remove, close account, change password, unsubscribe, any verb the user adds) that leads
 // its short name holds that button, whatever follows the verb: "Delete files older than a month" then "Save" asks.
 // The naming verbs above are left to CHOICE-PROSE, so a chosen "Pay Monthly Mobile" never holds the "Continue" after it.
 export function commitVerb(name: unknown, verbs: string[]): string | null {
@@ -516,7 +516,7 @@ export function checkExtension(policy: Policy, operation: string, ownRepo = fals
 }
 
 // EVAL-READONLY: a script that reads runs; one that writes (the extension refuses side effects in any other) is the
-// owner's call for that exact script, every time. The deny patterns win over both.
+// user's decision for that exact script, every time. The deny patterns win over both.
 export function checkEval(policy: Policy, expression: string, write = false) {
   if (policy.off) return ALLOW('policy-off');
   const src = String(expression || '');

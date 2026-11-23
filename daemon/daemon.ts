@@ -55,7 +55,7 @@ const socket = process.env.GADDI_SOCKET || path.join(home, 'gaddi.sock');
 const auditPath = process.env.GADDI_AUDIT || path.join(home, 'audit.jsonl');
 const statePath = process.env.GADDI_STATE || path.join(home, 'state.json');
 const TEXT_LIMIT = 20000, HTML_LIMIT = 5 * 1024 * 1024;
-// EVAL-READONLY: the longest script the owner is asked to approve; the card shows all of it.
+// EVAL-READONLY: the longest script the user is asked to approve; the card shows all of it.
 const EVAL_WRITE_LIMIT = 2000;
 // DRAG-HOLD: the longest a held button stays down (a drag moves through the same time), well inside an action's deadline.
 const HOLD_MS_MAX = 10000;
@@ -128,7 +128,7 @@ function noteSite(session: string | undefined, url: string) {
   const sites = (sessionSites.get(session) ?? []).filter(site => site !== origin);
   sessionSites.set(session, [origin, ...sites].slice(0, SESSION_SITES_MAX));
 }
-// What a held card covers if the owner makes it standing (a remembered site, a zone), and the siblings it leaves out.
+// What a held card covers if the user makes it standing (a remembered site, a zone), and the siblings it leaves out.
 function actionCover(meta: CallMeta, session: string | undefined, actingURL?: string): CoverView | undefined {
   let origin: string;
   try { const page = new URL(String(meta.url)); if (!/^https?:$/.test(page.protocol)) return undefined; origin = page.origin; } catch { return undefined; }
@@ -519,7 +519,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   if (holdMs) args.holdMs = holdMs;
   if (method === 'signin') {
     let site = '';
-    // OWNER-NEEDED: every sign-in answer passes here, so a needs_you the owner must act on is noticed (once per tab and
+    // OWNER-NEEDED: every sign-in answer passes here, so a needs_you the user must act on is noticed (once per tab and
     // step) and a later signed_in on the same tab withdraws it. The notice never changes what the agent is told.
     const finish = (result: SigninResult) => { meta.signin = result; ownerNotices.signin(resolvedTab, result, grantSession(params)); return result; };
     try {
@@ -627,7 +627,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       // DRAG-HOLD invariant: a drag is judged on what it picks up (the click above) and on where it lets go: the control
       // under the end point is judged as a click on it would be, on its own document and on the tab, and a drop target
       // named like a bin ("Trash", "Bin", "Cestino") is a delete. Both are bound, so the approved drag drops there or not
-      // at all. A drop into another document than the start, or one Gaddi cannot inspect, waits for the owner.
+      // at all. A drop into another document than the start, or one Gaddi cannot inspect, waits for the user.
       let drop: { name: string; frame: { id: number; origin: string; document: string } } | undefined;
       if (to) {
         const dropped = await request('describe', { ...args, at: to });
@@ -674,7 +674,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     } else if (params.secret !== undefined) {
       // SECRET-FILL: the password of one 1Password login goes from op straight into one password field of the site that
       // login belongs to. The agent names the item; it never sees, sends or receives the value. The same rule as a
-      // sign-in judges it (remembered site, test zone, or the owner's approval), with the same card.
+      // sign-in judges it (remembered site, test zone, or the user's approval), with the same card.
       if (params.text !== undefined || params.mode !== undefined) throw new Error('secret fills the whole field: give secret or text, and no mode');
       if (typeof params.secret !== 'string' || !params.secret.trim() || params.secret.length > 200) throw new Error('secret must name a 1Password item (title or ID)');
       if (args.frameId !== undefined) throw new Error('secret fills a password field of the tab itself, not inside an embedded document');
@@ -784,7 +784,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     args.expression = requiredString(params.expression, 'expression');
     if (params.write !== undefined && typeof params.write !== 'boolean') throw new Error('write must be boolean');
     // EVAL-READONLY: the extension runs a script read-only unless this call carries write. A script that writes can
-    // click, submit, send and navigate in ways no gate can read, so it is the owner's call every time: held for this
+    // click, submit, send and navigate in ways no gate can read, so it is the user's call every time: held for this
     // exact script (no grant, zone, sandbox, remembered site or phone answers it). With the gates off it runs as before.
     const write = params.write === true || policy.off === true;
     check = checkEval(policy, args.expression, write);
@@ -998,7 +998,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   return rawResult;
 }
 
-// NEW-LOGIN: creating a login follows the site's sign-in rule. A site the owner chose "Always allow" for (or a test
+// NEW-LOGIN: creating a login follows the site's sign-in rule. A site the user chose "Always allow" for (or a test
 // zone) creates and fills without a card; anywhere else the card asks, and offers Always allow (owner, 12 Nov 2026:
 // "be as autonomous as possible when appropriate"). Refused and protected sites still win (checkSignin).
 function creationCheck(site: string): PolicyCheck {
@@ -1034,8 +1034,8 @@ async function submitSignup(filled: SigninResult, tab: number, site: string, par
       ...(changed === undefined ? {} : { changed }), outcome, ...(approval ? { approval } : {}), ms: Date.now() - start });
   }
 }
-// STANDING: an agent asks once for the owner's standing permission on whole sites (uploads, sign-in). Each becomes
-// an ordinary held card of that kind; nothing is done now. Only the owner's "Always allow" (Touch ID) saves it, the
+// STANDING: an agent asks once for the user's standing permission on whole sites (uploads, sign-in). Each becomes
+// an ordinary held card of that kind; nothing is done now. Only the user's "Always allow" (Touch ID) saves it, the
 // same signed remember choice the first held upload or sign-in offers. "Allow once" on such a card allows nothing.
 function requestStanding(params: IncomingParams, meta: CallMeta) {
   const caller = typeof params.caller === 'string' ? params.caller : 'unknown';
@@ -1056,7 +1056,7 @@ function requestStanding(params: IncomingParams, meta: CallMeta) {
     return { kind, site, status: 'waiting for the owner', approval: String(record.id) };
   }), note: 'The owner answers each card with Always allow (Touch ID). It applies to every agent from then on; browser_approvals shows standing permissions. Do not retry: keep working, and your held actions on those sites will run once allowed.' };
 }
-// Saves the owner's signed "Always allow" for the kind of the approval being answered.
+// Saves the user's signed "Always allow" for the kind of the approval being answered.
 function rememberSite(id: unknown) {
   return (site: string, send?: SendRule) => {
     if (send) {
@@ -1075,7 +1075,7 @@ function rememberSite(id: unknown) {
 function isStandingRequest(a: StoredApproval) {
   return a.tab === null && (a.kind === 'upload' || a.kind === 'signin') && String(a.detail).startsWith('Standing request: ');
 }
-// What the owner already allows without asking, for every agent: shown with the approvals so an agent can see it.
+// What the user already allows without asking, for every agent: shown with the approvals so an agent can see it.
 function standingView() {
   return { signin: policy.signin?.remember ?? [], uploads: policy.uploads?.remember ?? [],
     sends: (policy.sends?.remember ?? []).map(rule => ({ site: rule.site, kind: rule.kind, reason: rule.reason })),
@@ -1233,7 +1233,7 @@ const methods: Record<string, (params: IncomingParams, conn: Socket, meta: CallM
   }),
   // OWNER-NEEDED: the live notices, for the app's snapshot. Read-only.
   'owner.notices': () => ({ notices: ownerNotices.list() }),
-  // OWNER-NEEDED: the owner clicked a notice. It shows that notice's tab through the same path as browser_show and
+  // OWNER-NEEDED: the user clicked a notice. It shows that notice's tab through the same path as browser_show and
   // nothing else: it is not consent, it answers no approval, and it does not end the notice (signed_in, close,
   // session end or expiry do). A notice that has ended shows nothing.
   'owner.show': (params, _conn, meta) => {
@@ -1418,7 +1418,7 @@ async function sweepSharedSessions() {
   }
 }
 async function sweepSessions() {
-  // OWNER-NEEDED: a tab the owner closed in Chrome ends its notice; only asked while a notice is live. A failed or
+  // OWNER-NEEDED: a tab the user closed in Chrome ends its notice; only asked while a notice is live. A failed or
   // malformed answer ends nothing (tabList throws) and never stops the session sweep below.
   if (ownerNotices.size() && bridge.status().connected) {
     try { ownerNotices.present(tabList(await bridge.request('chrome.tabs', { browser: policy.browser })).map(tabId)); }

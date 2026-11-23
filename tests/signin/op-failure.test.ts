@@ -60,7 +60,7 @@ else if (mode === 'no-password') labelled ? console.log(JSON.stringify(user)) : 
 // Two purposeless fields labelled password: nothing says which one is the login's.
 else if (mode === 'duplicate-password') { const twins = [{ label: 'username', value: C.username }, { label: 'password', value: C.password }, { label: 'password', value: C.old }]; labelled ? console.log(JSON.stringify(twins)) : full(twins); }
 else if (mode === 'duplicate-username') { const twins = [{ label: 'username', value: C.username }, { label: 'username', value: C.old }, { label: 'password', value: C.password }]; labelled ? console.log(JSON.stringify(twins)) : full(twins); }
-// Real Login shapes the old label-only parser refused: the owner renamed the username field to "email",
+// Real Login shapes the old label-only parser refused: the user renamed the username field to "email",
 // and a custom field in another section is also labelled "password". Purpose identifies both built-ins.
 // The labelled read answers with one object (op's shape for a single match) or exits (the other way op may
 // report a missing label); both must reach the full read.

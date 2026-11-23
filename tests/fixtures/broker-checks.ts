@@ -39,7 +39,7 @@ if (scenario === 'remote-approver') {
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 fs.writeFileSync(publicPath, publicKey.export({ type: 'spki', format: 'pem' }));
 fs.writeFileSync(path.join(home, 'policy.json'), JSON.stringify({ ...(scenario === 'sessions' && mode !== 'own' ? { browser: { window: 'shared', show: 'attention' } } : {}), approvals: { ...(scenario === 'approval-wait' ? { wait_minutes: 1, grant_rules_max: 100 } : {}), ttl_minutes: scenario === 'approval-wait' ? 0.1 : scenario === 'approval' ? 0.03 : scenario === 'approval-picture' ? 0.1 : 10 }, deny: { type_into: ['input[type=password]', 'input[autocomplete=current-password]', '.sensitive'] },
-  // KEY-EFFECT: a Send button the owner remembered on one site, so Cmd+Enter in its composer can be read as that click.
+  // KEY-EFFECT: a Send button the user remembered on one site, so Cmd+Enter in its composer can be read as that click.
   ...(scenario === 'choice-gates' ? { sends: { remember: [{ site: 'https://remembered.example', kind: 'click', reason: 'verb:send' }] } } : {}) }));
 if (scenario === 'eval-overlay') fs.copyFileSync(path.join(repo, 'tests/fixtures/eval-overlay.json'), path.join(home, 'policy.json'));
 fs.writeFileSync(path.join(home, 'agent-cred'), 'agent-value-from-file\n', { mode: 0o600 });
@@ -429,7 +429,7 @@ async function dragHold(c: Client, b: Bridge) {
   assert.equal(binCard.detail, 'drag Card A at 30,30 to Trash at 31,31 over 800 ms', 'ASSERT_DROP_CARD');
   assert.equal(binCard.reason, 'verb:delete', 'ASSERT_DROP_BIN: a bin is a delete');
   pass('the-drop-target-is-judged-a-bin-is-a-delete');
-  // A drop into another document waits for the owner.
+  // A drop into another document waits for the user.
   const across = await drag({ x: 34, y: 34 });
   assert.match(across.error?.message ?? '', /one document into another/, `ASSERT_DROP_OTHER_DOCUMENT: ${JSON.stringify(across)}`);
   pass('a-drag-into-another-document-asks');
@@ -667,7 +667,7 @@ async function choiceGates(c: Client, b: Bridge) {
   await result(c, 'press', { tab: 7, key: 'Meta+Enter' });
   assert.deepEqual(b.calls.findLast(m => m.method === 'chrome.press')?.params.checkedDescription, { submitName: '', composer: ['Cancel', 'Attach file'] },
     'ASSERT_COMPOSER_BOUND: the buttons judged must still be the ones in reach');
-  // A Send button the owner remembered on this site covers Cmd+Enter in its composer, as the click it is; plain Enter keeps
+  // A Send button the user remembered on this site covers Cmd+Enter in its composer, as the click it is; plain Enter keeps
   // its own, separate scope, and a composer that also offers Pay stays held.
   b.tabs.push({ id: 20, active: false, url: 'https://remembered.example/inbox', title: 'Remembered' });
   b.control.composer = ['Send'];
@@ -735,7 +735,7 @@ async function evalOverlay(c: Client, b: Bridge) {
 }
 // AUTH-WAIT: drive the actual broker over its private socket, with fixture Chrome only.
 // EVAL-READONLY: a read reaches the page without the write flag, so the extension runs it side-effect free; a script
-// that writes is the owner's call for that exact script, every time, and never a phone or remembered permission.
+// that writes is the user's call for that exact script, every time, and never a phone or remembered permission.
 async function evalWrite(c: Client, b: Bridge) {
   const evals = () => b.calls.filter(m => m.method === 'chrome.eval');
   assert.equal((await result(c, 'eval', { tab: 7, expression: 'document.title' })).value, 'fixture-result');
@@ -855,7 +855,7 @@ async function approvalChecks(c: Client, b: Bridge) {
   assert.ok(events.events.some(e => e.event === 'approval.resolved'));
   assert.ok(!JSON.stringify(events.events).includes('PRIVATE_')); pass('state-audit-and-events-exclude-URL-query-secrets');
 }
-// TX-BIND and FRAME-BIND: an approval covers the transaction the owner saw and the document the click lands in. The
+// TX-BIND and FRAME-BIND: an approval covers the transaction the user saw and the document the click lands in. The
 // owner approves "Pay" on a form that says 10 to Alice; if the amount, the recipient or the message around that button
 // change before the agent's approved retry, or the point now lands in another site's document, the retry is refused
 // and nothing is clicked. An unchanged form, and the same document, still pass.
@@ -875,7 +875,7 @@ async function approvalBinding(c: Client, b: Bridge) {
     const held = await pending(c, await rejected(c, 'click', { tab: 7, selector: '#pay' }, 'held'));
     await result(c, 'approval.grant', { id: held.id, proof: proof(held) });
     const before = clicks();
-    // The page (or the agent) changes the amount after the owner approved.
+    // The page (or the agent) changes the amount after the user approved.
     b.control.transaction = THOUSAND;
     const stale = await c.call('click', { tab: 7, selector: '#pay', approval: held.id });
     assert.equal(stale.error?.code, 'approval-mismatch', `ASSERT_TX_BOUND: a changed amount must not spend the approval: ${JSON.stringify(stale)}`);
@@ -928,7 +928,7 @@ async function approvalBinding(c: Client, b: Bridge) {
     const swapped = await c.call('click', { tab: 7, at: { x: 15, y: 15 }, approval: held.id });
     assert.equal(swapped.error?.code, 'approval-mismatch', `ASSERT_FRAME_BOUND: another site's frame must not spend the approval: ${JSON.stringify(swapped)}`);
     assert.match(swapped.error!.message, /different document/, 'ASSERT_FRAME_BOUND: the refusal says the document changed');
-    // The same frame, reloaded (same origin, new document), is not the document the owner approved either.
+    // The same frame, reloaded (same origin, new document), is not the document the user approved either.
     b.control.pointFrame = { frameId: 42, frameUrl: 'https://js.payments.example/elements', origin: 'https://js.payments.example', documentId: 'doc-reloaded' };
     assert.equal((await c.call('click', { tab: 7, at: { x: 15, y: 15 }, approval: held.id })).error?.code, 'approval-mismatch',
       'ASSERT_FRAME_BOUND: a new document in the frame must not spend the approval');

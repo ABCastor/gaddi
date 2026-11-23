@@ -5,7 +5,7 @@
 //     (grants.ts covers, policy.ts zoneSite/uploadSite/sendRule, signin.ts signinSite); nothing here decides anything,
 //     and nothing here is signed, so it can only explain a request, never widen what an approval allows.
 //  2. Every site-scoped grant covers one exact origin (scheme, host, port): a sibling subdomain or the parent domain is
-//     another site and gets its own card. The hint names the siblings the agent was plausibly working on, so the owner
+//     another site and gets its own card. The hint names the siblings the agent was plausibly working on, so the user
 //     is not surprised later; it never names a form value, a path query or anything but hosts.
 import { registrable } from './signin.ts';
 

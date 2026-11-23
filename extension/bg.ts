@@ -264,12 +264,12 @@ async function findGroup(title: unknown, check: Check) {
   const id = await agentWindow.get(check);
   return groups.find(group => group.title === title && group.windowId === id);
 }
-// HANDOFF-SHOW: an explicit handoff (show, or open with foreground:true) must put the tab where the owner can see it.
-// Agents work in Gaddi's own window, which the owner may keep minimized; an active tab in a minimized window is still
+// HANDOFF-SHOW: an explicit handoff (show, or open with foreground:true) must put the tab where the user can see it.
+// Agents work in Gaddi's own window, which the user may keep minimized; an active tab in a minimized window is still
 // invisible, so the handoff restores that one window from minimized. Invariants: only the window holding the tab is
-// touched (no other window is restored or focused); `state: 'normal'` with no bounds keeps the owner's own size and
+// touched (no other window is restored or focused); `state: 'normal'` with no bounds keeps the user's own size and
 // position; focus itself stays the show policy's choice. Background calls (open without foreground, look, click, type)
-// never come here, so the window stays as the owner left it.
+// never come here, so the window stays as the user left it.
 async function handOff(windowId: number, update: chrome.windows.UpdateInfo, check: Check) {
   const current = await chrome.windows.get(windowId);
   check();
@@ -1458,7 +1458,7 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
         || target.target.origin !== checked.frame.origin || target.target.documentId !== checked.frame.document))
         throw new Error('That point now falls in a different document than the one checked; look again');
       // Invariant: the point still holds the control the gate named, or nothing is pressed. TX-BIND: and the transaction
-      // around it is the one the owner approved.
+      // around it is the one the user approved.
       if (checked && (target.blind || target.target.name !== checked.name
         || checked.transaction !== undefined && target.target.transaction !== checked.transaction
         || checked.href !== undefined && target.target.href !== checked.href

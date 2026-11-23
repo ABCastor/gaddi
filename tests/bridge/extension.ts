@@ -417,7 +417,7 @@ try {
   pass(`chrome.screenshot captures a ${viewportImage.width}x${viewportImage.height} JPEG at CSS size without raising the tab`);
 
   const bandsTab = (await call('chrome.open', { url: `${url}bands.html` })).id;
-  // Test setup through an approved writing script (EVAL-READONLY): the broker sets write only after the owner's approval.
+  // Test setup through an approved writing script (EVAL-READONLY): the broker sets write only after the user's approval.
   const bandViewport = (await call('chrome.eval', { tab: bandsTab, write: true,
     expression: 'scrollTo(0, 1200); ({ width: innerWidth, height: innerHeight, contentHeight: document.documentElement.scrollHeight, y: scrollY })' })).value as { width: number; height: number; contentHeight: number; y: number };
   assert.equal(bandViewport.y, 1200, 'fixture scrolled by exactly one band');

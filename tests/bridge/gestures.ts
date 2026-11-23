@@ -11,7 +11,7 @@ declare global {
   }
 }
 
-// DRAG-HOLD in a real page: a drag and a press-and-hold are the owner's own pointer, through Chrome's debugger
+// DRAG-HOLD in a real page: a drag and a press-and-hold are the user's own pointer, through Chrome's debugger
 // (Input.dispatchMouseEvent, as a point click), in a tab nobody has in front. The broker gates them
 // (tests/gates/click-verbs.test.sh); here the input itself is held to what the page saw.
 export async function gestureChecks({ context, daemon, url, pass }: {

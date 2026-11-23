@@ -43,7 +43,7 @@ A local bot on your Mac, such as a Telegram bot, can answer the same small set o
 
 ### Where that protection ends
 
-Gaddi guards its own calls. An agent with shell access can act outside it. Policy matches control names and URLs, mainly in English and Italian; it can miss harmful actions. `eval` is read-only: the JavaScript engine stops any side effect, and a script that writes needs the owner's approval of that exact script ([page scripts](docs/authorization.md#page-scripts)). Pages can send requests on their own.
+Gaddi guards its own calls. An agent with shell access can act outside it. Policy matches control names and URLs, mainly in English and Italian; it can miss harmful actions. `eval` is read-only: the JavaScript engine stops any side effect, and a script that writes needs the user's approval of that exact script ([page scripts](docs/authorization.md#page-scripts)). Pages can send requests on their own.
 
 Private information visible in logged-in tabs goes to your agent. The extension needs broad site, debugger, bookmark and extension-management access. Review the [default policy](policy/policy.default.json) and [bridge limits](extension/README.md).
 

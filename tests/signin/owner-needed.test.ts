@@ -1,4 +1,4 @@
-// OWNER-NEEDED through the real broker: a sign-in that hands back needs_you because only the owner can act emits one
+// OWNER-NEEDED through the real broker: a sign-in that hands back needs_you because only the user can act emits one
 // owner.needed event with fixed fields, rate-limited per tab and step, withdrawn when the tab closes (through Gaddi or
 // in Chrome), the agent's session ends, the same tab later signs in, Chrome reattaches or the notice expires; ordinary
 // work emits nothing. Fake op and a fake bridge only: no browser, no real login, no real 1Password. Canary strings
@@ -140,7 +140,7 @@ async function grantRemember() {
 }
 const settle = () => delay(150);
 try {
-  // Answers the agent handles itself never ask the owner, whatever the outcome or reason.
+  // Answers the agent handles itself never ask the user, whatever the outcome or reason.
   const quiet: SigninResult[] = [
     { outcome: 'no_login', site, reason: 'No matching login' }, { outcome: 'choose', site, reason: '["a","b"]' },
     { outcome: 'failed', site, reason: 'Sign-in unavailable or site refused' }, { outcome: 'filled', site }, { outcome: 'submitted', site },
@@ -180,7 +180,7 @@ try {
     assert.equal(needed().length, 0, 'ASSERT_OWNER_QUIET: look and an approval hold emit no owner notice');
     pass('ordinary look and a held sign-in (the card already asks) emit no owner notice');
 
-    // A security key after the password: the agent hears needs_you, the owner gets one notice with fixed fields.
+    // A security key after the password: the agent hears needs_you, the user gets one notice with fixed fields.
     const keyed = await signin(7);
     assert.equal(keyed.outcome, 'needs_you'); assert.equal(keyed.reason, 'Additional verification required');
     await settle();
@@ -215,7 +215,7 @@ try {
     assert.equal(withdrawn(first.id).length, 0, 'ASSERT_OWNER_ACK_NOT_SUCCESS: the click does not end the notice');
     pass('owner.show shows the notice\'s tab; the next signin still judges the page (needs_you), the notice stays');
 
-    // The owner touched the key: the same tab now signs in, and the notice is withdrawn.
+    // The user touched the key: the same tab now signs in, and the notice is withdrawn.
     reset(7, 'ok');
     assert.equal((await signin(7)).outcome, 'signed_in');
     await settle();
@@ -242,7 +242,7 @@ try {
     assert.equal(withdrawn(lockNotice.id)[0]?.data.why, 'closed', 'ASSERT_OWNER_WITHDRAW_CLOSED: withdrawn by the close itself, not a later sweep');
     pass('locked 1Password: notice on its tab with step credentials; closing the tab through Gaddi withdraws it');
 
-    // The owner closes the tab in Chrome itself: the broker's sweep notices and withdraws.
+    // The user closes the tab in Chrome itself: the broker's sweep notices and withdraws.
     reset(9, 'key');
     await signin(9); await settle();
     const gone = needed(9)[0]?.data;

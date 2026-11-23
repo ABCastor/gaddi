@@ -11,7 +11,7 @@ type Facts = Record<string, unknown>;
 
 // TX-BIND and FRAME-BIND in a real page. The broker binds what describe reports (tests/gates/approval-binding.test.sh);
 // here the facts themselves, and the extension's last check before it presses, are held to the page. The fake daemon
-// plays the broker: it hands back, as checkedDescription, exactly the facts describe gave when the owner approved.
+// plays the broker: it hands back, as checkedDescription, exactly the facts describe gave when the user approved.
 export async function bindingChecks({ context, daemon, url, frames, pass }: {
   context: BrowserContext; daemon: FakeDaemon; url: string; frames: { first: string; second: string }; pass: (label: string) => void;
 }) {
@@ -45,7 +45,7 @@ export async function bindingChecks({ context, daemon, url, frames, pass }: {
     return { x: Math.round(box.x + box.width / 2), y: Math.round(box.y + box.height / 2) };
   };
 
-  // The exploit first. The owner approved "Pay" on 10 to Alice; the amount becomes 1000 before the approved click.
+  // The exploit first. The user approved "Pay" on 10 to Alice; the amount becomes 1000 before the approved click.
   const approved = await describe({ selector: '#pay' });
   await set('#amount', '1000');
   const changed = await daemon.request('chrome.click', { tab, selector: '#pay', checkedDescription: bound(approved) });

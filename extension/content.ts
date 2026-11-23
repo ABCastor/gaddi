@@ -334,7 +334,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
   // KEY-EFFECT: in a text field, Cmd/Ctrl+Enter is the composer's send. Invariant: the names of every visible button in the
   // nearest form, else the nearest dialog, around a focused text field (shadow roots included); [] for any other focus.
   // The broker judges each as its click would be, and this fact can only add a hold: a page that hides its Send button
-  // from this list hides it from the owner's screen too, and then Enter-submits and the site table still apply.
+  // from this list hides it from the user's screen too, and then Enter-submits and the site table still apply.
   function composerButtons(el: PageElement): string[] {
     const role = roleOf(el);
     if (el.tagName !== 'TEXTAREA' && !['textbox', 'searchbox', 'combobox', 'spinbutton'].includes(role)) return [];

@@ -2,8 +2,8 @@ import crypto from 'node:crypto';
 import type { SigninResult } from '../shared/protocol.ts';
 import { PASSWORD_UNAVAILABLE } from './signin.ts';
 
-// OWNER-NEEDED: a sign-in that hands back `needs_you` because only the owner can act (a security key, a passkey, a
-// phone prompt, a code, a challenge the helper does not answer, a locked 1Password) tells the owner directly instead of
+// OWNER-NEEDED: a sign-in that hands back `needs_you` because only the user can act (a security key, a passkey, a
+// phone prompt, a code, a challenge the helper does not answer, a locked 1Password) tells the user directly instead of
 // only telling the agent. Invariants:
 // - The event carries the tab, the site's origin, a step from a closed list and a reason from a fixed table. Never a
 //   URL path or query, a username, an item title, page text or any secret: nothing the agent or the page wrote.
@@ -27,7 +27,7 @@ const REASONS: Record<string, string> = {
 };
 const STEPS = new Set(['probe', 'credentials', 'username', 'password', 'complete', 'otp', '1password']);
 
-/** The fixed reason a sign-in result asks the owner for, or undefined when it needs nothing from them. */
+/** The fixed reason a sign-in result asks the user for, or undefined when it needs nothing from them. */
 export function ownerReason(result: SigninResult): string | undefined {
   if (result.outcome !== 'needs_you' || result.step === 'approval' || result.step === 'submit') return undefined;
   const reason = result.reason ?? '';
@@ -49,7 +49,7 @@ export function createOwnerNotices({ emit, ttlMs = 10 * 60_000, limit = 20, now 
     emit('owner.withdrawn', { id, tab: notice.tab, why });
   }
   function sweep() { for (const [id, notice] of live) if (notice.expires <= now()) end(id, 'expired'); }
-  /** After a sign-in call: notice the owner, withdraw on signed_in, or do nothing. Returns the notice emitted, if any. */
+  /** After a sign-in call: notice the user, withdraw on signed_in, or do nothing. Returns the notice emitted, if any. */
   function signin(tab: number, result: SigninResult, session?: string): OwnerNotice | undefined {
     sweep();
     if (result.outcome === 'signed_in') { for (const [id, notice] of live) if (notice.tab === tab) end(id, 'signed_in'); return undefined; }
@@ -59,7 +59,7 @@ export function createOwnerNotices({ emit, ttlMs = 10 * 60_000, limit = 20, now 
     // Only an origin the card would show: http(s), no path, query or credentials.
     if (!reason || !origin || origin !== result.site || !/^https?:\/\//.test(origin) || !Number.isSafeInteger(tab) || tab < 0) return undefined;
     const step = result.step && STEPS.has(result.step) ? result.step : 'signin';
-    // Rate limit: a live notice for this tab and step already asks; repeating it would only spam the owner.
+    // Rate limit: a live notice for this tab and step already asks; repeating it would only spam the user.
     for (const notice of live.values()) if (notice.tab === tab && notice.step === step) return undefined;
     if (live.size >= limit) end(live.keys().next().value!, 'replaced');
     const expires = now() + ttlMs;
@@ -74,7 +74,7 @@ export function createOwnerNotices({ emit, ttlMs = 10 * 60_000, limit = 20, now 
   }
   return {
     signin,
-    /** The notice the owner clicked, while it is still live. */
+    /** The notice the user clicked, while it is still live. */
     get(id: unknown) { sweep(); return typeof id === 'string' ? live.get(id) : undefined; },
     list() { sweep(); return [...live.values()].map(publicNotice); },
     closed(tabs: Iterable<unknown>) { const gone = new Set(tabs); for (const [id, notice] of live) if (gone.has(notice.tab)) end(id, 'closed'); },

@@ -12,7 +12,7 @@ import { requireHeadless, watchHeadless } from './background.ts';
 
 // HANDOFF-SHOW against a real Chrome for Testing with the unpacked extension and real native host.
 // Agents work in Gaddi's own window, created minimized. An explicit handoff (show, foreground open) must make the
-// tab visible: the window that holds it leaves the minimized state with that tab active, keeping the owner's own
+// tab visible: the window that holds it leaves the minimized state with that tab active, keeping the user's own
 // size and position. Ordinary background work (open, look, click, type) leaves every window as it was: still
 // minimized, unfocused, no other window restored or focused. The oracle is Chrome's own chrome.windows state,
 // read from the extension's service worker, never the extension's return values.
@@ -51,7 +51,7 @@ const mutations: Record<string, [string | RegExp, string]> = {
   // The handoff restores every window, not only the one holding the tab.
   OTHER: ['await chrome.windows.update(windowId, { ...(current.state',
     'for (const other of await chrome.windows.getAll()) await chrome.windows.update(other.id, { ...(current.state'],
-  // The restore replaces the owner's own size and position with fixed bounds.
+  // The restore replaces the user's own size and position with fixed bounds.
   BOUNDS: ["{ state: 'normal' }", "{ state: 'normal', left: 0, top: 0, width: 640, height: 480 }"],
 };
 try {
@@ -111,7 +111,7 @@ try {
   };
   const settle = () => new Promise(resolve => setTimeout(resolve, 400));
 
-  // The owner's own window, with their page in front, and an unrelated second window they minimized.
+  // The user's own window, with their page in front, and an unrelated second window they minimized.
   const ownerPage = context.pages()[0] ?? await context.newPage();
   await ownerPage.goto(`${site}/owner.html`);
   const owner = await worker.evaluate(async () => {
@@ -150,7 +150,7 @@ try {
   }
   pass('background open/look/click/type: Gaddi window stays minimized and unfocused, unrelated window untouched');
 
-  // The owner once gave Gaddi's window their own size and position, then minimized it.
+  // The user once gave Gaddi's window their own size and position, then minimized it.
   await worker.evaluate(async windowId => {
     await chrome.windows.update(windowId, { state: 'normal' });
     await chrome.windows.update(windowId, { left: 120, top: 90, width: 900, height: 640 });
@@ -179,7 +179,7 @@ try {
   }
   pass('show from minimized: Gaddi window restored with the owner\'s bounds, the shown tab active, unrelated window untouched');
 
-  // After the handoff, background work again leaves the window as the owner left it.
+  // After the handoff, background work again leaves the window as the user left it.
   await minimize(gaddi);
   const later = await call<{ id: number; windowId: number }>('chrome.open', { url: `${site}/quiet.html` });
   await call('chrome.read', { tab: later.id });

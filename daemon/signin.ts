@@ -175,7 +175,7 @@ export async function listLogins(): Promise<LoginItem[]> {
   } catch (error) { return rethrow(error, 'list-malformed', '1Password login list failed'); }
 }
 // 1Password marks a Login's built-in fields by purpose (USERNAME, PASSWORD), whatever their label says:
-// the owner can rename "username" to "email", and a custom field elsewhere in the item can also be
+// the user can rename "username" to "email", and a custom field elsewhere in the item can also be
 // labelled "password". So pick each field by purpose; only a field without a purpose (an older export or
 // a hand-made fixture) is matched by its exact label or ID. The parsed item stays in these functions and
 // is never logged; only the two chosen values leave them.

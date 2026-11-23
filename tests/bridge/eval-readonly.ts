@@ -177,7 +177,7 @@ try {
     plan: false, n: 1, stored: 0, cookie: '', frames: 1, html: 'hello <span>world</span>' } }, 'ASSERT_EVAL_BYPASS_REFUSED');
   passed++; console.log(`PASS eval bypass: ${vectors.length} ways to act are refused as read-only and nothing reached the page or the server`);
 
-  // Control: the oracle sees a script that acts. With write (only the broker sets it, after the owner approved this
+  // Control: the oracle sees a script that acts. With write (only the broker sets it, after the user approved this
   // exact script) the same click does reach the page, its handler calls home and the form posts.
   await evaluate("document.querySelector('#pay').click()", true);
   await waitFor(() => arrived.includes('POST /hit?click') && arrived.includes('POST /submitted'), 'the approved script acted', 5000)
