@@ -34,7 +34,7 @@ type FixturePageResult = PageResult | ((action: string, params: ChromeParams) =>
 interface FixtureNode {
   tagName: string; type?: string; isConnected: boolean; labels: { textContent: string }[];
   childNodes: { nodeType: number; textContent: string }[]; tabIndex: number;
-  getAttribute(name: string): string | null; hasAttribute(name: string): boolean;
+  getAttribute(name: string): string | null; hasAttribute(name: string): boolean; querySelectorAll?(selector: string): unknown[];
   closest(selector: string): FixtureNode | FixtureForm | null; matches(selector: string): boolean;
   getRootNode(): FixtureDocument; getClientRects(): object[]; scrollIntoView(): void; focus(): void;
   form?: FixtureForm | null; shadowRoot?: { querySelectorAll(): { type: string }[] } | null;
@@ -1302,6 +1302,8 @@ node = { tagName: 'INPUT', isConnected: true, labels: [label], childNodes: [], t
   get type() { return inputType; }, getAttribute(name) { return attributes.get(name) || null; },
   hasAttribute(name) { return attributes.has(name); }, closest() { return null; },
   matches() { return false; }, getRootNode() { return doc; }, getClientRects() { return [{}]; },
+  // CONTAINER-VERB counts the controls inside the target; a real input element answers with none.
+  querySelectorAll() { return []; },
   // Every real Element has a box; read reports it as the control's position.
   getBoundingClientRect: () => ({ x: 0, y: 0, width: 100, height: 50, left: 0, right: 100, top: 0, bottom: 50 }),
   scrollIntoView() {}, focus() { doc.activeElement = node; if (focusMutation) inputType = 'password'; },
