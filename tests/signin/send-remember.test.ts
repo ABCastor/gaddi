@@ -148,7 +148,7 @@ try {
         if (request.id === 'attach') continue;
         bridgeCalls.push(request.method);
         const value = request.method === 'chrome.tabs' ? { tabs: [{ id: 7, url: page, title: 'Fixture' }] }
-          : request.method === 'chrome.describe' ? { name, tag: 'BUTTON', href: '', selector: '@abcdef:1', submitName: focus, committed: null, keyChoices: [], spaceName: '' }
+          : request.method === 'chrome.describe' ? { name, tag: 'BUTTON', href: '', selector: '@abcdef:1', submitName: focus, committed: null, keyChoices: [], spaceName: '', transaction: '' }
           : request.method === 'chrome.press' ? { pressed: true }
           : request.method === 'chrome.click' ? { clicked: true } : {};
         bridge.write(JSON.stringify({ id: request.id, result: value }) + '\n');

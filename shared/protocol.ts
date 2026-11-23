@@ -93,11 +93,19 @@ export interface Reply<T = unknown> { id: RequestId; result?: T; error?: WireErr
 export interface TabInfo { id?: number; tabId?: number; tab?: number; url?: string; title?: string; active?: boolean; group?: string; groupId?: number; windowId?: number; index?: number; frozen?: boolean; discarded?: boolean }
 // What the gate judged, bound to the action: the page must still say the same when the input goes in.
 export interface CheckedDescription { name?: string; href?: string; submitName?: string;
-  chosen?: string[]; committed?: string[] | null; keyChoices?: string[]; spaceName?: string; enterCommits?: string[]; spaceCommits?: string[] }
+  chosen?: string[]; committed?: string[] | null; keyChoices?: string[]; spaceName?: string; enterCommits?: string[]; spaceCommits?: string[];
+  // TX-BIND: the page's digest of the transaction around the control (content.ts transactionDigest). The broker binds
+  // only a keyed digest of it; this raw digest goes to the extension's last check only.
+  transaction?: string;
+  // FRAME-BIND: the document a point click lands in (Chrome frame id, 0 for the tab itself; its origin; Chrome's
+  // document id), and the origin of the embedded document a selector click acts in.
+  frame?: { id: number; origin: string; document: string }; origin?: string }
 // The gate facts beyond a control's own name (policy.ts): SELECT-CHOICE `chosen` is the option a select's value picks;
 // COMMIT-CHOICES `committed` (a button), `enterCommits` and `spaceCommits` (a key) are the choices that are on where it
 // acts; KEY-CHOICE `keyChoices` is everything a key on the focused element could pick and `spaceName` what Space presses.
-export interface GateFacts { chosen?: string[]; committed?: string[] | null; keyChoices?: string[]; spaceName?: string; enterCommits?: string[]; spaceCommits?: string[] }
+export interface GateFacts { chosen?: string[]; committed?: string[] | null; keyChoices?: string[]; spaceName?: string; enterCommits?: string[]; spaceCommits?: string[];
+  // TX-BIND: the digest of the transaction the control belongs to; '' when it belongs to none.
+  transaction?: string }
 export interface ElementDescription {
   name?: string; tag?: string; type?: string; autocomplete?: string;
   href?: string; submitName?: string; matched?: string[]; selector?: string;
@@ -112,6 +120,9 @@ export interface PointTarget {
   selector: string; name: string; tag: string; role: string; choice: boolean; href: string;
   type: string; autocomplete: string; submitName: string; secret: boolean; disabled: boolean;
   signature: string; committed: string[] | null;
+  // TX-BIND: the transaction digest around the control; FRAME-BIND: this document's origin, and Chrome's id for it
+  // (added by bg.ts from the injection result, which the page cannot forge).
+  transaction: string; origin: string; documentId?: string;
   // The point's element and its ancestors, as document references: a caller can tell whether the
   // point is the control it measured or sits inside it (an icon inside a button).
   chain: string[];
@@ -154,7 +165,7 @@ export interface PageResults {
   captureBox: { box: ImageBox; clip: ImageBox; pixelRatio: number; selector: string; beyondViewport: boolean };
   animationSpeed: { animationSpeed: number | undefined };
   describe: Required<ElementDescription> & GateFacts & { role: string; password: boolean; disabled: boolean;
-    frameId?: number; frameUrl?: string; blind?: boolean };
+    frameId?: number; frameUrl?: string; blind?: boolean; origin?: string; documentId?: string };
   // What a point lands on inside one document: the gate's facts, plus the embedded
   // document's content box when the point falls on a frame (bg.ts follows it inwards).
   pointTarget: PointTarget;

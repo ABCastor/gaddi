@@ -41,6 +41,9 @@ export function approvalContext(caller: unknown, params: { why?: unknown; contex
 // state.json and cannot reach publicView. It holds the full page address because a query can make a page
 // protected, and the raw hold reason, accessible name and link destination the grant scan reads.
 export interface RemoteFacts { pageURL: string; reason?: string; scope: GrantScope }
+// TX-BIND and FRAME-BIND: the parts of an action's binding a refusal can name. Already keyed by the broker (the
+// transaction is an HMAC under a per-run key), so nothing here reveals a value. Kept in memory only, like RemoteFacts.
+export interface Binding { transaction?: unknown; frame?: unknown; origin?: unknown }
 export type Emit = (event: string, data: unknown) => void;
 export type ApprovalAction = { method: string; caller: string; url: string; [key: string]: unknown };
 // Persisted JSON is retained verbatim. Only its action binding was historically required.
@@ -96,6 +99,9 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
   const facts = new WeakMap<StoredApproval, RemoteFacts>();
   // AUTH-WAIT: monotonic deadlines prevent a backward wall-clock correction extending authority.
   const deadlines = new WeakMap<StoredApproval, number>();
+  // TX-BIND and FRAME-BIND: what each live record bound, so a refused retry can say what changed. The action hash
+  // alone decides; this only explains. A restored record has none and is refused with the plain mismatch.
+  const bindings = new WeakMap<StoredApproval, Binding>();
   const activeCount = () => [...entries.values()].filter(a => a.status === 'pending' || a.status === 'granted').length;
   // Every record that leaves this module goes through here: what publicView shows, plus, while the user's other
   // device may answer it, `remote: true` and the digest that device signs. Computed on every call from the live
@@ -199,7 +205,7 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
     expire();
     return [...entries.values()].find(a => a.status === 'pending' && a.actionHash === actionHash(action) && a.targetSelector === targetSelector);
   }
-  function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false, grant, remoteFacts, extendedWait = false, context }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; remoteFacts?: RemoteFacts; extendedWait?: boolean; context?: ApprovalContext }) {
+  function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false, grant, remoteFacts, extendedWait = false, context, binding }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; remoteFacts?: RemoteFacts; extendedWait?: boolean; context?: ApprovalContext; binding?: Binding }) {
     expire();
     const hash = actionHash(action);
     const existing = pendingFor(action, targetSelector);
@@ -223,6 +229,7 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
     deadlines.set(a, performance.now() + (extendedWait ? waitMinutes : ttlMinutes) * 60000);
     // Attached before the event goes out, so the first announcement already says whether it can be answered remotely.
     if (remoteFacts) facts.set(a, remoteFacts);
+    if (binding) bindings.set(a, binding);
     const recent = [...entries.values()].filter(x => !(x.status === 'pending' || x.status === 'granted'));
     for (const old of recent.slice(0, Math.max(0, recent.length - 40))) entries.delete(old.id);
     onChange();
@@ -247,9 +254,19 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
   }
   // Invariant: authority is signed, single use, and bound to the caller, resolved tab,
   // current page, and full action (queries included only in its hash). Files grant nothing.
-  function consume(id: unknown, action: ApprovalAction, targetSelector?: string) {
+  // TX-BIND and FRAME-BIND: the hash covers the transaction digest and the acting document, so an approval spent after
+  // either changed is refused here, before anything reaches the page.
+  function consume(id: unknown, action: ApprovalAction, targetSelector?: string, binding?: Binding) {
     const a = get(id);
-    if (a.actionHash !== actionHash(action)) throw new GateError('approval-mismatch', `approval ${id} is for a different action`);
+    if (a.actionHash !== actionHash(action)) {
+      const was = bindings.get(a), same = (key: keyof Binding) => JSON.stringify(was?.[key]) === JSON.stringify(binding?.[key]);
+      // Another document is named first: its transaction is then another one too.
+      if (was && binding && !(same('frame') && same('origin'))) throw new GateError('approval-mismatch', `approval ${id} no longer matches: `
+        + 'the action now falls in a different document (another site, or the page reloaded) than the one approved, so nothing was done; look again and ask for a new approval');
+      if (was && binding && !same('transaction')) throw new GateError('approval-mismatch', `approval ${id} no longer matches: the details `
+        + 'around that control (amount, recipient, message) changed since it was approved, so nothing was done; look again and ask for a new approval');
+      throw new GateError('approval-mismatch', `approval ${id} is for a different action`);
+    }
     if (a.targetSelector !== undefined && a.targetSelector !== targetSelector) throw new GateError('approval-mismatch', `approval ${id} is for a different element`);
     if (a.status === 'pending') throw new GateError('held', `approval ${id} still pending`, approvalRef(a));
     if (a.status === 'denied') throw new GateError('denied', `approval ${id} was denied`);

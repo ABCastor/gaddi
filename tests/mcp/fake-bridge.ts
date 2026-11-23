@@ -55,7 +55,7 @@ export async function fakeBridge(socket: string) {
           const selector = msg.params.selector;
           result = { name: selector === '#pay' ? 'Pay now' : 'Read more',
             tag: selector === '#password' ? 'input' : 'button', type: selector === '#password' ? 'password' : 'button',
-            autocomplete: '', href: '', submitName: controls.focusSubmit, matched: [], committed: null, keyChoices: [], spaceName: '',
+            autocomplete: '', href: '', submitName: controls.focusSubmit, matched: [], committed: null, keyChoices: [], spaceName: '', transaction: '',
             ...(typeof msg.params.value === 'string' ? { chosen: ['Fixture option'] } : {}) };
           break;
         }

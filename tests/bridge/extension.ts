@@ -40,6 +40,7 @@ import { uploadChecks } from './upload.ts';
 import { hscrollChecks } from './hscroll.ts';
 import { frameChecks } from './frames.ts';
 import { choiceChecks } from './choices.ts';
+import { bindingChecks } from './binding.ts';
 import { sandboxBandChecks } from './sandbox-band.ts';
 
 const repo = fileURLToPath(new URL('../..', import.meta.url));
@@ -115,6 +116,17 @@ try {
     const source = fs.readFileSync(contentFile, 'utf8');
     assert.ok(source.includes(marker), `${mode} gate-fact mutation point exists`);
     fs.writeFileSync(contentFile, source.replace(marker, `${marker} return [];`));
+  }
+  // TX-BIND and FRAME-BIND: each last check before a press, and the churn the digest leaves out, must be able to fail.
+  for (const [mode, file, marker, replacement] of [
+    ['tx-check', contentFile, ", 'transaction' /* TX_CHECK_TEST_POINT */", ''],
+    ['tx-churn', contentFile, '/* TX_CHURN_TEST_POINT */', "&& '[data-gaddi-no-churn]'"],
+    ['frame-check', path.join(extension, 'dist/extension/bg.js'), 'if (checked?.frame && (', 'if (false && ('],
+  ] as const) {
+    if (process.env.GADDI_BRIDGE_BREAK_BINDING !== mode) continue;
+    const source = fs.readFileSync(file, 'utf8');
+    assert.equal(source.split(marker).length, 2, `${mode} binding mutation point exists once`);
+    fs.writeFileSync(file, source.replace(marker, replacement));
   }
   if (process.env.GADDI_BRIDGE_BREAK_PRE_SCROLL_SIGNATURE === '1') {
     const source = fs.readFileSync(contentFile, 'utf8');
@@ -259,7 +271,7 @@ try {
       return;
     }
     const file = (req.url?.split(/[?#]/)[0] || '').replace(/^\//, '');
-    const filename = ['autonomy.html', 'foreign.html', 'upload.html', 'version.html', 'approval.html', 'state.html', 'actions.html', 'hscroll.html', 'frames.html', 'choices.html', 'input.html', 'popups.html', 'busy.html', 'bands.html', 'next.html'].includes(file)
+    const filename = ['autonomy.html', 'foreign.html', 'upload.html', 'version.html', 'approval.html', 'state.html', 'actions.html', 'hscroll.html', 'frames.html', 'choices.html', 'binding.html', 'input.html', 'popups.html', 'busy.html', 'bands.html', 'next.html'].includes(file)
       ? file : req.url === '/' ? 'index.html' : null;
     if (!filename) { res.writeHead(404); res.end(); return; }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -270,9 +282,11 @@ try {
   // Embedded documents come from two further origins (localhost, and a second port on
   // 127.0.0.1), so each frame is cross-origin exactly as a third-party embed is.
   innerServer = http.createServer((req, res) => {
-    if (req.url?.split(/[?#]/)[0] !== '/iframe.html') { res.writeHead(404); res.end(); return; }
+    const route = req.url?.split(/[?#]/)[0];
+    // FRAME-BIND: the payment frame is served by two origins, so one can take the other's place.
+    if (route !== '/iframe.html' && route !== '/pay-frame.html') { res.writeHead(404); res.end(); return; }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.end(fs.readFileSync(path.join(fixtures, 'iframe.html')));
+    res.end(fs.readFileSync(path.join(fixtures, route.slice(1))));
   });
   await new Promise<void>(resolve => innerServer!.listen(0, '127.0.0.1', resolve));
   const innerBase = `http://localhost:${(innerServer.address() as AddressInfo).port}`;
@@ -280,13 +294,16 @@ try {
   // nested document too, so the point has to cross two documents to reach either.
   farServer = http.createServer((req, res) => {
     const route = req.url?.split(/[?#]/)[0];
-    const name = route === '/vendor/recaptcha/anchor' ? 'recaptcha.html' : route === '/nested.html' ? 'nested.html' : null;
+    const name = route === '/vendor/recaptcha/anchor' ? 'recaptcha.html' : route === '/nested.html' ? 'nested.html'
+      : route === '/pay-frame.html' ? 'pay-frame.html' : null;
     if (!name) { res.writeHead(404); res.end(); return; }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
     res.end(fs.readFileSync(path.join(fixtures, name)));
   });
   await new Promise<void>(resolve => farServer!.listen(0, '127.0.0.1', resolve));
   const farBase = `http://127.0.0.1:${(farServer.address() as AddressInfo).port}`;
+  // FRAME-BIND: one payment frame, and another site's copy of it.
+  const payFrames = { first: `${innerBase}/pay-frame.html`, second: `${farBase}/pay-frame.html` };
   const inner = `${innerBase}/iframe.html?challenge=${encodeURIComponent(`${farBase}/vendor/recaptcha/anchor`)}`
     + `&nested=${encodeURIComponent(`${farBase}/nested.html`)}`;
   const launchOptions = {
@@ -749,6 +766,8 @@ try {
       await frameChecks({ context, daemon, url, inner, pass });
     } else if (process.env.GADDI_CHOICES_ONLY === '1') {
       await choiceChecks({ context, daemon, url, pass });
+    } else if (process.env.GADDI_BINDING_ONLY === '1') {
+      await bindingChecks({ context, daemon, url, frames: payFrames, pass });
     } else {
     await approvalPicture({ context, daemon, url, pass, captureDirectory: path.join(repo, 'tests/.state/context-captures-native') });
     await typeReplacement({ context, daemon, url, pass });
@@ -766,6 +785,7 @@ try {
     await hscrollChecks({ context, daemon, url, pass });
     await frameChecks({ context, daemon, url, inner, pass });
     await choiceChecks({ context, daemon, url, pass });
+    await bindingChecks({ context, daemon, url, frames: payFrames, pass });
     await sandboxBandChecks({ context, daemon, url, pass });
     }
     await browser.close();

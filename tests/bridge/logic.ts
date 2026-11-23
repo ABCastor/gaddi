@@ -1360,7 +1360,7 @@ const makeButton = (name: string): FixtureNode => ({ ...node, tagName: 'BUTTON',
 const preview = makeButton('Preview');
 const pay = makeButton('Pay');
 // A real form is a ParentNode too: the gates look for ARIA choices inside it (COMMIT-CHOICES).
-const form = { elements: [preview, pay], querySelectorAll: () => [] };
+const form = { tagName: 'FORM', elements: [preview, pay], childNodes: [], querySelectorAll: () => [] };
 pay.form = form;
 pay.closest = selector => selector === 'form' ? form : selector === 'a[href]' ? null : pay;
 doc.activeElement = pay;

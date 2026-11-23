@@ -355,6 +355,9 @@ async function onPage(tab, action, params = {}, check) {
         throw new Error('Page script returned no result');
     if (response.result?.__gaddiError)
         throw Object.assign(new Error(response.result.__gaddiError), response.result.__gaddiCode === 'stale' ? { code: 'stale' } : {});
+    // FRAME-BIND: which document answered comes from Chrome, not from the page, so a page cannot claim another's identity.
+    if (action === 'pointTarget')
+        return { ...response.result, documentId: response.documentId };
     // pageTask checks each producer against the same action-specific contract.
     return response.result;
 }
@@ -1444,7 +1447,9 @@ async function dispatchAction({ method, params = {} }, scope) {
                 return { ...result, selector: target.selector, name: target.name, tag: target.tag, type: target.type,
                     autocomplete: target.autocomplete, href: target.href, submitName: target.submitName, matched: [], role: target.role,
                     password: target.secret, disabled: target.disabled, choice: target.choice,
-                    committed: target.committed,
+                    committed: target.committed, transaction: target.transaction,
+                    // FRAME-BIND: the document the point landed in, which the broker binds and the click checks again.
+                    origin: target.origin, ...(target.documentId ? { documentId: target.documentId } : {}),
                     ...(resolved.frameId !== undefined ? { frameId: resolved.frameId } : {}),
                     ...(resolved.frameUrl ? { frameUrl: resolved.frameUrl } : {}), ...(resolved.blind ? { blind: true } : {}) };
             }
@@ -1652,8 +1657,16 @@ async function dispatchAction({ method, params = {} }, scope) {
             return trusted(async (send) => {
                 const at = params.at, checked = params.checkedDescription;
                 const target = await resolvePoint(tab, at, check);
-                // Invariant: the point still holds the control the gate named, or nothing is pressed.
+                // FRAME-BIND invariant: the point still falls in the very document the gate judged (the same Chrome frame, the
+                // same origin, the same document), or nothing is pressed. Another site's frame, or the frame reloaded, at the same
+                // spot with a button of the same name is another click, so it needs its own approval.
+                if (checked?.frame && (target.blind || (target.frameId ?? 0) !== checked.frame.id /* FRAME_CHECK_TEST_POINT */
+                    || target.target.origin !== checked.frame.origin || target.target.documentId !== checked.frame.document))
+                    throw new Error('That point now falls in a different document than the one checked; look again');
+                // Invariant: the point still holds the control the gate named, or nothing is pressed. TX-BIND: and the transaction
+                // around it is the one the owner approved.
                 if (checked && (target.blind || target.target.name !== checked.name
+                    || checked.transaction !== undefined && target.target.transaction !== checked.transaction
                     || checked.href !== undefined && target.target.href !== checked.href
                     || checked.committed !== undefined && JSON.stringify(target.target.committed ?? null) !== JSON.stringify(checked.committed)))
                     throw new Error('What sits at that point changed since it was checked; look again');

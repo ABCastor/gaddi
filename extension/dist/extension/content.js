@@ -346,6 +346,8 @@ export async function pageTask(action, params = {}) {
             const enterFrom = activationTarget && roleOf(activationTarget) !== 'link' && activationTarget.tagName !== 'SUMMARY' ? activationTarget
                 : el.form ? el : undefined;
             return {
+                // TX-BIND: a digest of the transaction this control acts on (its form, dialog or composer); '' when it is in none.
+                transaction: transactionDigest(interactive),
                 // SELECT-CHOICE: the option this value picks (the first with that value, as the page's own select does).
                 ...(el.tagName === 'SELECT' && typeof params.value === 'string' ? { chosen: chosen ? optionNames(chosen) : [] } : {}),
                 // COMMIT-CHOICES: a button commits the choices that are on in its form (or dialog, or page); null is not a button.
@@ -512,17 +514,143 @@ export async function pageTask(action, params = {}) {
             const checked = params.checkedDescription;
             if (!checked)
                 return;
-            const facts = ['chosen', 'committed', 'keyChoices', 'spaceName', 'enterCommits', 'spaceCommits'];
+            // FRAME-BIND: a control checked inside an embedded document is pressed only while that document is still the same site.
+            if (checked.origin !== undefined && checked.origin !== location.origin)
+                throw new Error('That control is now in a different document than the one checked; look again');
+            const facts = ['chosen', 'committed', 'keyChoices', 'spaceName', 'enterCommits', 'spaceCommits', 'transaction' /* TX_CHECK_TEST_POINT */];
             // The page around the control is read again only when the gate judged it.
             const current = { ...describe(el), ...(facts.some(key => key in checked) ? gateFacts(el) : {}) };
             if (enter ? 'submitName' in checked && current.submitName !== checked.submitName : current.name !== checked.name || current.href !== checked.href)
                 throw new Error('Element changed since it was checked; look again');
             // SELECT-CHOICE, COMMIT-CHOICES, KEY-CHOICE: the option, the choices a commit sends and what a key can pick are
-            // bound as the gate judged them; a page that swaps one in afterwards gets nothing done.
+            // bound as the gate judged them; a page that swaps one in afterwards gets nothing done. TX-BIND: so is the digest of
+            // the transaction around the control, so an amount, recipient or message changed after approval stops the input.
             for (const key of facts) {
                 if (key in checked && JSON.stringify(current[key] ?? null) !== JSON.stringify(checked[key]))
                     throw new Error('Element changed since it was checked; look again');
             }
+        }
+        // TX-BIND: what an approved action does is more than the name of its button. "Pay" sends the amount and recipient
+        // of its form; "Send" sends the recipients and body of its composer. Invariant: the digest covers the values of the
+        // visible, non-secret controls of the transaction the control belongs to (its form, else its dialog, else the
+        // nearest container around it that holds a control: a composer), and that container's visible text. Only the digest
+        // crosses the wire; no value does. Secrets (passwords, hidden and file inputs, card and one-time codes: hiddenValue)
+        // are left out, and so is text that changes by itself: live regions, status lines, timers, logs, alerts, progress
+        // (TX_CHURN). A page whose own clock ticks inside the very form is the residual case; it fails closed (asks again).
+        const TX_CONTROLS = 'input, textarea, select, [contenteditable]:not([contenteditable="false"]), [role="textbox"], [role="searchbox"], '
+            + '[role="combobox"], [role="spinbutton"], [role="slider"], [role="checkbox"], [role="radio"], [role="switch"]';
+        const TX_CHURN = '[aria-live]:not([aria-live="off"]), [role="status"], [role="timer"], [role="marquee"], [role="log"], [role="alert"], '
+            + '[role="progressbar"], output' /* TX_CHURN_TEST_POINT */;
+        const TX_SKIP = `script, style, noscript, template, textarea, select, ${TX_CHURN}`;
+        const upward = (node) => node.parentElement || node.getRootNode().host || null;
+        function txControl(control) {
+            const type = (control.type || '').toLowerCase();
+            return !hiddenValue(control) && visible(control) && !control.closest(TX_CHURN)
+                && !(control.tagName === 'INPUT' && ['submit', 'button', 'reset', 'image'].includes(type));
+        }
+        function transactionScope(el) {
+            const form = el.form || el.closest('form');
+            if (form)
+                return form;
+            const dialog = el.closest('dialog, [role="dialog"], [role="alertdialog"]');
+            if (dialog)
+                return dialog;
+            for (let node = upward(el); node && node !== document.body && node !== document.documentElement; node = upward(node)) {
+                if (deepAll(node, TX_CONTROLS).some(control => control !== el && txControl(control)))
+                    return node;
+            }
+            return null;
+        }
+        function txValue(control) {
+            const type = (control.type || '').toLowerCase();
+            if (control.tagName === 'INPUT' && ['checkbox', 'radio'].includes(type))
+                return String(!!control.checked);
+            if (control.tagName === 'SELECT')
+                return [...control.selectedOptions].map(option => option.value).join('\u0001');
+            if (control.tagName === 'INPUT' || control.tagName === 'TEXTAREA')
+                return String(control.value ?? '');
+            return [control.getAttribute('aria-checked'), control.getAttribute('aria-valuenow'), control.getAttribute('aria-valuetext'), control.textContent].join('\u0001');
+        }
+        function transactionDigest(el) {
+            const scope = transactionScope(el);
+            if (!scope)
+                return '';
+            const controls = new Set(scope.tagName === 'FORM' ? [...scope.elements] : []);
+            for (const control of deepAll(scope, TX_CONTROLS))
+                controls.add(control);
+            const values = [];
+            for (const control of controls)
+                if (txControl(control)) {
+                    values.push([`${control.tagName}:${(control.type || '').toLowerCase()}:${control.getAttribute('name') || ''}`, txValue(control)]);
+                }
+            const text = [];
+            let budget = 50000;
+            const walk = (root) => {
+                for (const child of root.childNodes) {
+                    if (--budget < 0)
+                        return;
+                    if (child.nodeType === 3 /* text */) {
+                        const parent = child.parentElement;
+                        if (child.nodeValue?.trim() && (!parent || getComputedStyle(parent).visibility === 'visible'))
+                            text.push(child.nodeValue);
+                    }
+                    else if (child.nodeType === 1 /* element */) {
+                        const element = child;
+                        if (element.matches(TX_SKIP) || !element.checkVisibility())
+                            continue;
+                        if (element.shadowRoot)
+                            walk(element.shadowRoot);
+                        walk(element);
+                    }
+                }
+            };
+            walk(scope);
+            return sha256(JSON.stringify([values, text.join(' ').replace(/\s+/g, ' ').trim(), budget < 0]));
+        }
+        // SHA-256 (FIPS 180-4), here because this function runs alone in the page and crypto.subtle is missing on plain HTTP.
+        function sha256(message) {
+            const bytes = new TextEncoder().encode(message), words = new Uint32Array((((bytes.length + 8) >> 6) + 1) << 4);
+            for (let i = 0; i < bytes.length; i++)
+                words[i >> 2] |= bytes[i] << (24 - (i & 3) * 8);
+            words[bytes.length >> 2] |= 0x80 << (24 - (bytes.length & 3) * 8);
+            words[words.length - 2] = Math.floor(bytes.length / 0x20000000);
+            words[words.length - 1] = (bytes.length * 8) >>> 0;
+            const k = [], hash = [];
+            for (let n = 2, found = 0; found < 64; n++) {
+                let prime = true;
+                for (let d = 2; d * d <= n; d++)
+                    if (n % d === 0) {
+                        prime = false;
+                        break;
+                    }
+                if (!prime)
+                    continue;
+                if (found < 8)
+                    hash.push((Math.sqrt(n) % 1) * 0x100000000 >>> 0);
+                k.push((Math.cbrt(n) % 1) * 0x100000000 >>> 0);
+                found++;
+            }
+            const w = new Uint32Array(64), rotr = (x, n) => (x >>> n) | (x << (32 - n));
+            for (let block = 0; block < words.length; block += 16) {
+                for (let t = 0; t < 64; t++)
+                    w[t] = t < 16 ? words[block + t]
+                        : (rotr(w[t - 15], 7) ^ rotr(w[t - 15], 18) ^ (w[t - 15] >>> 3)) + w[t - 16] + (rotr(w[t - 2], 17) ^ rotr(w[t - 2], 19) ^ (w[t - 2] >>> 10)) + w[t - 7];
+                let [a, b, c, d, e, f, g, h] = hash;
+                for (let t = 0; t < 64; t++) {
+                    const t1 = (h + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + k[t] + w[t]) | 0;
+                    const t2 = ((rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+                    h = g;
+                    g = f;
+                    f = e;
+                    e = (d + t1) | 0;
+                    d = c;
+                    c = b;
+                    b = a;
+                    a = (t1 + t2) | 0;
+                }
+                [a, b, c, d, e, f, g, h].forEach((value, i) => { hash[i] = (hash[i] + value) | 0; });
+            }
+            return hash.map(value => (value >>> 0).toString(16).padStart(8, '0')).join('');
         }
         function fnvAccumulator() {
             let hash = 2166136261;
@@ -1144,6 +1272,9 @@ export async function pageTask(action, params = {}) {
                 choice: described.choice === true, href: described.href, type: described.type, autocomplete: described.autocomplete,
                 submitName: described.submitName, secret: described.password, disabled: described.disabled,
                 committed: described.committed,
+                // TX-BIND and FRAME-BIND: the transaction around the control, and the document's own origin (bg.ts adds Chrome's
+                // document id). A point on a frame element is followed inwards, so its own digest is never used.
+                transaction: frame ? '' : described.transaction, origin: location.origin,
                 signature: signature(), chain, frame };
         }
         const el = resolve(params.selector);
@@ -1154,7 +1285,7 @@ export async function pageTask(action, params = {}) {
         // Inside an embedded document the gates judge that document's own site, so it says where it is.
         const topWindow = globalThis.top, embedded = topWindow != null && topWindow !== globalThis;
         if (action === 'describe')
-            return { ...describe(el), ...gateFacts(el), ...(embedded ? { frameUrl: location.href } : {}),
+            return { ...describe(el), ...gateFacts(el), ...(embedded ? { frameUrl: location.href, origin: location.origin } : {}),
                 matched: (params.denySelectors || []).filter(selector => el.matches(selector)) };
         if (action === 'captureBox') {
             if (!visible(el))

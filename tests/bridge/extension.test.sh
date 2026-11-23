@@ -199,6 +199,17 @@ for pair in commit:ASSERT_COMMIT_FACTS option:ASSERT_SELECT_FACTS keys:ASSERT_KE
   echo "FALSIFIED gate facts: emptying the $mode facts fails $assertion"
 done
 
+# TX-BIND and FRAME-BIND: removing a last check, or the churn the digest leaves out, fails its check by name.
+for pair in tx-check:ASSERT_TX_FINAL_CHECK tx-churn:ASSERT_TX_CHURN frame-check:ASSERT_FRAME_FINAL_CHECK; do
+  mode=${pair%%:*} assertion=${pair#*:}
+  LOG=tests/.state/logs/bridge-binding-$mode-falsified.log
+  if GADDI_BINDING_ONLY=1 GADDI_BRIDGE_BREAK_BINDING=$mode node tests/bridge/extension.ts >"$LOG" 2>&1; then
+    echo "FAIL the $mode mutation did not fail $assertion"; exit 1
+  fi
+  if ! rg -q "AssertionError.*$assertion" "$LOG"; then cat "$LOG"; echo "FAIL $mode binding falsification failed for an unrelated reason"; exit 1; fi
+  echo "FALSIFIED binding: the $mode mutation fails $assertion"
+done
+
 LOG=tests/.state/logs/bridge-hscroll-falsified.log
 if GADDI_BRIDGE_BREAK_HSCROLL=1 node tests/bridge/extension.ts >"$LOG" 2>&1; then
   echo 'FAIL horizontal scroll mutation passed'; exit 1

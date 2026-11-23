@@ -148,6 +148,9 @@ async function fakeBridge() {
     chosen: undefined as string[] | undefined, committed: undefined as string[] | undefined,
     enterCommits: undefined as string[] | undefined, keyChoices: [] as string[], spaceName: '',
     omitGateFacts: false,
+    // TX-BIND: the digest the page gives of the details around the control (amounts, recipients, message), as the
+    // extension computes it. FRAME-BIND: which document a point lands in, when a check moves it somewhere else.
+    transaction: '' as string, pointFrame: undefined as { frameId: number; frameUrl: string; origin: string; documentId: string } | undefined,
     // KEY-SHORTCUT: what the focused element is (tag, role), so a key can land in a field or outside one.
     describeTag: undefined as string | undefined, describeRole: undefined as string | undefined,
     // What Chrome says an extension is (remote approval checks: an extension operation is never answered remotely).
@@ -202,6 +205,10 @@ async function fakeBridge() {
             href: control.describeHref ?? (s === '#checkout-link' ? '/checkout?token=PRIVATE_LINK_QUERY' : s === '#read-link' ? '/article?token=PRIVATE_LINK_QUERY' : ''), submitName: control.focusSubmit,
             matched: s === '#sensitive' ? ['.sensitive'] : [], role: at?.role ?? control.describeRole ?? 'button', password: false, disabled: false, choice: at?.choice === true,
             ...(at?.frameUrl ? { frameId: 42, frameUrl: at.frameUrl } : {}), ...(at?.blind ? { blind: true } : {}),
+            // Which document a point lands in: its own origin and Chrome's document id (the tab itself is frame 0).
+            ...(at ? { origin: new URL(at.frameUrl ?? tab.url).origin, documentId: at.frameUrl ? 'doc-frame-42' : 'doc-top' } : {}),
+            ...(at && at.frameUrl && control.pointFrame ? control.pointFrame : {}),
+            ...(control.omitGateFacts ? {} : { transaction: control.transaction }),
             ...(typeof msg.params.value === 'string' && !control.omitGateFacts ? { chosen: control.chosen ?? ['Fixture option'] } : {}),
             ...(control.omitGateFacts ? {} : { committed: control.committed ?? null }),
             ...(control.enterCommits ? { enterCommits: control.enterCommits } : {}),
@@ -674,6 +681,108 @@ async function approvalChecks(c: Client, b: Bridge) {
   assert.ok(events.events.some(e => e.event === 'approval.pending' && e.data.approval?.tab === 7));
   assert.ok(events.events.some(e => e.event === 'approval.resolved'));
   assert.ok(!JSON.stringify(events.events).includes('PRIVATE_')); pass('state-audit-and-events-exclude-URL-query-secrets');
+}
+// TX-BIND and FRAME-BIND: an approval covers the transaction the owner saw and the document the click lands in. The
+// owner approves "Pay" on a form that says 10 to Alice; if the amount, the recipient or the message around that button
+// change before the agent's approved retry, or the point now lands in another site's document, the retry is refused
+// and nothing is clicked. An unchanged form, and the same document, still pass.
+async function approvalBinding(c: Client, b: Bridge) {
+  const clicks = () => b.calls.filter(m => m.method === 'chrome.click').length;
+  const presses = () => b.calls.filter(m => m.method === 'chrome.press').length;
+  const failures: string[] = [];
+  async function check(name: string, fn: () => Promise<void>) {
+    try { await fn(); pass(name); } catch (error) {
+      if (error instanceof FixtureConnectionError) throw error;
+      failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`); console.log(`FAIL ${name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const TEN = 'a'.repeat(64), THOUSAND = 'b'.repeat(64);
+  await check('ASSERT_TX_BOUND', async () => {
+    b.control.describeName = 'Pay'; b.control.transaction = TEN;
+    const held = await pending(c, await rejected(c, 'click', { tab: 7, selector: '#pay' }, 'held'));
+    await result(c, 'approval.grant', { id: held.id, proof: proof(held) });
+    const before = clicks();
+    // The page (or the agent) changes the amount after the owner approved.
+    b.control.transaction = THOUSAND;
+    const stale = await c.call('click', { tab: 7, selector: '#pay', approval: held.id });
+    assert.equal(stale.error?.code, 'approval-mismatch', `ASSERT_TX_BOUND: a changed amount must not spend the approval: ${JSON.stringify(stale)}`);
+    assert.match(stale.error!.message, /details .*changed/, 'ASSERT_TX_BOUND: the refusal says the details changed');
+    assert.equal(clicks(), before, 'ASSERT_TX_BOUND: nothing was clicked');
+    // The form as approved still passes, once, and the extension is told the digest it must find before pressing.
+    b.control.transaction = TEN;
+    await result(c, 'click', { tab: 7, selector: '#pay', approval: held.id });
+    assert.equal(clicks(), before + 1, 'ASSERT_TX_BOUND: the unchanged form is clicked once');
+    assert.equal(b.calls.findLast(m => m.method === 'chrome.click')?.params.checkedDescription?.transaction, TEN,
+      'ASSERT_TX_BOUND: the final check gets the digest the owner approved');
+  });
+  await check('ASSERT_TX_BOUND_ENTER', async () => {
+    b.control.describeName = undefined; b.control.focusSubmit = 'Pay now'; b.control.transaction = TEN;
+    const held = await pending(c, await rejected(c, 'press', { tab: 7, key: 'Enter' }, 'held'));
+    await result(c, 'approval.grant', { id: held.id, proof: proof(held) });
+    const before = presses();
+    b.control.transaction = THOUSAND;
+    assert.equal((await c.call('press', { tab: 7, key: 'Enter', approval: held.id })).error?.code, 'approval-mismatch',
+      'ASSERT_TX_BOUND_ENTER: Enter that submits a changed form must not spend the approval');
+    assert.equal(presses(), before, 'ASSERT_TX_BOUND_ENTER: no key was pressed');
+    b.control.transaction = TEN;
+    await result(c, 'press', { tab: 7, key: 'Enter', approval: held.id });
+    assert.equal(b.calls.findLast(m => m.method === 'chrome.press')?.params.checkedDescription?.transaction, TEN,
+      'ASSERT_TX_BOUND_ENTER: the final check gets the approved digest');
+    b.control.focusSubmit = 'Search';
+  });
+  await check('ASSERT_TX_PRIVATE', async () => {
+    // Only a keyed digest of the digest is bound, so neither the page's digest nor a value is on disk, in a list or
+    // in an event; an allowed click is not bound at all (no approval to protect, nothing to refuse later).
+    b.control.describeName = 'Pay'; b.control.transaction = 'c'.repeat(64);
+    const held = await pending(c, await rejected(c, 'click', { tab: 7, selector: '#pay' }, 'held'));
+    const disk = fs.readFileSync(path.join(home, 'state.json'), 'utf8');
+    assert.ok(!disk.includes('c'.repeat(64)) && !disk.includes(TEN), 'ASSERT_TX_PRIVATE: the page digest is not on disk');
+    assert.ok(!JSON.stringify(await result(c, 'approvals.list')).includes('c'.repeat(64)), 'ASSERT_TX_PRIVATE: nor in the list');
+    await result(c, 'approval.cancel', { id: held.id });
+    b.control.describeName = 'Read more';
+    await result(c, 'click', { tab: 7, selector: '#plain' });
+    assert.equal(b.calls.findLast(m => m.method === 'chrome.click')?.params.checkedDescription?.transaction, undefined,
+      'ASSERT_TX_PRIVATE: an allowed click carries no transaction binding');
+    b.control.describeName = undefined; b.control.transaction = '';
+  });
+  await check('ASSERT_FRAME_BOUND', async () => {
+    // A point inside a payment frame on js.payments.example, approved; then another site's frame sits at that point,
+    // with a button of the same name.
+    const held = await pending(c, await rejected(c, 'click', { tab: 7, at: { x: 15, y: 15 } }, 'held'));
+    await result(c, 'approval.grant', { id: held.id, proof: proof(held) });
+    const before = clicks();
+    b.control.pointFrame = { frameId: 43, frameUrl: 'https://evil.example/elements', origin: 'https://evil.example', documentId: 'doc-evil' };
+    const swapped = await c.call('click', { tab: 7, at: { x: 15, y: 15 }, approval: held.id });
+    assert.equal(swapped.error?.code, 'approval-mismatch', `ASSERT_FRAME_BOUND: another site's frame must not spend the approval: ${JSON.stringify(swapped)}`);
+    assert.match(swapped.error!.message, /different document/, 'ASSERT_FRAME_BOUND: the refusal says the document changed');
+    // The same frame, reloaded (same origin, new document), is not the document the owner approved either.
+    b.control.pointFrame = { frameId: 42, frameUrl: 'https://js.payments.example/elements', origin: 'https://js.payments.example', documentId: 'doc-reloaded' };
+    assert.equal((await c.call('click', { tab: 7, at: { x: 15, y: 15 }, approval: held.id })).error?.code, 'approval-mismatch',
+      'ASSERT_FRAME_BOUND: a new document in the frame must not spend the approval');
+    assert.equal(clicks(), before, 'ASSERT_FRAME_BOUND: nothing was clicked');
+    b.control.pointFrame = undefined;
+    await result(c, 'click', { tab: 7, at: { x: 15, y: 15 }, approval: held.id });
+    assert.equal(clicks(), before + 1, 'ASSERT_FRAME_BOUND: the approved document is clicked once');
+    assert.deepEqual(b.calls.findLast(m => m.method === 'chrome.click')?.params.checkedDescription?.frame,
+      { id: 42, origin: 'https://js.payments.example', document: 'doc-frame-42' }, 'ASSERT_FRAME_BOUND: the final check gets the document identity');
+  });
+  await check('ASSERT_TX_RESTART', async () => {
+    // The digest key lives only in this broker run: after a restart a restored click approval fails closed, as the
+    // rule that a restart needs a fresh approval already says.
+    b.control.describeName = 'Pay'; b.control.transaction = TEN;
+    const held = await pending(c, await rejected(c, 'click', { tab: 7, selector: '#del' }, 'held'));
+    const stopped = once(daemon, 'exit'); daemon.kill('SIGTERM'); await stopped;
+    await startDaemon();
+    const c2 = client(); await result(c2, 'status'); const b2 = await fakeBridge();
+    b2.control.describeName = 'Pay'; b2.control.transaction = TEN;
+    const restored = (await result(c2, 'approvals.list')).pending.find(a => a.id === held.id);
+    assert.ok(restored, 'ASSERT_TX_RESTART: the record is restored, pending');
+    await result(c2, 'approval.grant', { id: held.id, proof: proof(restored) });
+    assert.equal((await c2.call('click', { tab: 7, selector: '#del', approval: held.id })).error?.code, 'approval-mismatch',
+      'ASSERT_TX_RESTART: a restored approval cannot be matched with a new run key');
+    assert.equal(b2.calls.filter(m => m.method === 'chrome.click').length, 0, 'ASSERT_TX_RESTART: nothing was clicked');
+  });
+  if (failures.length) throw new assert.AssertionError({ message: failures.join('; ') });
 }
 async function approvalPictures(c: Client, b: Bridge) {
   const events = client(); await result(events, 'events.subscribe');
@@ -2544,6 +2653,7 @@ try {
   else if (scenario === 'upload') await uploadChecks(c, b);
   else if (scenario === 'session-grant') await sessionGrant(c, b);
   else if (scenario === 'remote-approver') await remoteApprover(c, b);
+  else if (scenario === 'approval-binding') await approvalBinding(c, b);
   else throw new Error('unknown scenario');
   if (mode === 'delayed-bind') {
     assert.match(stderr, /PROBE socket bound; listen delayed/, 'ASSERT_BROKER_READY_ON_RESTART: the bind-before-listen fault ran');

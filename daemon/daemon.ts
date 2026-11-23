@@ -4,7 +4,7 @@ import { waitParams, wheelParams, FRAME_TOOLS } from '../shared/protocol.ts';
 import net from 'node:net';
 import type { Socket } from 'node:net';
 import { isRecord, parseJSON, errorMessage, hasErrorCode, versionParam, pointParam, isControlPosition } from '../shared/protocol.ts';
-import type { IncomingParams, ChromeParams, WireError, BrokerResults, SigninResult, ControlPosition } from '../shared/protocol.ts';
+import type { IncomingParams, ChromeParams, CheckedDescription, WireError, BrokerResults, SigninResult, ControlPosition } from '../shared/protocol.ts';
 import type { PolicyCheck, SendRule } from './policy.ts';
 import type { ApprovalAction, StoredApprovalRef, StoredApproval, RemoteFacts, ApprovalContext } from './approvals.ts';
 // `decision` and `remoteKey` exist only to be written to the audit: who answered from another device and what,
@@ -205,6 +205,30 @@ try {
 }
 catch (e) { if (!hasErrorCode(e, 'ENOENT')) throw e; }
 approvals.pruneImages();
+// TX-BIND invariant: an approval binds the transaction around its control only as an HMAC of the page's digest under
+// this key, which lives in this process alone and is never written, logged or sent. The approval state on disk therefore
+// cannot be brute-forced back into an amount or a recipient, and an approval restored after a restart can never match
+// again (fails closed), as a restart already needs a fresh decision.
+const TX_KEY = crypto.randomBytes(32) /* TX_KEY_TEST_POINT */;
+const keyedTransaction = (digest: string) => crypto.createHmac('sha256', TX_KEY).update(digest, 'utf8').digest('hex');
+// What an action binds, as the action hash sees it: the transaction keyed, everything else as the extension checks it.
+function boundDescription(description: CheckedDescription | undefined) {
+  if (!description || description.transaction === undefined) return description;
+  return { ...description, transaction: keyedTransaction(description.transaction) /* TX_BIND_TEST_POINT */ };
+}
+// The parts of a binding a refusal can name; keyed and non-secret, kept in memory beside the record (approvals.ts).
+function bindingOf(action: ApprovalAction) {
+  const description = isRecord(action._description) ? action._description : undefined;
+  if (!description) return undefined;
+  const { transaction, frame, origin } = description;
+  return { ...(transaction !== undefined ? { transaction } : {}), ...(frame !== undefined ? { frame } : {}), ...(origin !== undefined ? { origin } : {}) };
+}
+// TX-BIND: the page's digest is 64 hex characters, or empty for a control that belongs to no transaction.
+function transactionFact(value: unknown, required: boolean) {
+  if (value === undefined && !required) return '';
+  if (typeof value !== 'string' || value !== '' && !/^[0-9a-f]{64}$/.test(value)) throw new Error('chrome.describe must return transaction');
+  return value;
+}
 // Invariant: grants exist only in this process. Nothing is loaded at startup, so a restart ends every one.
 const grants = createGrants({ minuteMs: GRANT_MINUTE_MS, emit, audit, log });
 
@@ -218,7 +242,8 @@ async function gate({ kind, meta, detail, action, check, approval, capture, targ
   const targetRef = typeof targetSelector === 'string' && /^@[A-Za-z0-9_-]{6}:[0-9a-z]+$/.test(targetSelector) ? targetSelector : undefined;
   if (check.outcome === 'deny') throw new GateError('denied', `denied: ${check.reason} (no approval path)`);
   // A supplied retry ID is always checked, even if the current policy would now allow the action.
-  if (approval) return approvals.consume(approval, action, targetRef);
+  const binding = bindingOf(action);
+  if (approval) return approvals.consume(approval, action, targetRef, binding);
   if (check.outcome === 'allow') return;
   const existing = approvals.pendingFor(action, targetRef);
   let picture: unknown;
@@ -227,7 +252,7 @@ async function gate({ kind, meta, detail, action, check, approval, capture, targ
     catch (error) { log('approval capture unavailable:', /deadline|timeout|within 25 seconds/.test(errorMessage(error)) ? 'deadline exceeded' : 'bridge failed'); }
   }
   const remoteFacts = remoteScope ? { ...remoteScope, reason: check.reason } : undefined;
-  const a = existing || approvals.hold({ kind, ...meta, detail, action, reason: check.reason, rememberable: check.rememberable, picture, targetSelector: targetRef, remoteFacts, context: meta.context,
+  const a = existing || approvals.hold({ kind, ...meta, detail, action, reason: check.reason, rememberable: check.rememberable, picture, targetSelector: targetRef, remoteFacts, context: meta.context, binding,
     // AUTH-WAIT: only the existing grant-safe tier may wait longer, never money, sign-in or sends.
     extendedWait: remoteFacts !== undefined && remoteWaivable(policy, remoteFacts.pageURL, check, remoteFacts.scope) });
   if (existing) approvals.attach(existing, remoteFacts);
@@ -561,8 +586,16 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
         + `${at ? ` at ${at.x},${at.y}` : ''}${scopeURL !== pageURL ? ` in ${cleanURL(scopeURL)}` : ''}`
         + `${info.href ? ' -> ' + cleanURL(destination) : ''}`;
       if (at) meta.point = { x: at.x, y: at.y, ...(scopeURL !== pageURL ? { frame: cleanURL(scopeURL) } : {}) };
+      // FRAME-BIND: a point click is bound to the document it landed in: Chrome's frame id (0 is the tab itself), that
+      // document's own origin and Chrome's document id. A selector click inside a frame is bound to that frame's origin.
+      if (at && (typeof info.origin !== 'string' || typeof info.documentId !== 'string')) throw new Error('chrome.describe must return origin and documentId for a point');
+      if (!at && args.frameId !== undefined && typeof info.origin !== 'string') throw new Error('chrome.describe must return origin inside a frame');
+      const frame = at ? { frame: { id: typeof info.frameId === 'number' ? info.frameId : 0, origin: String(info.origin), document: String(info.documentId) } }
+        /* FRAME_BIND_TEST_POINT */ : args.frameId !== undefined ? { origin: String(info.origin) } : {};
+      const transaction = transactionFact(info.transaction, info.blind !== true);
       // Bind the resolved accessible name and destination too, so a changed button requires new approval.
-      args._description = { name: info.name, href: info.href, ...(Array.isArray(info.committed) ? { committed } : {}) };
+      args._description = { name: info.name, href: info.href, ...(Array.isArray(info.committed) ? { committed } : {}), ...frame,
+        ...(transaction ? { transaction } : {}) };
     } else if (params.secret !== undefined) {
       // SECRET-FILL: the password of one 1Password login goes from op straight into one password field of the site that
       // login belongs to. The agent names the item; it never sees, sends or receives the value. The same rule as a
@@ -643,7 +676,9 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     detail = held.length ? `${args.key}, with ${quoted(held)} ${sent.held.length ? 'chosen' : 'within reach'}`
       : keyHeld ? `Key "${args.key}" with no text field focused` : args.key;
     // Bound as judged; a fact that is empty or absent is left out, so a plain key keeps its existing action and wire shape.
+    const transaction = transactionFact(info.transaction, true);
     const bound = { ...(enter ? { submitName: info.submitName } : {}), ...(keyChoices.length ? { keyChoices } : {}),
+      ...(transaction ? { transaction } : {}),
       ...(space && info.spaceName ? { spaceName: info.spaceName } : {}),
       ...(enter && info.enterCommits !== undefined ? { enterCommits } : {}), ...(space && info.spaceCommits !== undefined ? { spaceCommits } : {}) };
     if (Object.keys(bound).length) args._description = bound;
@@ -726,6 +761,12 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   // DOWNLOAD: the capture adds a hold only when policy sets hold.downloads (default off).
   // The original action's stricter deny/hold is always retained; a held click signs the file path too.
   if (download) { check = strictest(check, checkDownload(policy)); detail += ` -> ${download} (up to 20 MB)`; }
+  // TX-BIND: the transaction is bound only where there is an approval to protect: an action that is held, or the retry
+  // that spends an approval. An allowed click is not bound, so a page that changes by itself never stops ordinary work.
+  if (args._description?.transaction !== undefined && check.outcome === 'allow' && params.approval === undefined) {
+    delete args._description.transaction;
+    if (!Object.keys(args._description).length) delete args._description;
+  }
   await gate({ kind: gateKind, meta, detail, check, approval: params.approval, targetSelector, remoteScope,
     capture: targetSelector ? () => bridge.request('chrome.approvalCapture', { tab: resolvedTab,
       selector: targetSelector, checkedDescription: args._description, ...(method === 'press' ? { key: args.key } : {}),
@@ -733,7 +774,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       ...(method === 'select' ? { value: args.value } : {}) },
       connection, Math.min(deadline, Date.now() + 3000)) : undefined,
     // An approval covers this exact file: its name, size and content digest.
-    action: { method, caller: meta.caller, url: pageURL, ...args,
+    action: { method, caller: meta.caller, url: pageURL, ...args, ...(args._description ? { _description: boundDescription(args._description) } : {}),
       ...(download ? { download } : {}), ...(secretFill ? { item: secretFill.item.id } : {}),
       ...(upload ? { file: { name: upload.name, bytes: upload.bytes.length, sha256: upload.sha256 } } : {}) } });
   // A supplied approval went through consume, so only an action the grant itself waived is credited to it.

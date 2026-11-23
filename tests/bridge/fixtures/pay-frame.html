@@ -1,0 +1,9 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Payment frame</title>
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  #frame-pay { position: absolute; left: 10px; top: 10px; width: 200px; height: 60px; }
+</style>
+<!-- FRAME-BIND: the same button at the same place, whichever site serves it. -->
+<button id="frame-pay" type="button" onclick="window.paid = (window.paid || 0) + 1">Pay now</button>

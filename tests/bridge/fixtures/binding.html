@@ -1,0 +1,33 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Binding fixture</title>
+<style>
+  body { margin: 0; font: 14px sans-serif; }
+  label { display: block; margin: 4px 0; }
+  #slot { position: absolute; left: 520px; top: 20px; }
+  #slot iframe { border: 0; width: 300px; height: 120px; display: block; }
+</style>
+<!-- TX-BIND and FRAME-BIND: a payment form, a mail composer that is no form, and a payment frame that another site's
+     frame can replace. Clocks and status lines tick on their own; they are not the transaction. -->
+<p id="page-clock">12:00:00</p>
+<form id="payment" onsubmit="event.preventDefault(); window.acted = (window.acted || 0) + 1">
+  <label>Amount <input id="amount" name="amount" value="10"></label>
+  <label>Recipient <input id="recipient" name="recipient" value="alice@example.test"></label>
+  <label>Message <textarea id="message" name="message">Rent for November</textarea></label>
+  <input type="hidden" name="nonce" id="nonce" value="n1">
+  <label>PIN <input type="password" id="pin" value="1234"></label>
+  <p>Total: <span id="total">€10.00</span></p>
+  <p role="status" id="saved"></p>
+  <p aria-live="polite" id="live"></p>
+  <span role="timer" id="form-clock">00:00</span>
+  <button id="pay" type="button" onclick="window.acted = (window.acted || 0) + 1">Pay</button>
+</form>
+<div id="composer">
+  <div role="textbox" id="to" aria-label="To">bob@example.test</div>
+  <div contenteditable="true" id="mail-body" aria-label="Message body">Hello Bob</div>
+  <div class="toolbar"><button id="send" type="button" onclick="window.sent = (window.sent || 0) + 1">Send</button></div>
+</div>
+<div id="slot"><iframe id="pay-frame" title="Payment" src="about:blank"></iframe></div>
+<script>
+  document.querySelector('#pay-frame').src = new URLSearchParams(location.search).get('frame');
+</script>
