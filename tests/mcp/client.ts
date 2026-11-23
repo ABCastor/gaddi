@@ -302,6 +302,19 @@ try {
   fs.renameSync(extractor + '.saved', extractor); fs.writeFileSync(extractor, workingExtractor);
   r = await call('click', { tab: 7, selector: '#pay' });
   check(heldID(r) && count(bridge, 'click') === 0, 'MCP held click never reaches bridge');
+  check(/Gaddi already waited \d+s for an answer/.test(txt(r)) && /repeating the same call also spends it/.test(txt(r)),
+    'MCP a held call says it already waited and that repeating it spends the approval (HELD-WAIT)');
+  // HELD-WAIT through the adapter: the same click again joins that card and waits; approved meanwhile, it acts once.
+  const payID = heldID(r)!, waitingPay = call('click', { tab: 7, selector: '#pay' });
+  await new Promise(resolve => setTimeout(resolve, 300));
+  const payList = await rpc('approvals.list');
+  const payCard = isRecord(payList) && Array.isArray(payList.pending) ? payList.pending.find(a => isRecord(a) && a.id === payID) : undefined;
+  assert.ok(isRecord(payCard));
+  const payTs = Date.now(), payDigest = crypto.createHash('sha256').update(String(payCard.detail)).digest('hex');
+  await rpc('approval.grant', { id: payID, proof: { ts: payTs, sig: crypto.sign('sha256', Buffer.from(`grant|${payID}|${String(payCard.kind)}|${String(payCard.tab ?? '')}|${payDigest}|${payTs}`), privateKey).toString('base64') } });
+  r = await waitingPay;
+  check(!r.isError && txt(r).startsWith(`Gaddi: the user approved this action (approval ${payID}); it ran once.`) && count(bridge, 'click') === 1,
+    'MCP approved while the call waited: the same tool call acts once and says which approval it spent (HELD-WAIT)');
   r = await call('type', { tab: 7, selector: '#password', text: 'synthetic-not-a-credential' });
   check(txt(r).startsWith('DENIED:') && count(bridge, 'type') === 0, 'MCP password field remains denied');
   for (const args of [{}, { tab: 7 }, { tabs: [] }, { tabs: null }, { tabs: '7' }, { tabs: [7, -1] }, { tabs: ['7'] }, { tabs: [1.5] },

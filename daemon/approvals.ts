@@ -49,7 +49,8 @@ export type Emit = (event: string, data: unknown) => void;
 export type ApprovalAction = { method: string; caller: string; url: string; [key: string]: unknown };
 // Persisted JSON is retained verbatim. Only its action binding was historically required.
 export type StoredApproval = { [K in keyof ApprovalRecord]?: unknown } & Record<string, unknown>;
-export type StoredApprovalRef = { id: unknown; reason: unknown; expires: unknown };
+// `waited`: the seconds a held call already waited for the user's answer (HELD-WAIT), so the agent is told it did.
+export type StoredApprovalRef = { id: unknown; reason: unknown; expires: unknown; waited?: number };
 
 export class GateError extends Error {
   code: string;
@@ -104,6 +105,8 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
   // alone decides; this only explains. A restored record has none and is refused with the plain mismatch.
   const bindings = new WeakMap<StoredApproval, Binding>();
   const activeCount = () => [...entries.values()].filter(a => a.status === 'pending' || a.status === 'granted').length;
+  // HELD-WAIT: calls waiting in place for the user's answer to one record, woken when that record leaves pending.
+  const waiters = new Map<unknown, Set<() => void>>();
   // Every record that leaves this module goes through here: what publicView shows, plus, while the user's other
   // device may answer it, `remote: true` and the digest that device signs. Computed on every call from the live
   // state, never remembered, so turning the feature off removes the flag from the next list and event.
@@ -192,6 +195,7 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
     }
     else removePicture(a);
     Object.assign(a, extra, { status, resolvedAt: new Date().toISOString() });
+    for (const wake of waiters.get(a.id) ?? []) wake();
     onChange();
     emit('approval.resolved', { approval: view(a), tab: a.tab });
   }
@@ -205,6 +209,37 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
   function pendingFor(action: ApprovalAction, targetSelector?: string) {
     expire();
     return [...entries.values()].find(a => a.status === 'pending' && a.actionHash === actionHash(action) && a.targetSelector === targetSelector);
+  }
+  // SAME-ACTION invariant: a granted, unused approval is found only for the identical action: the same hash (caller, chat
+  // when the call has one, tab, page, element, keyed transaction and document) and the same element reference. The
+  // caller then spends it through consume, so it stays single use and within its TTL (expire runs first), and a request
+  // from another caller or chat, or for changed details, never matches and gets its own card. Session grants and
+  // standing requests are acted on by the broker when signed and are never left granted for an agent to spend.
+  function grantedFor(action: ApprovalAction, targetSelector?: string) {
+    expire();
+    return [...entries.values()].find(a => a.status === 'granted' && a.kind !== 'grant' && a.actionHash === actionHash(action)
+      && a.targetSelector === targetSelector);
+  }
+  // HELD-WAIT: resolves with the record's status once it leaves pending, or as it stands after `ms`, or when `abort`
+  // settles (the asking connection closed). Invariant: never longer than the record's own deadline, so a call waiting
+  // here cannot outlive the request it waits for; the expiry sweep resolves the record, which wakes the wait.
+  function waitFor(id: unknown, ms: number, abort?: Promise<unknown>): Promise<string> {
+    const a = entries.get(String(id));
+    const status = () => String(entries.get(String(id))?.status ?? 'unknown');
+    if (!a || a.status !== 'pending') return Promise.resolve(status());
+    const bound = Math.max(0, Math.min(ms, (deadlines.get(a) ?? Infinity) - performance.now(), Date.parse(String(a.expiresAt)) - Date.now()));
+    return new Promise(done => {
+      const set = waiters.get(a.id) ?? new Set<() => void>();
+      waiters.set(a.id, set);
+      const finish = () => {
+        clearTimeout(timer); set.delete(finish);
+        if (!set.size) waiters.delete(a.id);
+        done(status());
+      };
+      const timer = setTimeout(finish, bound);
+      set.add(finish);
+      abort?.then(finish, finish);
+    });
   }
   function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false, grant, remoteFacts, extendedWait = false, context, binding, scope }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; remoteFacts?: RemoteFacts; extendedWait?: boolean; context?: ApprovalContext; binding?: Binding; scope?: CoverView }) {
     expire();
@@ -345,5 +380,5 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
     return { pending: all.filter(a => (a.status === 'pending' || a.status === 'granted')).map(view),
       recent: all.filter(a => !(a.status === 'pending' || a.status === 'granted')).reverse().slice(0, 20).map(view) };
   }
-  return { pendingFor, pendingMatching, pruneImages, hold, attach, remotable, consume, signed, resolveRemote, revokeRemote, cancel, complete, get, list, restore, persistable, stop: () => clearInterval(timer) };
+  return { pendingFor, grantedFor, waitFor, pendingMatching, pruneImages, hold, attach, remotable, consume, signed, resolveRemote, revokeRemote, cancel, complete, get, list, restore, persistable, stop: () => clearInterval(timer) };
 }

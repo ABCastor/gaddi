@@ -85,6 +85,23 @@ export async function choiceChecks({ context, daemon, url, pass }: {
   assert.deepEqual((await focused()).composer, [], 'ASSERT_COMPOSER_FACTS: nothing focused is no composer');
   pass('composer facts: the visible buttons of the form or dialog around a focused text field');
 
+  // CONTAINER-VERB: a plain panel is named by all its text, its Remove button's name included, and says how many visible
+  // controls it holds (the hidden one does not count); the button itself holds none. By point, on the panel's padding,
+  // the same count arrives, so the broker can tell the panel from the button inside it.
+  const panel = await describe('#left-panel');
+  assert.match(String(panel.name), /Hide left panel .*Remove from library/, 'ASSERT_CONTAINER_FACTS: the panel is named by all its text');
+  assert.equal(panel.controls, 6, 'ASSERT_CONTAINER_FACTS: the panel counts the six visible controls inside it');
+  assert.equal((await describe('#panel-remove')).controls, 0, 'ASSERT_CONTAINER_FACTS: a button holds no controls');
+  // Measured in the page itself: the tab may be in the background, where Playwright's own scrolling waits for frames.
+  const box = await page.evaluate(() => {
+    const el = document.querySelector('#left-panel')!; el.scrollIntoView({ block: 'center' });
+    const rect = el.getBoundingClientRect(); return { x: rect.x, y: rect.y };
+  });
+  const onPadding = await call('chrome.describe', { tab, at: { x: Math.round(box.x + 4), y: Math.round(box.y + 4) } });
+  assert.equal(onPadding.selector, (await describe('#left-panel')).selector, 'ASSERT_CONTAINER_FACTS: the point lands on the panel');
+  assert.equal(onPadding.controls, 6, 'ASSERT_CONTAINER_FACTS: a point on the panel carries the count');
+  pass('container facts: a panel counts the visible controls inside it, a button none, by selector and by point');
+
   // The select is set only while the page still shows the option the gate judged.
   const acting = await describe('#acting', { value: 'close' });
   assert.deepEqual(acting.chosen, ['Close account']);

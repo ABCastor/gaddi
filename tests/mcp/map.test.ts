@@ -1,7 +1,7 @@
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 // Public hold/deny text and complete untrusted boundaries, without a daemon.
 import assert from 'node:assert/strict';
-import { mapGrantError, mapSocketError, wrapPage, pageResult, withRecovery } from '../../mcp/map.ts';
+import { mapGrantError, mapSocketError, wrapPage, pageResult, withApproved, withRecovery } from '../../mcp/map.ts';
 const text = (r: CallToolResult) => { const item = r.content[0]; assert.equal(item.type, 'text'); return item.text; };
 const held = mapSocketError({ code: 'held', approval: { id: 'ap42', reason: 'pay', expiresAt: '2099-01-01' } });
 assert.equal(held.isError, undefined);
@@ -11,6 +11,15 @@ assert.match(text(held), /Expires 2099-01-01/);
 assert.match(text(mapSocketError({ code: 'denied', message: 'password' })), /^DENIED: password\. There is no approval path/);
 assert.equal(mapSocketError({ message: 'unknown tab' }).isError, true);
 console.log('PASS map: held retry, expiry, denied and ordinary errors');
+// HELD-WAIT and SAME-ACTION: a held reply says the broker already waited, only when it did, and that the same call
+// repeated later spends the approval; an action run on an approval names it first, as trusted text.
+assert.match(text(held), /repeating the same call also spends it; never ask twice/);
+assert.doesNotMatch(text(held), /already waited/);
+assert.match(text(mapSocketError({ code: 'held', approval: { id: 'ap43', reason: 'pay', expires: '2099-01-01', waited: 45 } })), /: pay\. Gaddi already waited 45s for an answer\./);
+const ran = withApproved({ content: [{ type: 'text', text: 'ok' }] }, 'ap44');
+assert.deepEqual(ran.content.map(item => item.type === 'text' ? item.text : ''), ['Gaddi: the user approved this action (approval ap44); it ran once.', 'ok']);
+assert.deepEqual(withApproved({ content: [{ type: 'text', text: 'ok' }] }, undefined).content.length, 1);
+console.log('PASS map: a held reply says it waited and that repeating the call spends the approval; a spent one is named');
 // A session grant is never retried: the broker acts on the user's answer itself.
 const grantHeld = mapGrantError({ code: 'held', approval: { id: 'g7', reason: 'session grant', expires: '2099-01-01T00:00:00.000Z' } });
 assert.equal(grantHeld.isError, undefined);

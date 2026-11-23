@@ -23,7 +23,9 @@ interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: u
   // Shown on the card if this call is held (approvals.ts ApprovalContext); never audited, never part of the action.
   context?: ApprovalContext;
   // The asking chat's session key (as for grants); never audited or shown, only bound into a held action.
-  chat?: string }
+  chat?: string;
+  // HELD-WAIT and SAME-ACTION: the approval this call spent without naming it (audited, and returned as `approved`).
+  approved?: string }
 
 import fs from 'node:fs';
 import path from 'node:path';
@@ -31,7 +33,7 @@ import os from 'node:os';
 import crypto from 'node:crypto';
 import { coverView, coverLabel } from './grant-origin.ts';
 import type { CoverView } from './grant-origin.ts';
-import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, setSandbox, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkNames, checkPress, siteKeyVerb, checkType, checkEval, checkUpload, checkSignin, hostOf, UPLOAD_HOLD } from './policy.ts';
+import { loadPolicy, isContainer, setSigninRemember, setSendRemember, setUploadRemember, setZone, setSandbox, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkNames, checkPress, siteKeyVerb, checkType, checkEval, checkUpload, checkSignin, hostOf, UPLOAD_HOLD } from './policy.ts';
 import { signinSite, listLogins, chooseLogin, runSignin, createLogin, getPassword, opDiagnostic, PASSWORD_UNAVAILABLE } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
 import { createOwnerNotices } from './owner-needed.ts';
@@ -55,6 +57,10 @@ const socket = process.env.GADDI_SOCKET || path.join(home, 'gaddi.sock');
 const auditPath = process.env.GADDI_AUDIT || path.join(home, 'audit.jsonl');
 const statePath = process.env.GADDI_STATE || path.join(home, 'state.json');
 const TEXT_LIMIT = 20000, HTML_LIMIT = 5 * 1024 * 1024;
+// HELD-WAIT: how long a held MCP or CLI call waits for the user's answer unless policy sets approvals.held_wait_seconds.
+// 45 seconds leaves room for the approved action inside the shortest client limit found: 60 seconds for the CLI's socket
+// and for Pi's MCP adapter (Claude Code allows far longer; Gaddi's own MCP adapter waits 120 seconds for the broker).
+const HELD_WAIT_DEFAULT_SECONDS = 45;
 // EVAL-READONLY: the longest script the user is asked to approve; the card shows all of it.
 const EVAL_WRITE_LIMIT = 2000;
 // DRAG-HOLD: the longest a held button stays down (a drag moves through the same time), well inside an action's deadline.
@@ -278,6 +284,14 @@ async function gate({ kind, meta, detail, action, check, approval, capture, targ
   const binding = bindingOf(action);
   if (approval) return approvals.consume(approval, action, targetRef, binding);
   if (check.outcome === 'allow') return;
+  // SAME-ACTION: the user already approved this exact action for this caller and chat, and the agent asked again without
+  // the id. It spends that approval (consume: single use, within its TTL, the same binding) instead of a second card.
+  const granted = approvals.grantedFor(action, targetRef);
+  if (granted) {
+    const spent = approvals.consume(granted.id, action, targetRef, binding);
+    meta.approved = String(granted.id);
+    return spent;
+  }
   const existing = approvals.pendingFor(action, targetRef);
   let picture: unknown;
   if (!existing && capture) {
@@ -291,7 +305,7 @@ async function gate({ kind, meta, detail, action, check, approval, capture, targ
     // AUTH-WAIT: only the existing grant-safe tier may wait longer, never money, sign-in or sends.
     extendedWait: remoteFacts !== undefined && remoteWaivable(policy, remoteFacts.pageURL, check, remoteFacts.scope) });
   if (existing) approvals.attach(existing, remoteFacts);
-  throw new GateError('held', `held: ${check.reason}; approve ${a.id} in Gaddi, then retry with its id`, approvalRef(a));
+  throw new GateError('held', `held: ${check.reason}; approve ${a.id} in Gaddi, then repeat this call (with or without its id)`, approvalRef(a));
 }
 const browserMethods = new Set(['tabs', 'bookmarks', 'look', 'wait', 'html', 'screenshot', 'open', 'goto', 'back', 'click', 'type', 'press', 'hover', 'scroll', 'select', 'upload', 'eval', 'emulate', 'close', 'show', 'group', 'signin']);
 const requiredString = (value: unknown, name: string) => { if (typeof value !== 'string' || !value) throw new Error(`${name} required`); return value; };
@@ -611,7 +625,8 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       // A point click keeps its point: substituting the element's reference would click
       // its centre, which is exactly what the point exists to avoid.
       targetSelector = at ? undefined : typeof info.selector === 'string' ? info.selector : args.selector;
-      const control = { choice: info.choice === true };
+      // CONTAINER-VERB: a panel whose name is the text of the controls inside it is not each of those controls.
+      const control = { choice: info.choice === true, container: info.choice !== true && isContainer(info.name, info.controls) };
       // A point over a document the extension cannot inspect has no name to judge, so the
       // owner decides: the point is still the click they were shown.
       check = info.blind === true ? HOLD('click inside an embedded document Gaddi cannot inspect')
@@ -1492,11 +1507,30 @@ async function handle(input: unknown, conn: Socket) {
     if (typeof method === 'string' && browserMethods.has(method)) {
       // Outside the serial queue, so every waiting call shares one recovery instead of queueing behind it.
       const recovery = await chromeHeal.ensure();
-      result = await serial(async () => {
-        const value = await browserCall(methodName, params, meta);
+      const run = (args: IncomingParams) => serial(async () => {
+        const value = await browserCall(methodName, args, meta);
         observeEffect(methodName, meta, value);
         return value;
       });
+      try { result = await run(params); }
+      catch (held) {
+        // HELD-WAIT: the user's answer is awaited here, outside the serial queue, so other calls run meanwhile.
+        const approved = await answerFor(held, params, start, conn, () => audit(callAudit(method, params, meta, undefined, wireError(held), start)));
+        // Approved within the wait: the same call goes again with the approval's id, through every check a retry meets
+        // (a fresh describe, the action hash with TX-BIND and FRAME-BIND, consume, the extension's last check).
+        for (const key of Object.keys(meta)) if (!['caller', 'context', 'chat'].includes(key)) Reflect.deleteProperty(meta, key);
+        meta.tab = null; meta.url = null;
+        await chromeHeal.ensure();
+        try { result = await run({ ...params, approval: approved }); }
+        catch (error) {
+          // Two identical calls waited on one card: the first spent it, so this one did nothing, which is what was asked.
+          if (error instanceof GateError && error.code === 'approval-used') throw new GateError('approval-used',
+            `approval ${approved} was spent by an identical call that waited on the same card: the action ran once; look before acting again`);
+          throw error;
+        }
+        meta.approved = approved;
+      }
+      if (meta.approved && isRecord(result)) result = { ...result, approved: meta.approved };
       if (recovery && isRecord(result)) result = { ...result, recovery };
     }
     else if (Object.hasOwn(methods, methodName)) {
@@ -1507,38 +1541,65 @@ async function handle(input: unknown, conn: Socket) {
     }
     else throw new Error(`unknown method: ${method}`);
   } catch (e) {
-    error = { code: e instanceof GateError ? e.code : hasErrorCode(e, 'stale') ? 'stale' : 'error', message: errorMessage(e).split('\n')[0],
-      ...(e instanceof GateError && e.approval ? { approval: e.approval } : {}) };
+    error = wireError(e);
   }
-  // Invariant: audit never stores page content, typed text, eval source, selectors or URL queries.
-  // An upload records the file's name and size, never its folder or content.
-  if (!(typeof method === 'string' && nonAuditedMethods.has(method))) {
-    if (method === 'signin') audit({ ts: new Date().toISOString(), site: meta.signin?.site ?? '',
-      item_title: meta.signin?.item_title ?? '', outcome: meta.signin?.outcome ?? 'failed',
-      // OP-DIAGNOSTICS: a 1Password failure adds its step, fixed category and elapsed ms, never a value.
-      ...(meta.signin?.category ? { step: meta.signin.step, category: meta.signin.category, elapsed_ms: meta.signin.elapsed_ms } : {}) });
-    else audit({ ts: new Date().toISOString(), caller: meta.caller,
-      ...(typeof params.harness === 'string' ? { harness: params.harness } : {}), method, tab: meta.tab,
-      url: cleanURL(meta.url), ...(meta.tabs ? { tabs: meta.tabs } : {}), ...(meta.upload ? { upload: meta.upload } : {}),
-      ...(meta.grantId ? { grant: meta.grantId } : {}),
-      ...(meta.zone ? { zone: meta.zone } : {}),
-      ...(meta.sandbox ? { sandbox: true } : {}),
-      ...(meta.allowance ? { allowance: meta.allowance } : {}),
-      ...(meta.point ? { point: meta.point } : {}),
-      ...(meta.to ? { to: meta.to } : {}), ...(meta.holdMs ? { holdMs: meta.holdMs } : {}),
-      ...(meta.shot ? { shot: meta.shot } : {}),
-      ...(meta.reason ? { reason: meta.reason } : {}),
-      // A decision from another device names who, which request and what was decided: never its signature or nonce.
-      ...(meta.decision ? { approver: 'remote', kind: meta.decision.kind, verb: meta.decision.verb } : {}),
-      ...(meta.remoteKey ? { fingerprint: meta.remoteKey } : {}),
-      ...(typeof method === 'string' && ['click', 'hover', 'type', 'press', 'select', 'scroll', 'upload'].includes(method)
-        && isRecord(result) && typeof result.changed === 'boolean' ? { changed: result.changed } : {}),
-      outcome: error ? error.code === 'held' ? 'hold' : error.code === 'denied' ? 'deny' : 'error' : 'allow',
-      approval: error?.approval?.id ?? meta.decision?.approval ?? params.approval, error: error?.code, ms: Date.now() - start });
-  }
+  if (!(typeof method === 'string' && nonAuditedMethods.has(method))) audit(callAudit(method, params, meta, result, error, start));
   // The caller's correlation ID and wire keys are protocol, never page-derived credentials.
   if (!conn.destroyed) conn.write(JSON.stringify(error ? { id, error: publicOutput(error) }
     : { id, result: publicOutput(result) }) + '\n');
+}
+type CallError = Omit<WireError, 'approval'> & { approval?: StoredApprovalRef };
+function wireError(e: unknown): CallError {
+  return { code: e instanceof GateError ? e.code : hasErrorCode(e, 'stale') ? 'stale' : 'error', message: errorMessage(e).split('\n')[0],
+    ...(e instanceof GateError && e.approval ? { approval: e.approval } : {}) };
+}
+// HELD-WAIT invariant: a held MCP or CLI call (the adapter sends heldWait) waits for the user's answer to its own card,
+// at most `held_wait_seconds` counted from the call's start and never past that card's deadline (approvals.waitFor), so
+// the call ends inside the shortest client limit and cannot outlive the request. Granted: returns the id, and the caller
+// retries through the normal checks. Denied: denied. Still pending, an answer that arrives after the agent stopped
+// listening, or the wait turned off: the original held reply, so the approval is left for the agent's own retry.
+async function answerFor(held: unknown, params: IncomingParams, start: number, conn: Socket, auditHold: () => void): Promise<string> {
+  const waitMs = (policy.approvals.held_wait_seconds ?? HELD_WAIT_DEFAULT_SECONDS) * 1000;
+  if (!(held instanceof GateError) || held.code !== 'held' || !held.approval || params.heldWait !== true || policy.off === true) throw held;
+  const id = String(held.approval.id), budget = start + waitMs - Date.now();
+  if (budget <= 0) throw held;
+  let onClose = () => {};
+  const closed = new Promise<void>(resolve => { onClose = resolve; conn.once('close', onClose); });
+  let status: string;
+  try { status = await approvals.waitFor(id, budget, closed); } finally { conn.off('close', onClose); }
+  if (conn.destroyed || status !== 'granted' && status !== 'denied') {
+    held.approval = { ...held.approval, waited: Math.round((Date.now() - start) / 1000) };
+    throw held;
+  }
+  auditHold();
+  if (status === 'denied') throw new GateError('denied', `approval ${id} was denied`);
+  return id;
+}
+// Invariant: audit never stores page content, typed text, eval source, selectors or URL queries.
+// An upload records the file's name and size, never its folder or content.
+function callAudit(method: unknown, params: IncomingParams, meta: CallMeta, result: unknown, error: CallError | undefined, start: number) {
+  if (method === 'signin') return { ts: new Date().toISOString(), site: meta.signin?.site ?? '',
+    item_title: meta.signin?.item_title ?? '', outcome: meta.signin?.outcome ?? 'failed',
+    // OP-DIAGNOSTICS: a 1Password failure adds its step, fixed category and elapsed ms, never a value.
+    ...(meta.signin?.category ? { step: meta.signin.step, category: meta.signin.category, elapsed_ms: meta.signin.elapsed_ms } : {}) };
+  return { ts: new Date().toISOString(), caller: meta.caller,
+    ...(typeof params.harness === 'string' ? { harness: params.harness } : {}), method, tab: meta.tab,
+    url: cleanURL(meta.url), ...(meta.tabs ? { tabs: meta.tabs } : {}), ...(meta.upload ? { upload: meta.upload } : {}),
+    ...(meta.grantId ? { grant: meta.grantId } : {}),
+    ...(meta.zone ? { zone: meta.zone } : {}),
+    ...(meta.sandbox ? { sandbox: true } : {}),
+    ...(meta.allowance ? { allowance: meta.allowance } : {}),
+    ...(meta.point ? { point: meta.point } : {}),
+    ...(meta.to ? { to: meta.to } : {}), ...(meta.holdMs ? { holdMs: meta.holdMs } : {}),
+    ...(meta.shot ? { shot: meta.shot } : {}),
+    ...(meta.reason ? { reason: meta.reason } : {}),
+    // A decision from another device names who, which request and what was decided: never its signature or nonce.
+    ...(meta.decision ? { approver: 'remote', kind: meta.decision.kind, verb: meta.decision.verb } : {}),
+    ...(meta.remoteKey ? { fingerprint: meta.remoteKey } : {}),
+    ...(typeof method === 'string' && ['click', 'hover', 'type', 'press', 'select', 'scroll', 'upload'].includes(method)
+      && isRecord(result) && typeof result.changed === 'boolean' ? { changed: result.changed } : {}),
+    outcome: error ? error.code === 'held' ? 'hold' : error.code === 'denied' ? 'deny' : 'error' : 'allow',
+    approval: error?.approval?.id ?? meta.decision?.approval ?? meta.approved ?? params.approval, error: error?.code, ms: Date.now() - start };
 }
 
 const server = net.createServer(conn => {

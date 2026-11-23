@@ -253,7 +253,8 @@ switch (cmd) {
 }
 if (args.length) die(`unexpected arguments: ${args.join(' ')}`, 2);
 const rpc = <M extends string>(method: M, arguments_: BrokerParams = {}): Promise<BrokerResult<M>> =>
-  socketRequest(socket, { id: 1, method, params: { caller: params.caller, ...(params.harness ? { harness: params.harness } : {}), ...arguments_ } }, 60000);
+  // HELD-WAIT: a held command waits in the broker for the user's answer, bounded there inside this 60-second limit.
+  socketRequest(socket, { id: 1, method, params: { caller: params.caller, ...(params.harness ? { harness: params.harness } : {}), ...arguments_, heldWait: true } }, 60000);
 if (cmd !== 'events') {
   try {
     const result = cmd === 'read' ? await (await import('../mcp/reader.ts')).readBrowser(params, rpc) : await rpc(method, params);

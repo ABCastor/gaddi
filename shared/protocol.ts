@@ -48,6 +48,8 @@ export interface ChromeParams {
 export interface BrokerParams extends ChromeParams {
   lastSelfHeal?: unknown;
   caller?: string; session?: string; harness?: string; approval?: string; id?: string; proof?: SignedProof;
+  // HELD-WAIT: sent by the MCP adapter and the CLI, whose held calls wait in place for the user's answer.
+  heldWait?: boolean;
   kind?: string; n?: number; path?: string; item?: string;
   signup?: boolean; create?: { title: string; username: string; vault: string };
   // browser_signin: after a sign-up fill, press the form's button as an ordinary gated click.
@@ -90,7 +92,7 @@ export function extensionParams(params: { operation?: unknown; extensionId?: unk
 export type IncomingParams = { [K in keyof BrokerParams]?: unknown };
 export interface BrokerRequest { id: RequestId; method: string; params?: BrokerParams }
 export interface ChromeRequest { id: string | number; method: string; params: ChromeParams; deadline?: number }
-interface ApprovalRef { id: string; reason: string; expires: string }
+interface ApprovalRef { id: string; reason: string; expires: string; waited?: number }
 export interface WireError { code?: string; message: string; approval?: ApprovalRef }
 export interface Reply<T = unknown> { id: RequestId; result?: T; error?: WireError }
 export interface TabInfo { id?: number; tabId?: number; tab?: number; url?: string; title?: string; active?: boolean; group?: string; groupId?: number; windowId?: number; index?: number; frozen?: boolean; discarded?: boolean }
@@ -114,7 +116,9 @@ export interface GateFacts { chosen?: string[]; committed?: string[] | null; key
   // KEY-EFFECT: the names of the visible buttons in the form or dialog around a focused text field; [] outside one.
   composer?: string[];
   // TX-BIND: the digest of the transaction the control belongs to; '' when it belongs to none.
-  transaction?: string }
+  transaction?: string;
+  // CONTAINER-VERB: how many visible controls sit inside the clicked element (at most 50; a button holds none).
+  controls?: number }
 export interface ElementDescription {
   name?: string; tag?: string; type?: string; autocomplete?: string;
   href?: string; submitName?: string; matched?: string[]; selector?: string;
@@ -128,7 +132,7 @@ export interface ElementDescription {
 export interface PointTarget {
   selector: string; name: string; tag: string; role: string; choice: boolean; href: string;
   type: string; autocomplete: string; submitName: string; secret: boolean; disabled: boolean;
-  signature: string; committed: string[] | null;
+  signature: string; committed: string[] | null; controls: number;
   // TX-BIND: the transaction digest around the control; FRAME-BIND: this document's origin, and Chrome's id for it
   // (added by bg.ts from the injection result, which the page cannot forge).
   transaction: string; origin: string; documentId?: string;

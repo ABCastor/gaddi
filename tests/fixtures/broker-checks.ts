@@ -17,6 +17,7 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { createProofVerifier } from '../../daemon/proof.ts';
+import { createApprovals } from '../../daemon/approvals.ts';
 import { Client as MCPClient } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 const repo = fileURLToPath(new URL('../../', import.meta.url));
@@ -38,7 +39,9 @@ if (scenario === 'remote-approver') {
 }
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 fs.writeFileSync(publicPath, publicKey.export({ type: 'spki', format: 'pem' }));
-fs.writeFileSync(path.join(home, 'policy.json'), JSON.stringify({ ...(scenario === 'sessions' && mode !== 'own' ? { browser: { window: 'shared', show: 'attention' } } : {}), approvals: { ...(scenario === 'approval-wait' ? { wait_minutes: 1, grant_rules_max: 100 } : {}), ttl_minutes: scenario === 'approval-wait' ? 0.1 : scenario === 'approval' ? 0.03 : scenario === 'approval-picture' ? 0.1 : 10 }, deny: { type_into: ['input[type=password]', 'input[autocomplete=current-password]', '.sensitive'] },
+fs.writeFileSync(path.join(home, 'policy.json'), JSON.stringify({ ...(scenario === 'sessions' && mode !== 'own' ? { browser: { window: 'shared', show: 'attention' } } : {}), approvals: { ...(scenario === 'approval-wait' ? { wait_minutes: 1, grant_rules_max: 100 } : {}),
+  // HELD-WAIT: only its own scenario waits (two seconds); every other one gets the held reply at once, as before.
+  held_wait_seconds: scenario === 'held-wait' ? 2 : 0, ttl_minutes: scenario === 'held-wait' ? 0.1 : scenario === 'approval-wait' ? 0.1 : scenario === 'approval' ? 0.03 : scenario === 'approval-picture' ? 0.1 : 10 }, deny: { type_into: ['input[type=password]', 'input[autocomplete=current-password]', '.sensitive'] },
   // KEY-EFFECT: a Send button the user remembered on one site, so Cmd+Enter in its composer can be read as that click.
   ...(scenario === 'choice-gates' ? { sends: { remember: [{ site: 'https://remembered.example', kind: 'click', reason: 'verb:send' }] } } : {}) }));
 if (scenario === 'eval-overlay') fs.copyFileSync(path.join(repo, 'tests/fixtures/eval-overlay.json'), path.join(home, 'policy.json'));
@@ -116,7 +119,7 @@ const pictureBox = { x: 1, y: 2, width: 4, height: 3 };
 // What a point lands on, one distinguishable case each. `choice` is what a radio's own words are;
 // `frameUrl` is the address of the embedded document that would act; `blind` is a document the
 // extension could not look inside.
-const POINTS: Record<string, { selector: string; name?: string; role?: string; tag?: string; choice?: boolean; blind?: boolean; frameUrl?: string }> = {
+const POINTS: Record<string, { selector: string; name?: string; role?: string; tag?: string; choice?: boolean; blind?: boolean; frameUrl?: string; controls?: number }> = {
   '120,240': { selector: '#pay' },
   '10,10': { selector: '#quiz', name: 'The windshield centre post reduces blind spots', role: 'radio', tag: 'input', choice: true },
   '11,11': { selector: '#del-choice', name: 'Delete', role: 'checkbox', tag: 'input', choice: true },
@@ -131,6 +134,17 @@ const POINTS: Record<string, { selector: string; name?: string; role?: string; t
   '17,17': { selector: '#service-type', name: 'Pay Monthly Mobile', role: 'radio', tag: 'input', choice: true },
   '18,18': { selector: '#pay-ten', name: 'Pay £10', role: 'button', tag: 'button' },
   '19,19': { selector: '#wipe', name: 'Delete all my files', role: 'checkbox', tag: 'input', choice: true },
+  // CONTAINER-VERB: a point on the left panel of a reader app (read.readwise.io) lands on the panel itself, whose name is
+  // all its text: the "Remove" inside it is one of its buttons. Then the same text from an extension that does not count
+  // controls, a real button with a long name, and a dialog that opens with its verb.
+  '20,20': { selector: '#left-panel', role: '', tag: 'div', controls: 14,
+    name: 'logo Hide left panel Add Home Home Ghostreader Library Feed Shortlist Archive Tags Highlights Remove from library Search Preferences' },
+  '21,21': { selector: '#left-panel', role: '', tag: 'div',
+    name: 'logo Hide left panel Add Home Home Ghostreader Library Feed Shortlist Archive Tags Highlights Remove from library Search Preferences' },
+  '22,22': { selector: '#remove-long', role: 'button', tag: 'button', controls: 0,
+    name: 'Permanently remove this document and every highlight and note from your library for good' },
+  '23,23': { selector: '#delete-dialog', role: 'dialog', tag: 'div', controls: 2,
+    name: 'Delete account This removes your library, highlights, notes and subscriptions for good Cancel Delete' },
   // DRAG-HOLD: a card to pick up, drop targets (a plain area, a bin, a Delete zone, an area in another document) and
   // hold-to-confirm buttons.
   '30,30': { selector: '#card', name: 'Card A', role: 'generic', tag: 'div' },
@@ -219,6 +233,7 @@ async function fakeBridge() {
             href: control.describeHref ?? (s === '#checkout-link' ? '/checkout?token=PRIVATE_LINK_QUERY' : s === '#read-link' ? '/article?token=PRIVATE_LINK_QUERY' : ''), submitName: control.focusSubmit,
             matched: s === '#sensitive' ? ['.sensitive'] : [], role: at?.role ?? control.describeRole ?? 'button', password: false, disabled: false, choice: at?.choice === true,
             ...(at?.frameUrl ? { frameId: 42, frameUrl: at.frameUrl } : {}), ...(at?.blind ? { blind: true } : {}),
+            ...(at?.controls !== undefined ? { controls: at.controls } : {}),
             // Which document a point lands in: its own origin and Chrome's document id (the tab itself is frame 0).
             ...(at ? { origin: new URL(at.frameUrl ?? tab.url).origin, documentId: at.frameUrl ? 'doc-frame-42' : 'doc-top' } : {}),
             ...(at && at.frameUrl && control.pointFrame ? control.pointFrame : {}),
@@ -382,6 +397,20 @@ async function clickVerbs(c: Client, b: Bridge) {
   await rejected(c, 'click', { tab: 7, at: { x: 19, y: 19 } }, 'held');
   assert.equal(b.calls.filter(m => m.method === 'chrome.click').length, clicks + 1, 'held clicks never reach Chrome');
   pass('a-choice-named-with-a-leading-verb-is-chosen-but-payment-buttons-and-orders-are-held');
+  // CONTAINER-VERB: the panel is clicked, not its Remove button; the panel's text names no action of its own.
+  const panelClicks = b.calls.filter(m => m.method === 'chrome.click').length;
+  const panel = await c.call('click', { tab: 7, at: { x: 20, y: 20 } });
+  assert.equal(panel.error, undefined, `ASSERT_CONTAINER_NOT_VERB: a panel holding a Remove button is not a removal: ${JSON.stringify(panel.error)}`);
+  assert.equal(b.calls.filter(m => m.method === 'chrome.click').length, panelClicks + 1, 'ASSERT_CONTAINER_NOT_VERB: the panel is clicked');
+  const heldReason = async (at: { x: number; y: number }) => { const r = await c.call('click', { tab: 7, at }); return r.error?.code === 'held' ? r.error.message : `not held: ${JSON.stringify(r)}`; };
+  // Without the extension's count of controls inside, the same text is judged as before: held.
+  assert.match(await heldReason({ x: 21, y: 21 }), /verb:remove/, 'ASSERT_CONTAINER_NEEDS_COUNT: no count, no container');
+  // A button with a long name holds no controls: its verb is still its action.
+  assert.match(await heldReason({ x: 22, y: 22 }), /verb:remove/, 'ASSERT_CONTAINER_BUTTON_HELD: a long-named Remove button still asks');
+  // A container whose own label leads with the verb still asks.
+  assert.match(await heldReason({ x: 23, y: 23 }), /verb:delete/, 'ASSERT_CONTAINER_LEADING_VERB_HELD: a dialog that opens with Delete still asks');
+  assert.equal(b.calls.filter(m => m.method === 'chrome.click').length, panelClicks + 1, 'held clicks never reach Chrome');
+  pass('a-container-is-not-the-buttons-inside-it-but-buttons-and-leading-verbs-still-ask');
   // An embedded document judges its own address: a harmless name inside a checkout page is held.
   const frameful = await rejected(c, 'click', { tab: 7, at: { x: 12, y: 12 } }, 'held');
   assert.match(frameful.message, /checkout/, 'the hold names the embedded address the owner is judging');
@@ -954,6 +983,207 @@ async function approvalBinding(c: Client, b: Bridge) {
     assert.equal((await c2.call('click', { tab: 7, selector: '#del', approval: held.id })).error?.code, 'approval-mismatch',
       'ASSERT_TX_RESTART: a restored approval cannot be matched with a new run key');
     assert.equal(b2.calls.filter(m => m.method === 'chrome.click').length, 0, 'ASSERT_TX_RESTART: nothing was clicked');
+  });
+  if (failures.length) throw new assert.AssertionError({ message: failures.join('; ') });
+}
+// HELD-WAIT and SAME-ACTION: an approval the user gives is never wasted, and one action never costs two prompts. A held
+// call from the MCP adapter or the CLI (heldWait) waits in place for the answer: approved, the action runs in that same
+// call through every final check; denied, denied; unanswered, held as before. The same action asked again joins its
+// waiting card, or spends its granted approval without the id, only for the same caller and chat, once, within its TTL.
+async function heldWait(c: Client, b: Bridge) {
+  const clicks = () => b.calls.filter(m => m.method === 'chrome.click').length;
+  const other = client(); await result(other, 'status');
+  const failures: string[] = [];
+  async function check(name: string, fn: () => Promise<void>) {
+    try { await fn(); pass(name); } catch (error) {
+      if (error instanceof FixtureConnectionError) throw error;
+      failures.push(`${name}: ${error instanceof Error ? error.message : String(error)}`); console.log(`FAIL ${name}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  const cards = async () => { const list = await result(other, 'approvals.list'); return new Set([...list.pending, ...list.recent].map(a => a.id)); };
+  const record = async (id: string) => { const list = await result(other, 'approvals.list'); return [...list.pending, ...list.recent].find(a => a.id === id); };
+  // The card a waiting call created, read from another connection while that call is still open.
+  async function waitingCard(test: (a: PublicApproval) => boolean) {
+    for (let i = 0; i < 100; i++) {
+      const found = (await result(other, 'approvals.list')).pending.find(a => a.status === 'pending' && test(a));
+      if (found) return found;
+      await delay(20);
+    }
+    throw new assert.AssertionError({ message: 'no waiting card appeared' });
+  }
+  const approvedOf = (reply: Reply) => isRecord(reply.result) ? reply.result.approved : undefined;
+  const TEN = 'a'.repeat(64), THOUSAND = 'b'.repeat(64);
+  await check('ASSERT_HELD_WAIT_APPROVED', async () => {
+    b.control.describeName = 'Pay'; b.control.transaction = TEN;
+    const before = clicks(), known = await cards();
+    const waiting = c.call('click', { tab: 7, selector: '#pay', heldWait: true, session: 'chat-a' });
+    const card = await waitingCard(a => a.detail === 'Pay');
+    // Other broker calls are not queued behind the waiting one.
+    const started = Date.now(); await result(other, 'tabs'); const blocked = Date.now() - started;
+    assert.ok(blocked < 1000, `ASSERT_HELD_WAIT_NOT_BLOCKING: another call took ${blocked} ms while one waited`);
+    await result(other, 'approval.grant', { id: card.id, proof: proof(card) });
+    const reply = await waiting;
+    assert.equal(reply.error, undefined, `ASSERT_HELD_WAIT_APPROVED: approved within the wait, the same call acts: ${JSON.stringify(reply.error)}`);
+    assert.equal(approvedOf(reply), card.id, 'ASSERT_HELD_WAIT_APPROVED: the result names the approval it spent');
+    assert.equal(clicks(), before + 1, 'ASSERT_HELD_WAIT_APPROVED: clicked once');
+    assert.equal(b.calls.findLast(m => m.method === 'chrome.click')?.params.checkedDescription?.transaction, TEN,
+      'ASSERT_HELD_WAIT_APPROVED: the final check gets the approved digest');
+    assert.equal((await record(card.id))?.status, 'used', 'ASSERT_HELD_WAIT_APPROVED: the approval is spent');
+    assert.equal([...await cards()].filter(id => !known.has(id)).length, 1, 'ASSERT_HELD_WAIT_APPROVED: one card');
+    const audit = fs.readFileSync(path.join(home, 'audit.jsonl'), 'utf8').trim().split('\n').map(line => parseJSON(line)).filter(isRecord).filter(e => e.method === 'click').slice(-2);
+    assert.deepEqual(audit.map(e => [e.method, e.outcome, e.approval]), [['click', 'hold', card.id], ['click', 'allow', card.id]],
+      'ASSERT_HELD_WAIT_APPROVED: the audit records the hold and the approved click');
+  });
+  await check('ASSERT_HELD_WAIT_TX', async () => {
+    // Approved within the wait, but the amount changed before the action: refused, nothing clicked (TX-BIND).
+    b.control.describeName = 'Pay'; b.control.transaction = TEN;
+    const before = clicks();
+    const waiting = c.call('click', { tab: 7, selector: '#pay', heldWait: true, session: 'chat-tx' });
+    const card = await waitingCard(a => a.detail === 'Pay');
+    b.control.transaction = THOUSAND;
+    await result(other, 'approval.grant', { id: card.id, proof: proof(card) });
+    const reply = await waiting;
+    assert.equal(reply.error?.code, 'approval-mismatch', `ASSERT_HELD_WAIT_TX: a changed amount is refused: ${JSON.stringify(reply)}`);
+    assert.equal(clicks(), before, 'ASSERT_HELD_WAIT_TX: nothing was clicked');
+    b.control.transaction = TEN;
+  });
+  await check('ASSERT_HELD_WAIT_DENIED', async () => {
+    b.control.describeName = 'Delete'; b.control.transaction = '';
+    const before = clicks();
+    const waiting = c.call('click', { tab: 7, selector: '#del', heldWait: true, session: 'chat-a' });
+    const card = await waitingCard(a => a.detail === 'Delete');
+    await result(other, 'approval.deny', { id: card.id, proof: proof(card, 'deny') });
+    const reply = await waiting;
+    assert.equal(reply.error?.code, 'denied', `ASSERT_HELD_WAIT_DENIED: denied within the wait: ${JSON.stringify(reply)}`);
+    assert.equal(clicks(), before, 'ASSERT_HELD_WAIT_DENIED: nothing was clicked');
+  });
+  let late: PublicApproval | undefined;
+  await check('ASSERT_HELD_WAIT_PENDING', async () => {
+    // Nobody answers: after the wait (two seconds here) the call is held exactly as before, and says it waited.
+    b.control.describeName = 'Confirm order';
+    const started = Date.now();
+    const reply = await c.call('click', { tab: 7, selector: '#confirm', heldWait: true, session: 'chat-a' });
+    const took = Date.now() - started;
+    assert.equal(reply.error?.code, 'held', `ASSERT_HELD_WAIT_PENDING: still held: ${JSON.stringify(reply)}`);
+    assert.ok(took >= 1800 && took < 4000, `ASSERT_HELD_WAIT_PENDING: waited about two seconds, took ${took} ms`);
+    assert.ok((reply.error?.approval?.waited ?? 0) >= 1, 'ASSERT_HELD_WAIT_PENDING: the reply says it waited');
+    // A call that does not ask to wait (another socket client) is held at once, as before.
+    const quick = Date.now();
+    assert.equal((await c.call('click', { tab: 7, selector: '#confirm', session: 'chat-a' })).error?.approval?.id, reply.error?.approval?.id);
+    assert.ok(Date.now() - quick < 1000, 'ASSERT_HELD_WAIT_PENDING: no wait without heldWait');
+    late = await pending(c, reply.error!);
+  });
+  await check('ASSERT_SAME_ACTION_SPEND', async () => {
+    // The user answers after the wait; the agent repeats the same call without the id: it spends that approval.
+    assert.ok(late, 'ASSERT_SAME_ACTION_SPEND: the late card exists');
+    await result(other, 'approval.grant', { id: late.id, proof: proof(late) });
+    b.control.describeName = 'Confirm order';
+    const before = clicks(), known = await cards();
+    const reply = await c.call('click', { tab: 7, selector: '#confirm', session: 'chat-a' });
+    assert.equal(reply.error, undefined, `ASSERT_SAME_ACTION_SPEND: the repeated call spends the approval: ${JSON.stringify(reply.error)}`);
+    assert.equal(approvedOf(reply), late.id, 'ASSERT_SAME_ACTION_SPEND: and names it');
+    assert.equal(clicks(), before + 1, 'ASSERT_SAME_ACTION_SPEND: clicked once');
+    assert.equal(await cards().then(now => [...now].filter(id => !known.has(id)).length), 0, 'ASSERT_SAME_ACTION_SPEND: no new card');
+    // Spent: the next identical call asks again.
+    const again = await c.call('click', { tab: 7, selector: '#confirm', session: 'chat-a' });
+    assert.equal(again.error?.code, 'held', 'ASSERT_SAME_ACTION_ONCE: a spent approval is not spent twice');
+    assert.notEqual(again.error?.approval?.id, late.id, 'ASSERT_SAME_ACTION_ONCE: a new card');
+    assert.equal(clicks(), before + 1, 'ASSERT_SAME_ACTION_ONCE: no second click');
+    await result(other, 'approval.cancel', { id: again.error!.approval!.id });
+  });
+  await check('ASSERT_SAME_ACTION_JOIN', async () => {
+    // A second identical request while the card waits joins it (one card, one prompt) and waits too.
+    b.control.describeName = 'Send';
+    const before = clicks(), known = await cards();
+    const first = c.call('click', { tab: 7, selector: '#send', heldWait: true, session: 'chat-b' });
+    const card = await waitingCard(a => a.detail === 'Send');
+    const second = other.call('click', { tab: 7, selector: '#send', heldWait: true, session: 'chat-b' });
+    await delay(300);
+    assert.equal([...await cards()].filter(id => !known.has(id)).length, 1, 'ASSERT_SAME_ACTION_JOIN: one card for both requests');
+    await result(c, 'approval.grant', { id: card.id, proof: proof(card) });
+    const replies = await Promise.all([first, second]);
+    assert.equal(clicks(), before + 1, 'ASSERT_SAME_ACTION_JOIN: the action ran once');
+    assert.deepEqual(replies.map(approvedOf).filter(Boolean), [card.id], 'ASSERT_SAME_ACTION_JOIN: one call spent it');
+    const loser = replies.find(reply => reply.error);
+    assert.equal(loser?.error?.code, 'approval-used', `ASSERT_SAME_ACTION_JOIN: the other says it already ran: ${JSON.stringify(loser)}`);
+    assert.match(loser!.error!.message, /identical call/, 'ASSERT_SAME_ACTION_JOIN: and why');
+  });
+  await check('ASSERT_SAME_ACTION_OTHER_CHAT', async () => {
+    // Another chat gets its own card, and neither another chat nor another caller can spend this one's approval.
+    b.control.describeName = 'Remove';
+    const before = clicks();
+    const mine = (await rejected(c, 'click', { tab: 7, selector: '#remove', session: 'chat-a' }, 'held')).approval!;
+    const theirs = (await rejected(c, 'click', { tab: 7, selector: '#remove', session: 'chat-b' }, 'held')).approval!;
+    assert.notEqual(theirs.id, mine.id, 'ASSERT_SAME_ACTION_OTHER_CHAT: another chat gets its own card');
+    const card = await pending(c, { message: 'held', approval: mine });
+    await result(other, 'approval.grant', { id: card.id, proof: proof(card) });
+    assert.equal((await rejected(c, 'click', { tab: 7, selector: '#remove', session: 'chat-b' }, 'held')).approval!.id, theirs.id,
+      'ASSERT_SAME_ACTION_OTHER_CHAT: the other chat keeps waiting on its own card');
+    assert.notEqual((await rejected(c, 'click', { tab: 7, selector: '#remove', session: 'chat-a', caller: 'another-agent' }, 'held')).approval!.id, mine.id,
+      'ASSERT_SAME_ACTION_OTHER_CHAT: another caller cannot spend it');
+    assert.equal(clicks(), before, 'ASSERT_SAME_ACTION_OTHER_CHAT: nothing was clicked for them');
+    assert.equal((await record(mine.id))?.status, 'granted', 'ASSERT_SAME_ACTION_OTHER_CHAT: the approval is still there for its chat');
+    assert.equal(approvedOf(await c.call('click', { tab: 7, selector: '#remove', session: 'chat-a' })), mine.id, 'ASSERT_SAME_ACTION_OTHER_CHAT: its own chat spends it');
+    assert.equal(clicks(), before + 1);
+  });
+  await check('ASSERT_SAME_ACTION_TX', async () => {
+    // Approved for 10; the agent repeats the call after the amount became 1000: not spent, nothing clicked, and the new
+    // amount is a new decision. With the id, the existing TX-BIND refusal; the unchanged form still spends it, once.
+    b.control.describeName = 'Pay'; b.control.transaction = TEN;
+    const held = (await rejected(c, 'click', { tab: 7, selector: '#pay', session: 'chat-c' }, 'held')).approval!;
+    const card = await pending(c, { message: 'held', approval: held });
+    await result(other, 'approval.grant', { id: card.id, proof: proof(card) });
+    const before = clicks();
+    b.control.transaction = THOUSAND;
+    const changed = await c.call('click', { tab: 7, selector: '#pay', session: 'chat-c' });
+    assert.equal(changed.error?.code, 'held', `ASSERT_SAME_ACTION_TX: a changed amount does not spend the approval: ${JSON.stringify(changed)}`);
+    assert.notEqual(changed.error?.approval?.id, held.id, 'ASSERT_SAME_ACTION_TX: the new amount is a new card');
+    assert.equal(clicks(), before, 'ASSERT_SAME_ACTION_TX: nothing was clicked');
+    assert.equal((await record(held.id))?.status, 'granted', 'ASSERT_SAME_ACTION_TX: the approval for 10 is not spent');
+    assert.equal((await c.call('click', { tab: 7, selector: '#pay', session: 'chat-c', approval: held.id })).error?.code, 'approval-mismatch',
+      'ASSERT_SAME_ACTION_TX: with its id, the changed amount is refused (TX-BIND)');
+    await result(other, 'approval.cancel', { id: changed.error!.approval!.id });
+    b.control.transaction = TEN;
+    assert.equal(approvedOf(await c.call('click', { tab: 7, selector: '#pay', session: 'chat-c' })), held.id, 'ASSERT_SAME_ACTION_TX: the approved amount spends it');
+    assert.equal(clicks(), before + 1);
+  });
+  await check('ASSERT_HELD_WAIT_CLI', async () => {
+    // The CLI waits too: one command, approved while it waits, acts and names the approval.
+    b.control.describeName = 'Post'; b.control.transaction = '';
+    const before = clicks();
+    // Settled into a value at once, so a command that ends early fails this check, not the whole run.
+    const command = runCLI(['click', '#post']).then(reply => ({ reply }), (error: unknown) => ({ error }));
+    const card = await waitingCard(a => a.detail === 'Post' && a.caller === 'cli');
+    await result(other, 'approval.grant', { id: card.id, proof: proof(card) });
+    const ended = await command;
+    if ('error' in ended) throw ended.error;
+    const reply = ended.reply;
+    assert.equal(approvedOf(reply), card.id, `ASSERT_HELD_WAIT_CLI: the CLI command acted once approved: ${JSON.stringify(reply)}`);
+    assert.equal(clicks(), before + 1, 'ASSERT_HELD_WAIT_CLI: clicked once');
+  });
+  await check('ASSERT_SAME_ACTION_TTL', async () => {
+    // A granted approval left unused past its TTL (six seconds here) cannot be spent by repeating the call.
+    b.control.describeName = 'Unsubscribe';
+    const held = (await rejected(c, 'click', { tab: 7, selector: '#unsubscribe', session: 'chat-a' }, 'held')).approval!;
+    const card = await pending(c, { message: 'held', approval: held });
+    await result(other, 'approval.grant', { id: card.id, proof: proof(card) });
+    for (let i = 0; i < 100 && (await record(held.id))?.status === 'granted'; i++) await delay(100);
+    assert.equal((await record(held.id))?.status, 'expired', 'ASSERT_SAME_ACTION_TTL: the approval expired');
+    const before = clicks();
+    const reply = await c.call('click', { tab: 7, selector: '#unsubscribe', session: 'chat-a' });
+    assert.equal(reply.error?.code, 'held', `ASSERT_SAME_ACTION_TTL: an expired approval is not spent: ${JSON.stringify(reply)}`);
+    assert.equal(clicks(), before, 'ASSERT_SAME_ACTION_TTL: nothing was clicked');
+  });
+  await check('ASSERT_HELD_WAIT_TTL', async () => {
+    // The wait never outlives the request it waits for: a 300 ms request ends a 30-second wait at its deadline.
+    const approvals = createApprovals({ ttlMinutes: 0.005 });
+    try {
+      const a = approvals.hold({ kind: 'click', caller: 'test', url: 'https://unseen.example/', detail: 'Delete', action: { method: 'click', caller: 'test', url: 'https://unseen.example/' } });
+      const started = Date.now();
+      await approvals.waitFor(a.id, 30000);
+      const took = Date.now() - started;
+      assert.ok(took < 750, `ASSERT_HELD_WAIT_TTL: the wait ended at the request's deadline, took ${took} ms`);
+    } finally { approvals.stop(); }
   });
   if (failures.length) throw new assert.AssertionError({ message: failures.join('; ') });
 }
@@ -2884,6 +3114,7 @@ try {
   else if (scenario === 'session-grant') await sessionGrant(c, b);
   else if (scenario === 'remote-approver') await remoteApprover(c, b);
   else if (scenario === 'approval-binding') await approvalBinding(c, b);
+  else if (scenario === 'held-wait') await heldWait(c, b);
   else throw new Error('unknown scenario');
   if (mode === 'delayed-bind') {
     assert.match(stderr, /PROBE socket bound; listen delayed/, 'ASSERT_BROKER_READY_ON_RESTART: the bind-before-listen fault ran');

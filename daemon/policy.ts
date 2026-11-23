@@ -10,7 +10,7 @@ interface PolicyData {
  version: number; comment?: string;
  hold: { verbs: string[]; url_patterns: string[]; keys: { url: string; keys: string[] }[]; uploads?: boolean; downloads?: boolean; extensions?: { disable?: boolean; uninstall?: boolean } };
  deny: { comment?: string; verbs_on_hosts: { host: string; verbs: string[] }[]; type_into: string[]; eval_patterns: string[] };
- approvals: { ttl_minutes: number; wait_minutes?: number; grant_rules_max?: number };
+ approvals: { ttl_minutes: number; wait_minutes?: number; grant_rules_max?: number; held_wait_seconds?: number };
  signin?: { remember: string[] };
  sends?: { remember: SendRule[] };
  uploads?: { remember: string[] };
@@ -73,7 +73,10 @@ const schema: Schema = {
   deny: { comment: string, verbs_on_hosts: [{ host: pattern, verbs: [text] }], type_into: [text], eval_patterns: [pattern] },
   approvals: { ttl_minutes: v => typeof v === 'number' && Number.isFinite(v) && v > 0,
     wait_minutes: v => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 && v <= 720,
-    grant_rules_max: v => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 && v <= 100 },
+    grant_rules_max: v => typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 && v <= 100,
+    // HELD-WAIT: whole seconds a held MCP or CLI call waits for the user's answer; 0 turns the wait off. At most 50, so a
+    // waited call and its approved action fit inside the shortest client limit (the CLI's and Pi's 60 seconds).
+    held_wait_seconds: v => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0 && v <= 50 },
   signin: { remember: [exactOrigin] },
   sends: { remember: [{ site: exactOrigin, kind: v => v === 'click' || v === 'press', reason: sendReason }] },
   uploads: { remember: [exactOrigin] },
@@ -393,7 +396,28 @@ const NAMING_VERBS = ['send', 'send now', 'invia', 'invia ora', 'pay', 'pay now'
 export function commitVerb(name: unknown, verbs: string[]): string | null {
   return leadingVerb(name, verbs.filter(verb => !NAMING_VERBS.includes(fold(verb))), true);
 }
-export interface ClickControl { choice?: boolean; commit?: boolean }
+// CONTAINER-VERB: a click that lands on a container (a panel, a card, a toolbar) gets the container's name, which is all
+// of its text: "logo Hide left panel Add Home … Remove …" holds the names of every button inside it. A verb somewhere in
+// that text names one of those buttons, not what clicking the container does. Invariant: an element is a container only
+// when the extension counted two or more visible controls inside it AND its name is longer than CONTAINER_WORDS words; a
+// button (no controls inside), a short name, or a description without the count is judged exactly as before.
+const CONTAINER_WORDS = 12;
+export function isContainer(name: unknown, controls: unknown) {
+  return typeof controls === 'number' && Number.isFinite(controls) && controls >= 2 && fold(name).split(' ').length > CONTAINER_WORDS;
+}
+// A container is held on a hold verb only when the verb leads its name (whole word), as its own label would: a dialog
+// that opens with "Delete account …" still asks. Deny rules still read the whole name: this only removes false holds.
+function containerVerb(name: unknown, verbs: string[]): string | null {
+  const text = fold(name);
+  let best: string | null = null;
+  for (const v of verbs || []) {
+    const verb = fold(v);
+    if (!verb || !text.startsWith(verb) || text.length > verb.length && !/^[^a-z0-9]/.test(text.slice(verb.length))) continue;
+    if (!best || verb.length > fold(best).length) best = v;
+  }
+  return best;
+}
+export interface ClickControl { choice?: boolean; commit?: boolean; container?: boolean }
 export function rx(pattern: string) { try { return new RegExp(pattern, 'i'); } catch { return null; } }
 // Action URL holds apply on every host.
 export function checkNavigation(policy: Policy, url: string) {
@@ -418,7 +442,8 @@ export function checkClick(policy: Policy, host: string, accessibleName: string,
     const v = verbIn(rule.verbs);
     if (v) return DENY(`verb:${v} on ${host}`);
   }
-  const v = verbIn(policy.hold.verbs);
+  const v = control.container && !control.commit && !control.choice ? containerVerb(name, policy.hold.verbs) /* CONTAINER_VERB_TEST_POINT */
+    : verbIn(policy.hold.verbs);
   if (v) return HOLD(`verb:${v}`);
   return ALLOW();
 }

@@ -320,6 +320,9 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     return {
       // TX-BIND: a digest of the transaction this control acts on (its form, dialog or composer); '' when it is in none.
       transaction: transactionDigest(interactive),
+      // CONTAINER-VERB: the visible controls inside what the click lands on, so the broker can tell a panel whose name is
+      // all its text (its buttons' names included) from one of those buttons.
+      controls: innerControls(interactive),
       // SELECT-CHOICE: the option this value picks (the first with that value, as the page's own select does).
       ...(el.tagName === 'SELECT' && typeof params.value === 'string' ? { chosen: chosen ? optionNames(chosen) : [] } : {}),
       // COMMIT-CHOICES: a button commits the choices that are on in its form (or dialog, or page); null is not a button.
@@ -330,6 +333,15 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
       ...(spaceTarget && spaceTarget.tagName !== 'SUMMARY' ? { spaceCommits: committedChoices(spaceTarget) } : {}),
       // KEY-EFFECT: what Cmd/Ctrl+Enter in this text field may press: the visible buttons of its form or dialog.
       composer: composerButtons(el) };
+  }
+  // CONTAINER-VERB invariant: counts the visible controls strictly inside el (el itself never counts), at most 50. A real
+  // button holds none, so its name is still judged as a whole; only an element that holds two or more is a container.
+  const INNER_CONTROLS = 'button, a[href], input, select, textarea, summary, [role="button"], [role="link"], [role="menuitem"], '
+    + '[role="tab"], [role="checkbox"], [role="radio"], [role="switch"], [role="option"]';
+  function innerControls(el: PageElement): number {
+    let count = 0;
+    for (const node of el.querySelectorAll<PageElement>(INNER_CONTROLS)) if (node !== el && visible(node) && ++count >= 50) break;
+    return count;
   }
   // KEY-EFFECT: in a text field, Cmd/Ctrl+Enter is the composer's send. Invariant: the names of every visible button in the
   // nearest form, else the nearest dialog, around a focused text field (shadow roots included); [] for any other focus.
@@ -1059,7 +1071,7 @@ export async function pageTask(action: string, params: ChromeParams = {}): Promi
     return { selector: described.selector, name: described.name as string, tag: described.tag, role: described.role,
       choice: described.choice === true, href: described.href, type: described.type, autocomplete: described.autocomplete,
       submitName: described.submitName as string, secret: described.password, disabled: described.disabled,
-      committed: described.committed,
+      committed: described.committed, controls: described.controls,
       // TX-BIND and FRAME-BIND: the transaction around the control, and the document's own origin (bg.ts adds Chrome's
       // document id). A point on a frame element is followed inwards, so its own digest is never used.
       transaction: frame ? '' : described.transaction, origin: location.origin,

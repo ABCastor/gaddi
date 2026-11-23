@@ -1224,7 +1224,7 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
         return { ...result, selector: target.selector, name: target.name, tag: target.tag, type: target.type,
           autocomplete: target.autocomplete, href: target.href, submitName: target.submitName, matched: [], role: target.role,
           password: target.secret, disabled: target.disabled, choice: target.choice,
-          committed: target.committed, transaction: target.transaction,
+          committed: target.committed, transaction: target.transaction, controls: target.controls,
           // FRAME-BIND: the document the point landed in, which the broker binds and the click checks again.
           origin: target.origin, ...(target.documentId ? { documentId: target.documentId } : {}),
           ...(resolved.frameId !== undefined ? { frameId: resolved.frameId } : {}),

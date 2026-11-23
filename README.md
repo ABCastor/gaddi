@@ -18,6 +18,8 @@ I built it to work with MCP-capable agents without taking focus from my other ap
 
 **A held action waits for you to confirm it in Gaddi's Mac panel.** Telling the agent "yes" does not create that signature.
 
+The agent's call waits up to 45 seconds for your answer; approve in that time and the action runs in that same call. One action never asks twice: asking again joins the waiting card, and repeating the same action later uses the approval you already gave.
+
 A local broker checks each request before Chrome. The default policy holds recognized payments, purchases, deletion, security changes and sends, plus all uploads. Gmail Send and typing literal text into password fields are refused; a password goes in only from 1Password.
 
 <img src="docs/media/approval.png" width="700" alt="The native approval card names the agent, site and Publish local note action, shows the target on the page, and offers Approve or Deny.">

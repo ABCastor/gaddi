@@ -11,6 +11,8 @@ export GADDI_APPROVER_PUB="$GADDI_HOME/approver.pub"
 export GADDI_POLICY_OFF=0
 export GADDI_APP_LAUNCHER=/usr/bin/true
 mkdir -p "$GADDI_HOME"
+# HELD-WAIT: held calls through the adapter wait two seconds here (45 by default), so the suite stays short.
+printf '{"approvals":{"held_wait_seconds":2}}\n' >"$GADDI_HOME/policy.json"
 node "$REPO/tests/mcp/map.test.ts"
 node "$REPO/tests/mcp/reader.test.ts"
 node "$REPO/tests/mcp/metadata.test.ts"

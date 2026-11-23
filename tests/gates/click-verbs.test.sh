@@ -22,3 +22,23 @@ if ! grep -q '^FAIL ASSERTION click-verbs: ASSERT_CHOICE_NAME_NOT_ORDER' "$LOG" 
   cat "$LOG"; echo 'FAIL choice falsification failed for an unrelated reason'; exit 1
 fi
 echo 'FALSIFIED choice names: holding "Pay Monthly Mobile" again fails ASSERT_CHOICE_NAME_NOT_ORDER'
+
+# CONTAINER-VERB falsification: a panel's text is judged as one control's name again (the readwise left panel held as
+# "remove"), or the count of controls inside is ignored (a long-named Remove button let through). Each named check must
+# go red, and only for that reason.
+container() { # <name> <exact text> <replacement> <check that must go red>
+  local name=$1 marker=$2 replacement=$3 assertion=$4
+  cp "$REPO/daemon/policy.ts" "$COPY/daemon/policy.ts"
+  if [[ $(grep -cF -- "$marker" "$COPY/daemon/policy.ts") -ne 1 ]]; then echo "FAIL $name mutation point is missing"; exit 1; fi
+  node -e 'const fs=require("fs"),[f,m,r]=process.argv.slice(1);fs.writeFileSync(f,fs.readFileSync(f,"utf8").replace(m,r))' "$COPY/daemon/policy.ts" "$marker" "$replacement"
+  local log="$REPO/tests/.state/logs/click-verbs-$name-falsified.log"
+  if env -u GADDI_POLICY_OFF node "$COPY/tests/fixtures/broker-checks.ts" click-verbs gated >"$log" 2>&1; then
+    echo "FAIL $name did not fail $assertion"; exit 1
+  fi
+  if ! grep -q "^FAIL ASSERTION click-verbs: $assertion" "$log" || ! grep -q '^PASS a-choice-named-with-a-leading-verb-is-chosen' "$log" || grep -q '^INFRA ' "$log"; then
+    cat "$log"; echo "FAIL $name falsification failed for an unrelated reason"; exit 1
+  fi
+  echo "FALSIFIED $name: it fails $assertion"
+}
+container container-verb 'control.container && !control.commit && !control.choice ? containerVerb' 'false ? containerVerb' ASSERT_CONTAINER_NOT_VERB
+container container-count 'controls >= 2 && fold(name)' 'fold(name)' ASSERT_CONTAINER_BUTTON_HELD

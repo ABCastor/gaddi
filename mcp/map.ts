@@ -19,7 +19,10 @@ export function mapSocketError(error: unknown): CallToolResult {
     const id = approval.id != null ? String(approval.id) : 'unknown';
     const expiry = approval.expiresAt ?? approval.expires;
     const expires = expiry ? ` Expires ${expiry}.` : '';
-    return text(`HELD (approval ${id}): ${reason}. The owner approves in Gaddi with Touch ID, or by phone when browser_approvals marks the request remote; retry with approval=${id} once the user approves.${expires}`);
+    // HELD-WAIT and SAME-ACTION: the broker already waited for an answer, and the same call repeated later spends the
+    // approval with or without its id, so the agent can move on and come back instead of asking twice.
+    const waited = typeof approval.waited === 'number' ? ` Gaddi already waited ${approval.waited}s for an answer.` : '';
+    return text(`HELD (approval ${id}): ${reason}.${waited} The owner approves in Gaddi with Touch ID, or by phone when browser_approvals marks the request remote; retry with approval=${id} once the user approves (repeating the same call also spends it; never ask twice).${expires}`);
   }
   if (code === 'denied') {
     return text(`DENIED: ${reason}. There is no approval path for this action.`);
@@ -36,6 +39,12 @@ export function mapGrantError(error: unknown): CallToolResult {
   const id = approval.id != null ? String(approval.id) : 'unknown';
   const expiry = approval.expiresAt ?? approval.expires;
   return text(`HELD (approval ${id}): session grant. The owner decides with Touch ID in Gaddi, or by phone if enabled for this request (at most 120 minutes and 20 rules). It takes effect as soon as they approve: do not retry, just keep working. Do not ask again for more sites one by one: a new ask from this chat joins this card. browser_approvals lists the grants that are active.${expiry ? ` The request expires ${expiry}.` : ''}`);
+}
+
+// HELD-WAIT and SAME-ACTION: the broker spent the user's approval for this very call; said first, as trusted text.
+export function withApproved(result: CallToolResult, approved: unknown): CallToolResult {
+  if (typeof approved !== 'string' || !approved) return result;
+  return { ...result, content: [{ type: 'text', text: `Gaddi: the user approved this action (approval ${redactURLText(approved)}); it ran once.` }, ...result.content] };
 }
 
 // The broker's own note that it reopened Chrome or waited out a reconnect: trusted, so it goes first,

@@ -82,7 +82,7 @@ export function checkedReply(value: unknown): Reply {
   if (error.approval !== undefined) {
    assert.ok(isRecord(error.approval)); const a = error.approval;
    assert.ok(typeof a.id === 'string' && typeof a.reason === 'string' && typeof a.expires === 'string');
-   reply.error.approval = { id: a.id, reason: a.reason, expires: a.expires };
+   reply.error.approval = { id: a.id, reason: a.reason, expires: a.expires, ...(typeof a.waited === 'number' ? { waited: a.waited } : {}) };
   }
  }
  return reply;
