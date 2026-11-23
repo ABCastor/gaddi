@@ -355,8 +355,25 @@ export async function pageTask(action, params = {}) {
                 // KEY-CHOICE: what a key on this focused element can choose, press, or commit.
                 keyChoices: keyChoices(el), spaceName: spaceTarget ? nameOf(spaceTarget) : '',
                 ...(enterFrom ? { enterCommits: committedChoices(enterFrom) } : {}),
-                ...(spaceTarget && spaceTarget.tagName !== 'SUMMARY' ? { spaceCommits: committedChoices(spaceTarget) } : {})
+                ...(spaceTarget && spaceTarget.tagName !== 'SUMMARY' ? { spaceCommits: committedChoices(spaceTarget) } : {}),
+                // KEY-EFFECT: what Cmd/Ctrl+Enter in this text field may press: the visible buttons of its form or dialog.
+                composer: composerButtons(el)
             };
+        }
+        // KEY-EFFECT: in a text field, Cmd/Ctrl+Enter is the composer's send. Invariant: the names of every visible button in the
+        // nearest form, else the nearest dialog, around a focused text field (shadow roots included); [] for any other focus.
+        // The broker judges each as its click would be, and this fact can only add a hold: a page that hides its Send button
+        // from this list hides it from the owner's screen too, and then Enter-submits and the site table still apply.
+        function composerButtons(el) {
+            const role = roleOf(el);
+            if (el.tagName !== 'TEXTAREA' && !['textbox', 'searchbox', 'combobox', 'spinbutton'].includes(role))
+                return [];
+            const scope = (el.form || el.closest('form') || el.closest('dialog, [role="dialog"], [role="alertdialog"]'));
+            if (!scope)
+                return [];
+            const buttons = deepAll(scope, 'button, [role="button"], input[type="submit"], input[type="button"], input[type="image"]')
+                .filter(button => visible(button) && roleOf(button) === 'button');
+            return unique(buttons.map(button => nameOf(button)));
         }
         const INTERACTIVE = 'button, a[href], [role="button"], [role="link"], [role="menuitem"], [role="tab"], input[type="submit"], input[type="button"], input[type="image"], summary, label';
         function interactiveOf(el) { return el.closest(INTERACTIVE) || el; }
@@ -517,7 +534,7 @@ export async function pageTask(action, params = {}) {
             // FRAME-BIND: a control checked inside an embedded document is pressed only while that document is still the same site.
             if (checked.origin !== undefined && checked.origin !== location.origin)
                 throw new Error('That control is now in a different document than the one checked; look again');
-            const facts = ['chosen', 'committed', 'keyChoices', 'spaceName', 'enterCommits', 'spaceCommits', 'transaction' /* TX_CHECK_TEST_POINT */];
+            const facts = ['chosen', 'committed', 'keyChoices', 'spaceName', 'enterCommits', 'spaceCommits', 'composer', 'transaction' /* TX_CHECK_TEST_POINT */];
             // The page around the control is read again only when the gate judged it.
             const current = { ...describe(el), ...(facts.some(key => key in checked) ? gateFacts(el) : {}) };
             if (enter ? 'submitName' in checked && current.submitName !== checked.submitName : current.name !== checked.name || current.href !== checked.href)

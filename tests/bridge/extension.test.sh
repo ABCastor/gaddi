@@ -189,7 +189,7 @@ fi
 echo 'FALSIFIED choice: forgetting that a radio is a choice fails ASSERT_CHOICE_NAME'
 
 # SELECT-CHOICE, COMMIT-CHOICES, KEY-CHOICE: each fact the gates read, emptied in a disposable copy, fails its check.
-for pair in commit:ASSERT_COMMIT_FACTS option:ASSERT_SELECT_FACTS keys:ASSERT_KEY_FACTS; do
+for pair in commit:ASSERT_COMMIT_FACTS option:ASSERT_SELECT_FACTS keys:ASSERT_KEY_FACTS composer:ASSERT_COMPOSER_FACTS; do
   mode=${pair%%:*} assertion=${pair#*:}
   LOG=tests/.state/logs/bridge-gate-facts-$mode-falsified.log
   if GADDI_CHOICES_ONLY=1 GADDI_BRIDGE_BREAK_GATE_FACTS=$mode node tests/bridge/extension.ts >"$LOG" 2>&1; then

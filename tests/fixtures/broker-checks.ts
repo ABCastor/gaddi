@@ -38,7 +38,9 @@ if (scenario === 'remote-approver') {
 }
 const { publicKey, privateKey } = crypto.generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
 fs.writeFileSync(publicPath, publicKey.export({ type: 'spki', format: 'pem' }));
-fs.writeFileSync(path.join(home, 'policy.json'), JSON.stringify({ ...(scenario === 'sessions' && mode !== 'own' ? { browser: { window: 'shared', show: 'attention' } } : {}), approvals: { ...(scenario === 'approval-wait' ? { wait_minutes: 1, grant_rules_max: 100 } : {}), ttl_minutes: scenario === 'approval-wait' ? 0.1 : scenario === 'approval' ? 0.03 : scenario === 'approval-picture' ? 0.1 : 10 }, deny: { type_into: ['input[type=password]', 'input[autocomplete=current-password]', '.sensitive'] } }));
+fs.writeFileSync(path.join(home, 'policy.json'), JSON.stringify({ ...(scenario === 'sessions' && mode !== 'own' ? { browser: { window: 'shared', show: 'attention' } } : {}), approvals: { ...(scenario === 'approval-wait' ? { wait_minutes: 1, grant_rules_max: 100 } : {}), ttl_minutes: scenario === 'approval-wait' ? 0.1 : scenario === 'approval' ? 0.03 : scenario === 'approval-picture' ? 0.1 : 10 }, deny: { type_into: ['input[type=password]', 'input[autocomplete=current-password]', '.sensitive'] },
+  // KEY-EFFECT: a Send button the owner remembered on one site, so Cmd+Enter in its composer can be read as that click.
+  ...(scenario === 'choice-gates' ? { sends: { remember: [{ site: 'https://remembered.example', kind: 'click', reason: 'verb:send' }] } } : {}) }));
 if (scenario === 'eval-overlay') fs.copyFileSync(path.join(repo, 'tests/fixtures/eval-overlay.json'), path.join(home, 'policy.json'));
 fs.writeFileSync(path.join(home, 'agent-cred'), 'agent-value-from-file\n', { mode: 0o600 });
 const env = { ...process.env, GADDI_APP_LAUNCHER: launcher, OMNIREAD_BIN: path.join(home, 'missing-omniread'), GADDI_HOME: home, GADDI_SOCKET: socket, GADDI_APPROVER_PUB: publicPath,
@@ -151,8 +153,9 @@ async function fakeBridge() {
     // TX-BIND: the digest the page gives of the details around the control (amounts, recipients, message), as the
     // extension computes it. FRAME-BIND: which document a point lands in, when a check moves it somewhere else.
     transaction: '' as string, pointFrame: undefined as { frameId: number; frameUrl: string; origin: string; documentId: string } | undefined,
-    // KEY-SHORTCUT: what the focused element is (tag, role), so a key can land in a field or outside one.
-    describeTag: undefined as string | undefined, describeRole: undefined as string | undefined,
+    // KEY-EFFECT: what the focused element is (tag, role), so a key can land in a field or outside one, and the buttons
+    // in the form or dialog around a focused text field (what Cmd+Enter there would press).
+    describeTag: undefined as string | undefined, describeRole: undefined as string | undefined, composer: undefined as string[] | undefined,
     // What Chrome says an extension is (remote approval checks: an extension operation is never answered remotely).
     extension: undefined as Record<string, unknown> | undefined,
     capture: 'none' as 'none' | 'image' | 'error' | 'missing-box' | 'hang', captureWidth: 8, captureHeight: 8 };
@@ -212,6 +215,7 @@ async function fakeBridge() {
             ...(typeof msg.params.value === 'string' && !control.omitGateFacts ? { chosen: control.chosen ?? ['Fixture option'] } : {}),
             ...(control.omitGateFacts ? {} : { committed: control.committed ?? null }),
             ...(control.enterCommits ? { enterCommits: control.enterCommits } : {}),
+            ...(control.composer ? { composer: control.composer } : {}),
             ...(control.omitGateFacts ? {} : { keyChoices: control.keyChoices, spaceName: control.spaceName }) };
           if (control.omitHref) delete description.href;
           if (control.omitSubmit) delete description.submitName;
@@ -486,29 +490,107 @@ async function choiceGates(c: Client, b: Bridge) {
     { keyChoices: ['Italy', 'France', 'Pay Monthly Mobile', 'Country'] }, 'ASSERT_KEY_BOUND');
   b.control.keyChoices = []; b.control.describeTag = undefined; b.control.describeRole = undefined;
   pass('a-key-that-could-pick-an-order-is-held-ordinary-lists-are-not');
-  // KEY-SHORTCUT: a printable key, Delete or Backspace with no text field focused is a site's shortcut (Gmail `#`
-  // deletes the open conversation): held, with the card naming the key. Keys that only move, and any key in a field, go.
+  // KEY-EFFECT: a key is judged by what it is likely to do. With no text field focused, Delete and Backspace delete
+  // (held as a delete, which a test zone or a delete grant waives); a few known sites' destructive single keys are held
+  // under their verb (Gmail `#`, Fastmail `d` and `%`); every other key (Cmd+K, `/`, `?`, j, k, e, Escape, arrows) runs.
+  b.tabs.push({ id: 9, active: false, url: 'https://app.fastmail.com/mail/Inbox/', title: 'Fastmail' },
+    { id: 10, active: false, url: 'https://app.fastmail.com.lookalike.example/mail/', title: 'Not Fastmail' });
   const shortcuts = presses();
   for (const [tag, role] of [['body', ''], ['button', 'button'], ['input', 'checkbox'], ['div', 'row']]) {
     b.control.describeTag = tag; b.control.describeRole = role;
-    for (const key of ['#', 'e', 'Shift+3', 'Delete', 'Backspace', 'Shift+Delete', 'Meta+Backspace', 'Control+a']) {
-      const reply = await c.call('press', { tab: 8, key });
-      assert.equal(reply.error?.code, 'held', `ASSERT_SHORTCUT_KEY_HELD: ${key} on ${tag}: ${JSON.stringify(reply)}`);
-      if (key === '#' && tag === 'body') assert.equal((await pending(c, reply.error!)).detail, 'Key "#" with no text field focused', 'ASSERT_SHORTCUT_CARD');
+    for (const tab of [7, 8]) for (const key of ['Delete', 'Backspace', 'Shift+Delete', 'Meta+Backspace']) {
+      const reply = await c.call('press', { tab, key });
+      assert.equal(reply.error?.code, 'held', `ASSERT_DELETE_KEY_HELD: ${key} on ${tag} in tab ${tab}: ${JSON.stringify(reply)}`);
+      assert.match(reply.error!.message, /delete/, `ASSERT_DELETE_KEY_HELD: held as a delete: ${reply.error!.message}`);
     }
   }
-  assert.equal(presses(), shortcuts, 'ASSERT_SHORTCUT_KEY_HELD: no shortcut reached the page');
   b.control.describeTag = 'body'; b.control.describeRole = '';
-  for (const key of ['Tab', 'Shift+Tab', 'Escape', 'Esc', 'ArrowDown', 'ArrowLeft', 'Up', 'PageDown', 'PageUp', 'Home', 'End', 'Space', ' ']) {
-    await result(c, 'press', { tab: 8, key });
+  const deleteCard = await pending(c, (await c.call('press', { tab: 7, key: 'Delete' })).error!);
+  assert.equal(deleteCard.detail, 'Key "Delete" with no text field focused (delete)', 'ASSERT_DELETE_KEY_CARD');
+  assert.match(deleteCard.reason, /^enter-submits:delete$/, 'ASSERT_DELETE_KEY_REASON: a delete hold, so a zone or a delete grant can waive it');
+  // A sign typed with Shift is the same key to a site that reads the key code (Shift+3 is `#` on a US layout).
+  for (const [tab, key, verb] of [[8, '#', 'delete'], [8, 'Shift+3', 'delete'], [8, '!', 'report spam'], [9, 'd', 'delete'], [9, 'D', 'delete'],
+    [9, '%', 'delete'], [9, 'Shift+5', 'delete']] as const) {
+    const reply = await c.call('press', { tab, key });
+    assert.equal(reply.error?.code, 'held', `ASSERT_SITE_KEY_HELD: ${key} in tab ${tab}: ${JSON.stringify(reply)}`);
+    assert.equal((await pending(c, reply.error!)).detail, `Key "${key}" with no text field focused (${verb})`, 'ASSERT_SITE_KEY_CARD');
   }
+  assert.equal(presses(), shortcuts, 'ASSERT_DELETE_KEY_HELD: no destructive key reached the page');
+  // The site table matches the exact host: a look-alike host is not Fastmail, and the keys mean nothing elsewhere.
+  for (const [tab, key] of [[10, '%'], [10, 'd'], [7, '#'], [7, 'd'], [7, '%']] as const) {
+    const reply = await c.call('press', { tab, key });
+    assert.equal(reply.error, undefined, `ASSERT_SITE_KEY_EXACT_HOST: ${key} in tab ${tab}: ${JSON.stringify(reply.error)}`);
+  }
+  // Everything else with nothing focused runs without a card: palettes, search, help, navigation, archive, moves.
+  for (const tab of [7, 8, 9]) for (const key of ['Meta+k', 'Control+k', 'Meta+K', '/', '?', 'j', 'k', 'e', 'Control+a', 'Escape', 'Esc', 'Tab',
+    'Shift+Tab', 'ArrowDown', 'ArrowLeft', 'Up', 'PageDown', 'PageUp', 'Home', 'End', 'Space', ' ', ...(tab === 7 ? ['Shift+3', '#', 'd', '%'] : [])]) {
+    const reply = await c.call('press', { tab, key });
+    assert.equal(reply.error, undefined, `ASSERT_SHORTCUT_KEY_RUNS: ${key} in tab ${tab}: ${JSON.stringify(reply.error)}`);
+  }
+  // Any key in a field, a select or an editable region is text: Delete there edits text, `#` there is a character.
   for (const [tag, role] of [['input', 'textbox'], ['input', 'searchbox'], ['input', 'combobox'], ['input', 'spinbutton'], ['textarea', 'textbox'],
     ['select', 'combobox'], ['select', 'listbox'], ['div', 'textbox'], ['body', 'textbox']]) {
     b.control.describeTag = tag; b.control.describeRole = role;
-    for (const key of ['#', 'e', 'Shift+3', 'Delete', 'Backspace', 'Meta+Backspace', 'Tab', 'ArrowLeft']) await result(c, 'press', { tab: 8, key });
+    for (const tab of [8, 9]) for (const key of ['#', 'e', 'd', '%', 'Shift+3', 'Delete', 'Backspace', 'Meta+Backspace', 'Tab', 'ArrowLeft']) await result(c, 'press', { tab, key });
   }
+  b.control.describeTag = 'body'; b.control.describeRole = '';
+  // A test zone waives the Delete key's hold as it waives a Delete button; a refused host (Gmail) never is one.
+  const zone = 'https://unseen.example', zoneTs = Date.now();
+  await result(c, 'zones.add', { site: zone, proof: { ts: zoneTs, sig: crypto.sign('sha256', Buffer.from(`zones.add|${zone}|${zoneTs}`), privateKey).toString('base64') } });
+  try {
+    for (const key of ['Delete', 'Backspace']) await result(c, 'press', { tab: 7, key });
+    assert.equal((await c.call('press', { tab: 9, key: 'Delete' })).error?.code, 'held', 'ASSERT_DELETE_KEY_ZONE: the zone covers only its own site');
+  } finally { await result(c, 'zones.remove', { site: zone }); }
+  assert.equal((await c.call('press', { tab: 7, key: 'Delete' })).error?.code, 'held', 'ASSERT_DELETE_KEY_ZONE: held again once the zone is gone');
   b.control.describeTag = undefined; b.control.describeRole = undefined;
-  pass('a-shortcut-key-outside-a-text-field-is-held-moves-and-typing-are-not');
+  pass('keys-are-judged-by-effect-deletes-and-site-keys-held-the-rest-runs');
+  // Cmd/Ctrl+Enter is Enter (KEY-CHOICE), and in a text field of a form or dialog that shows a Send, Post or Pay button it
+  // is that button: held under its verb. Shift+Enter and Alt+Enter insert a newline and are judged as typing.
+  b.control.describeTag = 'input'; b.control.describeRole = 'textbox'; b.control.focusSubmit = 'Delete';
+  for (const key of ['Meta+Enter', 'Control+Enter', 'Enter']) {
+    const reply = await c.call('press', { tab: 7, key });
+    assert.equal(reply.error?.code, 'held', `ASSERT_MOD_ENTER_IS_ENTER: ${key} submits the form's Delete: ${JSON.stringify(reply)}`);
+  }
+  for (const key of ['Shift+Enter', 'Alt+Enter']) await result(c, 'press', { tab: 7, key });
+  b.control.describeTag = 'textarea'; b.control.describeRole = 'textbox'; b.control.focusSubmit = '';
+  b.control.composer = ['Cancel', 'Send'];
+  const composed = presses();
+  for (const key of ['Meta+Enter', 'Control+Enter', 'Cmd+Return']) {
+    const reply = await c.call('press', { tab: 7, key });
+    assert.equal(reply.error?.code, 'held', `ASSERT_COMPOSER_ENTER_HELD: ${key}: ${JSON.stringify(reply)}`);
+  }
+  const composerCard = await pending(c, (await c.call('press', { tab: 7, key: 'Meta+Enter' })).error!);
+  assert.equal(composerCard.detail, 'Meta+Enter, which sends with “Send”', 'ASSERT_COMPOSER_CARD');
+  assert.match(composerCard.reason, /^verb:send$/, 'ASSERT_COMPOSER_ENTER_HELD: held as the Send button is');
+  assert.equal(presses(), composed, 'ASSERT_COMPOSER_ENTER_HELD: the send never reached the page');
+  for (const key of ['Shift+Enter', 'Alt+Enter', 'Enter', 'a', 'Delete', 'Meta+k']) await result(c, 'press', { tab: 7, key });
+  assert.deepEqual(b.calls.findLast(m => m.method === 'chrome.press')?.params.checkedDescription, undefined, 'a plain key keeps its shape');
+  b.control.composer = ['Post', 'Pay £10'];
+  assert.equal((await pending(c, (await c.call('press', { tab: 7, key: 'Control+Enter' })).error!)).detail, 'Control+Enter, which sends with “Post”, “Pay £10”',
+    'ASSERT_COMPOSER_CARD: every button in reach that asks is named');
+  // On Gmail the composer's Send is refused, as clicking it is; its own Mod+Enter table entry is kept.
+  b.control.composer = ['Send'];
+  assert.equal((await c.call('press', { tab: 8, key: 'Meta+Enter' })).error?.code, 'denied', 'ASSERT_COMPOSER_ENTER_HELD: a refused Send stays refused');
+  // Nothing in reach that sends: Cmd+Enter runs, and is bound to the composer it was judged on.
+  b.control.composer = ['Cancel', 'Attach file'];
+  await result(c, 'press', { tab: 7, key: 'Meta+Enter' });
+  assert.deepEqual(b.calls.findLast(m => m.method === 'chrome.press')?.params.checkedDescription, { submitName: '', composer: ['Cancel', 'Attach file'] },
+    'ASSERT_COMPOSER_BOUND: the buttons judged must still be the ones in reach');
+  // A Send button the owner remembered on this site covers Cmd+Enter in its composer, as the click it is; plain Enter keeps
+  // its own, separate scope, and a composer that also offers Pay stays held.
+  b.tabs.push({ id: 20, active: false, url: 'https://remembered.example/inbox', title: 'Remembered' });
+  b.control.composer = ['Send'];
+  const remembered = await c.call('press', { tab: 20, key: 'Meta+Enter' });
+  assert.equal(remembered.error, undefined, `ASSERT_COMPOSER_REMEMBERED: the remembered Send button covers Cmd+Enter: ${JSON.stringify(remembered.error)}`);
+  b.control.focusSubmit = 'Send'; b.control.describeTag = 'input';
+  assert.equal((await c.call('press', { tab: 20, key: 'Enter' })).error?.code, 'held', 'ASSERT_COMPOSER_REMEMBERED: Enter is its own send kind');
+  b.control.focusSubmit = ''; b.control.describeTag = 'textarea'; b.control.composer = ['Send', 'Pay £10'];
+  assert.equal((await c.call('press', { tab: 20, key: 'Meta+Enter' })).error?.code, 'held', 'ASSERT_COMPOSER_REMEMBERED: a mixed composer stays held');
+  // Outside a text field the composer evidence does not apply (the page's own Enter judgement still does).
+  b.control.describeTag = 'body'; b.control.describeRole = ''; b.control.composer = ['Send'];
+  await result(c, 'press', { tab: 7, key: 'Meta+Enter' });
+  b.control.composer = undefined; b.control.describeTag = undefined; b.control.describeRole = undefined; b.control.focusSubmit = 'Search';
+  pass('cmd-enter-in-a-composer-is-its-send-button-shift-enter-is-a-newline');
   // Space presses the focused button: judged on its name as Enter on it is.
   b.control.spaceName = 'Delete all';
   for (const key of [' ', 'Space', 'Shift+Space']) {
@@ -1645,6 +1727,20 @@ async function sessionGrant(c: Client, b: Bridge) {
       });
     }
     assert.equal(await outcome(upload(session)), 'allowed', 'while an ordinary page of the same site is waived');
+  });
+
+  // KEY-EFFECT: Delete with no text field focused is a delete, so a delete grant on the page waives it; a post grant does not.
+  await check('ASSERT_GRANT_DELETE_KEY', async () => {
+    b.control.describeTag = 'body'; b.control.describeRole = '';
+    try {
+      const press = (session?: string) => c.call('press', { ...base(session), key: 'Delete' });
+      assert.equal(await outcome(press()), 'held', 'the Delete key with nothing focused is held without a grant');
+      const posting = await freshGrant([`post ${SHOP}`]);
+      assert.equal(await outcome(press(posting.session)), 'held', 'a post grant does not cover a delete key');
+      const deleting = await freshGrant([`delete ${SHOP}`]);
+      assert.equal(await outcome(press(deleting.session)), 'allowed', 'a delete grant covers the Delete key on its page');
+      assert.equal(await outcome(c.call('press', { ...base(deleting.session), tab: 8, key: '#' })), 'held', 'Gmail `#` is never granted');
+    } finally { b.control.describeTag = undefined; b.control.describeRole = undefined; }
   });
 
   await check('ASSERT_GRANT_NEVER_WAIVED', async () => {

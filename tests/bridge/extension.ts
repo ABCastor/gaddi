@@ -111,7 +111,7 @@ try {
   }
   // COMMIT-CHOICES, SELECT-CHOICE, KEY-CHOICE: each fact the gates read must be able to fail.
   for (const [mode, marker] of [['commit', 'function committedChoices(button) {'], ['option', 'function optionNames(option) {'],
-    ['keys', 'function keyChoices(el) {']] as const) {
+    ['keys', 'function keyChoices(el) {'], ['composer', 'function composerButtons(el) {']] as const) {
     if (process.env.GADDI_BRIDGE_BREAK_GATE_FACTS !== mode) continue;
     const source = fs.readFileSync(contentFile, 'utf8');
     assert.ok(source.includes(marker), `${mode} gate-fact mutation point exists`);

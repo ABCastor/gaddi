@@ -448,6 +448,23 @@ function normKey(key: string) {
   }).sort().join('+');
 }
 
+// KEY-EFFECT: the few single keys known to destroy something on one site, held under that verb when no text field holds
+// the focus. Matched on the exact host (never a pattern: app.fastmail.com.example is not Fastmail) and on the normalised
+// key, with the Shift+digit spelling of a sign, because a site may read the key code instead of the character. Invariant:
+// this table only ever adds holds; a key missing from it is judged by the other key rules, never allowed by it.
+export const SITE_KEYS: readonly { host: string; keys: readonly string[]; verb: string }[] = [
+  // Gmail: `#` deletes the open or selected conversations, `!` reports them as spam.
+  { host: 'mail.google.com', keys: ['#', 'Shift+3', 'Shift+#'], verb: 'delete' },
+  { host: 'mail.google.com', keys: ['!', 'Shift+1', 'Shift+!'], verb: 'report spam' },
+  // Fastmail (the council's table, 23 Nov 2026): `d` and `%` delete.
+  { host: 'app.fastmail.com', keys: ['d', 'Shift+d', '%', 'Shift+5', 'Shift+%'], verb: 'delete' },
+];
+export function siteKeyVerb(policy: Policy, host: string, key: string): string | undefined {
+  if (policy.off) return undefined;
+  const k = normKey(key), h = String(host || '').toLowerCase().replace(/\.$/, '');
+  return SITE_KEYS.find(rule => rule.host === h && rule.keys.some(x => normKey(x) === k))?.verb;
+}
+
 export function checkPress(policy: Policy, host: string, key: string, focusedFormSubmitName?: string) {
   if (policy.off) return ALLOW('policy-off');
   const k = normKey(key);

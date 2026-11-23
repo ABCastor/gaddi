@@ -60,7 +60,7 @@ export async function choiceChecks({ context, daemon, url, pass }: {
   assert.deepEqual(onNote.enterCommits, ['Delete files older than a month', 'Pay Monthly Mobile', 'Choose…'],
     'ASSERT_KEY_FACTS: Enter in a field submits its form');
   pass('key facts: options, radio groups, active items and the buttons Space and Enter press');
-  // KEY-SHORTCUT reads the focus's tag and role: with nothing focused it is the body, which is no field; a text input
+  // KEY-EFFECT reads the focus's tag and role: with nothing focused it is the body, which is no field; a text input
   // and an editable region are textboxes.
   await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
   const none = await focused();
@@ -71,6 +71,19 @@ export async function choiceChecks({ context, daemon, url, pass }: {
     assert.deepEqual([field.tag, field.role], [tag, 'textbox'], `ASSERT_SHORTCUT_FACTS: ${selector} is a text field`);
   }
   pass('shortcut facts: no focus is the body, a text input and an editable region are textboxes');
+  // KEY-EFFECT: Cmd+Enter in a text field may press what its form or dialog shows: the visible buttons there, nothing
+  // hidden, and nothing at all with the focus outside a text field.
+  await page.focus('#body');
+  assert.deepEqual((await focused()).composer, ['Cancel', 'Send'], 'ASSERT_COMPOSER_FACTS: a dialog composer shows Cancel and Send');
+  await page.focus('#memo');
+  assert.deepEqual((await focused()).composer, ['Attach file'], 'ASSERT_COMPOSER_FACTS: a form composer');
+  await page.focus('#note');
+  assert.deepEqual((await focused()).composer, ['Save'], 'ASSERT_COMPOSER_FACTS: a text input in a form');
+  await page.focus('#compose-send');
+  assert.deepEqual((await focused()).composer, [], 'ASSERT_COMPOSER_FACTS: a focused button is no composer');
+  await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+  assert.deepEqual((await focused()).composer, [], 'ASSERT_COMPOSER_FACTS: nothing focused is no composer');
+  pass('composer facts: the visible buttons of the form or dialog around a focused text field');
 
   // The select is set only while the page still shows the option the gate judged.
   const acting = await describe('#acting', { value: 'close' });

@@ -28,4 +28,10 @@
     <option value="keep">Keep plan</option><option value="close">Close account</option>
   </select>
   <div id="editor" contenteditable="true">Draft</div>
+  <div role="dialog" aria-label="New message" id="compose">
+    <textarea id="body" aria-label="Message"></textarea>
+    <button type="button">Cancel</button><button type="button" id="compose-send">Send</button>
+    <button type="button" hidden>Pay hidden</button>
+  </div>
+  <form id="notes" onsubmit="event.preventDefault()"><textarea id="memo" aria-label="Memo"></textarea><button type="button">Attach file</button></form>
 </main>

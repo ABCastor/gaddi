@@ -60,7 +60,7 @@ const table = {
     'if (grantId) meta.grantId = grantId;']],
   UPLOAD: ['ASSERT_GRANT_UPLOAD', ['daemon/daemon.ts', "check = grantCheck(check, { kind: 'upload' }, scopeURL);", '']],
   CLICK: ['ASSERT_GRANT_CLICK', ['daemon/daemon.ts', "check = grantCheck(check, { kind: 'click', name: [info.name, ...commit.held].join(' ; '), destination }, scopeURL);", '']],
-  ENTER: ['ASSERT_GRANT_ENTER', ['daemon/daemon.ts', "check = grantCheck(check, { kind: 'press', name: [submitName, ...held].filter(Boolean).join(' ; ') }, scopeURL);", '']],
+  ENTER: ['ASSERT_GRANT_ENTER', ['daemon/daemon.ts', "check = grantCheck(check, { kind: asButton ? 'click' : 'press', name: gateName }, scopeURL);", '']],
   LEAK_VIEW: ['ASSERT_GRANT_NO_SESSION_LEAK', ['daemon/approvals.ts',
     'export function publicView({ actionHash, targetSelector, grant, ...record }: StoredApproval): StoredApproval & { site?: string } {',
     'export function publicView({ actionHash, targetSelector, ...record }: StoredApproval): StoredApproval & { site?: string } {']],

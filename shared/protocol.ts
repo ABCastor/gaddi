@@ -94,6 +94,8 @@ export interface TabInfo { id?: number; tabId?: number; tab?: number; url?: stri
 // What the gate judged, bound to the action: the page must still say the same when the input goes in.
 export interface CheckedDescription { name?: string; href?: string; submitName?: string;
   chosen?: string[]; committed?: string[] | null; keyChoices?: string[]; spaceName?: string; enterCommits?: string[]; spaceCommits?: string[];
+  // KEY-EFFECT: the buttons in reach of Cmd/Ctrl+Enter in a text field (its form's or dialog's), as judged.
+  composer?: string[];
   // TX-BIND: the page's digest of the transaction around the control (content.ts transactionDigest). The broker binds
   // only a keyed digest of it; this raw digest goes to the extension's last check only.
   transaction?: string;
@@ -104,6 +106,8 @@ export interface CheckedDescription { name?: string; href?: string; submitName?:
 // COMMIT-CHOICES `committed` (a button), `enterCommits` and `spaceCommits` (a key) are the choices that are on where it
 // acts; KEY-CHOICE `keyChoices` is everything a key on the focused element could pick and `spaceName` what Space presses.
 export interface GateFacts { chosen?: string[]; committed?: string[] | null; keyChoices?: string[]; spaceName?: string; enterCommits?: string[]; spaceCommits?: string[];
+  // KEY-EFFECT: the names of the visible buttons in the form or dialog around a focused text field; [] outside one.
+  composer?: string[];
   // TX-BIND: the digest of the transaction the control belongs to; '' when it belongs to none.
   transaction?: string }
 export interface ElementDescription {

@@ -28,7 +28,7 @@ Click, hover, type, press, select and scroll return `changed: true|false` and th
 
 After three consecutive unchanged input actions, the broker adds advice to inspect the tab. A changed action, another URL, or that caller's look/screenshot resets the count; caller/tab state is capped at 1024 entries and removed when tab closure is observed.
 
-Before dispatch, clicks recheck the name and link destination inspected by the broker; Enter rechecks the submit name. If either changed, the action is refused and asks you to look again.
+Before dispatch, clicks recheck the name and link destination inspected by the broker; Enter rechecks the submit name, and Cmd/Ctrl+Enter in a text field also the buttons of its form or dialog the broker judged (KEY-EFFECT). If either changed, the action is refused and asks you to look again.
 
 A click can also be aimed at a point (`at: {x,y}` in the broker, `gaddi click <tab> --at x,y`), in the tab's own viewport, exactly as a screenshot shows it. The point goes to Chrome untouched, and the gates judge the element that is really under it, following the point into embedded documents: a button whose middle a cookie banner covers is clickable on the part a person can see, a marker that takes no pointer events is not an obstacle, and a checkbox inside a verification widget is judged as that checkbox and not as the frame around it. A point over a document the extension cannot inspect is held for the user, because no name can be checked there. The point is recorded in the audit. `at` and `frameId` are alternatives: a point is always in the tab, never in a frame's own coordinates.
 
