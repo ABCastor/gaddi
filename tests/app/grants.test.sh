@@ -60,7 +60,9 @@ const table = {
     'self.id = id; self.rules = Array(rules.dropLast()); self.expiresAt = expiresAt', 'session grant decodes with its caller, label and rules'],
   UNLABELED: ['Protocol.swift', 'label = (object["label"] as? String).flatMap { $0.isEmpty ? nil : $0 }', 'label = object["label"] as? String ?? ""',
     'a grant without a label decodes without one'],
-  EXPIRED: ['Protocol.swift', 'var expired: Bool { expiresAt <= Date() }', 'var expired: Bool { false }', 'an ended grant reads as expired'],
+  // Anchored on SessionGrant's own line before it: OwnerNotice has the same expired property.
+  EXPIRED: ['Protocol.swift', '$0 == "remote" ? $0 : nil }\n    }\n    var expired: Bool { expiresAt <= Date() }',
+    '$0 == "remote" ? $0 : nil }\n    }\n    var expired: Bool { false }', 'an ended grant reads as expired'],
   BANNER: ['Protocol.swift', 'return "\\(verb) \\(words.object): \\(rules.prefix(2).joined(separator: ", "))\\(more)"', 'return "\\(verb) \\(words.object)"',
     'the banner says the same'],
   PLAIN: ['ApprovalCard.swift', 'return (rules, duration, label)', 'return (rules, duration, label ?? "")',
