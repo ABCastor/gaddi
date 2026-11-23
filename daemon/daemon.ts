@@ -29,6 +29,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
+import { coverView, coverLabel } from './grant-origin.ts';
+import type { CoverView } from './grant-origin.ts';
 import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, setSandbox, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkNames, checkPress, siteKeyVerb, checkType, checkEval, checkUpload, checkSignin, hostOf, UPLOAD_HOLD } from './policy.ts';
 import { signinSite, listLogins, chooseLogin, runSignin, createLogin, getPassword, opDiagnostic, PASSWORD_UNAVAILABLE } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
@@ -115,6 +117,23 @@ function grantSession(params: IncomingParams): string | undefined {
 // Chats whose lifetime socket (session.begin) is open right now, with how many sockets that is.
 // A grant is only ever requested by, approved for, and served to a chat in this map.
 const liveSessions = new Map<string, number>();
+// GRANT-ORIGIN: the last few sites each live chat worked on (origins only, in memory, never written), so a card that
+// grants one exact site can say which sibling the chat was on and is not covered. Display only: it decides nothing.
+const sessionSites = new Map<string, string[]>();
+const SESSION_SITES_MAX = 12;
+function noteSite(session: string | undefined, url: string) {
+  if (session === undefined || !liveSessions.has(session)) return;
+  let origin: string;
+  try { const parsed = new URL(url); if (!/^https?:$/.test(parsed.protocol)) return; origin = parsed.origin; } catch { return; }
+  const sites = (sessionSites.get(session) ?? []).filter(site => site !== origin);
+  sessionSites.set(session, [origin, ...sites].slice(0, SESSION_SITES_MAX));
+}
+// What a held card covers if the owner makes it standing (a remembered site, a zone), and the siblings it leaves out.
+function actionCover(meta: CallMeta, session: string | undefined, actingURL?: string): CoverView | undefined {
+  let origin: string;
+  try { const page = new URL(String(meta.url)); if (!/^https?:$/.test(page.protocol)) return undefined; origin = page.origin; } catch { return undefined; }
+  return coverView([origin], [...(actingURL ? [actingURL] : []), ...(session === undefined ? [] : sessionSites.get(session) ?? [])]);
+}
 // Only a socket that was counted may be counted down: one that was already closing when it registered never was.
 const countedLifetimes = new WeakSet<Socket>();
 function touchSession(params: IncomingParams, caller: string) {
@@ -267,6 +286,8 @@ async function gate({ kind, meta, detail, action, check, approval, capture, targ
   }
   const remoteFacts = remoteScope ? { ...remoteScope, reason: check.reason } : undefined;
   const a = existing || approvals.hold({ kind, ...meta, detail, action, reason: check.reason, rememberable: check.rememberable, picture, targetSelector: targetRef, remoteFacts, context: meta.context, binding,
+    // GRANT-ORIGIN: the exact site a remembered permission or a test zone from this card would cover. Display only.
+    scope: actionCover(meta, meta.chat, remoteScope?.pageURL),
     // AUTH-WAIT: only the existing grant-safe tier may wait longer, never money, sign-in or sends.
     extendedWait: remoteFacts !== undefined && remoteWaivable(policy, remoteFacts.pageURL, check, remoteFacts.scope) });
   if (existing) approvals.attach(existing, remoteFacts);
@@ -403,6 +424,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       check: zoneNavigation(checkNavigation(policy, url), url, meta), approval: params.approval });
     const result = await request('open', { url, group, foreground: params.foreground === true });
     meta.tab = tabId(tabObject(result)); meta.url = tabObject(result)?.url || url;
+    noteSite(grantSession(params), String(meta.url));
     if (typeof meta.tab === 'number' && Number.isSafeInteger(meta.tab) && meta.tab >= 0) {
       tabActivity.set(meta.tab, Date.now());
       if (session.owned.size < SESSION_TAB_LIMIT) session.owned.add(meta.tab);
@@ -424,6 +446,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
   if (typeof resolvedTab !== 'number' || !Number.isSafeInteger(resolvedTab) || typeof tab?.url !== 'string') throw new Error('chrome tab not found or missing URL');
   let pageURL = tab.url;
   meta.tab = resolvedTab; meta.url = pageURL;
+  noteSite(grantSession(params), pageURL);
   // The chat's session grant is the one place a hold becomes an allow. A click or a key that
   // happens inside an embedded document is judged on THAT document's address: the site that
   // acts is the one a grant, a zone, a refused host or a protected address must name.
@@ -1027,6 +1050,7 @@ function requestStanding(params: IncomingParams, meta: CallMeta) {
     if (kind === 'upload' ? policy.uploads?.remember.includes(site) : checkSignin(policy, site).outcome === 'allow') return { kind, site, status: 'already allowed' };
     const action = { method: 'standing', caller, url: site, kind };
     const record = approvals.pendingFor(action) ?? approvals.hold({ kind, tab: null, caller, url: site + '/', action, rememberable: true,
+      scope: coverView([site], sessionSites.get(grantSession(params) ?? '') ?? []),
       detail: `Standing request: always allow ${kind === 'upload' ? 'uploads' : 'sign-in'} on ${site}. Nothing is done now; Allow once allows nothing.`,
       reason: kind === 'upload' ? UPLOAD_HOLD : 'standing sign-in permission', context: meta.context ?? approvalContext(caller, params) });
     return { kind, site, status: 'waiting for the owner', approval: String(record.id) };
@@ -1121,6 +1145,8 @@ function requestGrant(params: IncomingParams) {
     // A grant's purpose is its label (signed with the rules); the card shows it as the agent's why.
     request = approvals.hold({ kind: 'grant', tab: null, caller, url: '', detail: grantDetail(rules, time, label),
       reason: 'session grant', action, extendedWait: true, grant: { session, rules, minutes: time, ...(label ? { label } : {}) },
+      // GRANT-ORIGIN: each rule's exact scope, and the chat's sibling sites it leaves out. Display only, never signed.
+      scope: coverView(rules.map(rule => coverLabel(rule.origin, rule.path)), sessionSites.get(session) ?? []),
       context: approvalContext(caller, { context: params.context, why: label ?? params.why }) });
   }
   // The folded requests are now inside the new one: they leave the user's list.
@@ -1156,6 +1182,7 @@ function releaseSession(key: string) {
   const open = (liveSessions.get(key) ?? 0) - 1;
   if (open > 0) { liveSessions.set(key, open); return; }
   liveSessions.delete(key);
+  sessionSites.delete(key);
   grants.endSession(key);
   ownerNotices.sessionEnded(key);
   for (const request of pendingGrantsOf(key)) approvals.cancel(request.id);

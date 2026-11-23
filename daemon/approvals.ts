@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import type { ImageBox } from '../shared/protocol.ts';
+import type { CoverView } from './grant-origin.ts';
 import { isRecord } from '../shared/protocol.ts';
 import { redactURLText } from '../shared/url-redaction.ts';
 import type { createProofVerifier, approvalMessage } from './proof.ts';
@@ -11,7 +12,7 @@ import type { SendRule } from './policy.ts';
 import type { GrantScope, GrantSpec } from './grants.ts';
 import { durationText } from './grants.ts';
 
-export interface ApprovalRecord { id: string; kind: string; tab: number | null; caller: string; url: string; detail: string; reason: string; actionHash: string; status: string; createdAt: string; expiresAt: string; resolvedAt?: string; by?: string; decidedAt?: string; usedAt?: string; imagePath?: string; box?: ImageBox; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; context?: ApprovalContext }
+export interface ApprovalRecord { id: string; kind: string; tab: number | null; caller: string; url: string; detail: string; reason: string; actionHash: string; status: string; createdAt: string; expiresAt: string; resolvedAt?: string; by?: string; decidedAt?: string; usedAt?: string; imagePath?: string; box?: ImageBox; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; context?: ApprovalContext; scope?: CoverView }
 // Who asked and why, as the user reads it on every card: the agent harness, its chat's title, the project and the
 // agent's one-line purpose. Invariant: display only. It is not part of the action hash, the remote digest or any
 // signed message, so these words can explain a request but never change what an approval allows. Everything but
@@ -205,7 +206,7 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
     expire();
     return [...entries.values()].find(a => a.status === 'pending' && a.actionHash === actionHash(action) && a.targetSelector === targetSelector);
   }
-  function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false, grant, remoteFacts, extendedWait = false, context, binding }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; remoteFacts?: RemoteFacts; extendedWait?: boolean; context?: ApprovalContext; binding?: Binding }) {
+  function hold({ kind, tab = null, caller, url, detail, reason, action, picture, targetSelector, rememberable = false, grant, remoteFacts, extendedWait = false, context, binding, scope }: { kind: string; tab?: unknown; caller: string; url: unknown; detail: string; reason?: string; action: ApprovalAction; picture?: unknown; targetSelector?: string; rememberable?: boolean; grant?: GrantSpec; remoteFacts?: RemoteFacts; extendedWait?: boolean; context?: ApprovalContext; binding?: Binding; scope?: CoverView }) {
     expire();
     const hash = actionHash(action);
     const existing = pendingFor(action, targetSelector);
@@ -217,6 +218,9 @@ export function createApprovals({ ttlMinutes = 10, waitMinutes = ttlMinutes, onC
       ...(rememberable ? { rememberable: true } : {}), ...(targetSelector ? { targetSelector } : {}), ...(grant ? { grant: Object.freeze({ ...grant, rules: Object.freeze(grant.rules.map(rule => Object.freeze({ ...rule }))) }) } : {}),
       // Set once, from the request that created the record; a later identical request does not rewrite it.
       context: Object.freeze({ ...(context ?? { agent: harnessName(caller) }) }),
+      // GRANT-ORIGIN: the exact site(s) a grant from this card covers, and a plain line naming siblings it leaves out.
+      // Display only, like context: not in the action hash or any signed message.
+      ...(scope ? { scope: Object.freeze({ covers: Object.freeze([...scope.covers]), ...(scope.hint ? { hint: scope.hint } : {}) }) } : {}),
       // A session grant's text is built by the broker from validated parts (no queries; its label is cleaned
       // first) and is exactly what the user signs, so it is stored as built and never rewritten.
       detail: kind === 'grant' ? detail : cleanDetail(detail), reason: cleanDetail(reason), actionHash: hash, status: 'pending',

@@ -105,6 +105,18 @@ check(ApprovalWords.rule("upload https://github.com/settings") == "upload on git
       && ApprovalWords.rule("post https://www.linkedin.com/") == "post on www.linkedin.com"
       && ApprovalWords.rule("upload http://localhost:3000/app") == "upload on http://localhost:3000/app", "canonical rules read as the card lists them")
 check(!grantApproval.canRemember, "a session grant never offers Always allow")
+// GRANT-ORIGIN: the broker's scope is read as given, and a site is named exactly (www. kept, http:// shown).
+var scoped: JSONObject = ["id": "grant1", "kind": "grant", "caller": "codex", "reason": "session grant",
+    "detail": "post on www.linkedin.com/company\nupload on github.com/settings\nfor 3 hours\n“Update the profile”",
+    "expiresAt": "2099-01-01T00:00:00.000Z"]
+scoped["scope"] = ["covers": ["https://app.example.com", 7, "https://app.example.com/settings"], "hint": "Covers only app.example.com; www.example.com is not included."]
+let scopedApproval = Approval(scoped)!
+check(scopedApproval.covers == ["https://app.example.com", "https://app.example.com/settings"]
+      && scopedApproval.originHint == "Covers only app.example.com; www.example.com is not included.", "the covered scope and the sibling line are parsed")
+check(grantApproval.covers.isEmpty && grantApproval.originHint == nil, "no scope from the broker is no scope")
+check(try! scopedApproval.signingMessage(verb: "grant", timestamp: 1) == (try! grantApproval.signingMessage(verb: "grant", timestamp: 1)), "the scope never changes the signed message")
+check(ApprovalWords.site("https://www.example.com") == "www.example.com" && ApprovalWords.site("http://localhost:3000") == "http://localhost:3000"
+      && ApprovalWords.site("https://app.example.com:8443") == "app.example.com:8443", "a site is named exactly")
 check(try! grantApproval.signingMessage(verb: "grant", timestamp: 1).hasPrefix("grant|grant1|grant||"), "a session grant signs the ordinary tuple with an empty tab")
 rejects("a session grant cannot sign a remember choice") { _ = try grantApproval.signingMessage(verb: "grant", timestamp: 1, remember: true) }
 // Approving from the user's other device: the status the broker reports, the fingerprint the user compares with his

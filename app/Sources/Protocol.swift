@@ -68,6 +68,10 @@ struct Approval: Equatable {
     let why: String?
     /// What approving gives, in the broker's words ("This one action, once. ...").
     let allows: String?
+    /// GRANT-ORIGIN: the exact scope a grant from this card covers (scheme://host[:port], plus a path prefix), and the
+    /// broker's one plain line naming a sibling site the agent worked on that it does not cover. Display only.
+    let covers: [String]
+    let originHint: String?
     init?(_ object: JSONObject) {
         guard let id = string(object["id"]), let kind = object["kind"] as? String,
               let detail = object["detail"] as? String else { return nil }
@@ -83,6 +87,9 @@ struct Approval: Equatable {
         // A session grant's purpose is its signed label; a request from before context still shows it as the why.
         why = text(context["why"]) ?? (kind == "grant" ? ApprovalWords.grantParts(detail).label.flatMap(text) : nil)
         allows = text(object["allows"])
+        let scope = object["scope"] as? JSONObject ?? [:]
+        covers = ((scope["covers"] as? [Any]) ?? []).compactMap { $0 as? String }.map(displayLine).filter { !$0.isEmpty }
+        originHint = text(scope["hint"])
         tab = string(object["tab"]) ?? ""
         reason = object["reason"] as? String ?? "No reason supplied"
         caller = object["caller"] as? String ?? "unknown"

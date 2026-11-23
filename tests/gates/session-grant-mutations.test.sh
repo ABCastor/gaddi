@@ -28,7 +28,7 @@ for mutation in \
   OTHER_SESSION CLI LIVE_REQUIRED ENDED_ASK PROOF REMEMBER REVOKE SESSION_END AUDIT APPROVAL_CREDIT UPLOAD CLICK ENTER \
   LEAK_VIEW LEAK_DISK CLEAN_GRANT FOLD ZONE ZONE_MIXED ZONE_ENTER ZONE_PAYMENT \
   SANDBOX SANDBOX_LEAVING SANDBOX_FRAME SANDBOX_LIVE SANDBOX_MESSAGE SANDBOX_AUDIT SANDBOX_REMOVE \
-  GITHUB_SETTINGS GITHUB_OTHER GITHUB_ENCODED GITHUB_AUDIT EXPIRY LIST BOUNDARY ORIGIN PERMISSION MIXED PROTECTED DESTINATION NEVER GMAIL TABLE DETAIL \
+  GITHUB_SETTINGS GITHUB_OTHER GITHUB_ENCODED GITHUB_AUDIT EXPIRY LIST BOUNDARY ORIGIN SIBLING ZONE_SIBLING ORIGIN_HINT PERMISSION MIXED PROTECTED DESTINATION NEVER GMAIL TABLE DETAIL \
   NEEDED DENY SECRET RESTART; do
   # Reset every source from the real tree, then apply ONE distinct mutation to this copy.
   for source in daemon/*.ts; do cp "$source" "$COPY/$source"; done
@@ -101,6 +101,13 @@ const table = {
   LIST: ['ASSERT_GRANT_LIST', ['daemon/grants.ts', 'mine: mine !== undefined && grant.session === mine });', 'mine: true });']],
   BOUNDARY: ['ASSERT_GRANT_BOUNDARY', ['daemon/grants.ts', "url.pathname.startsWith(rule.path + '/')", 'url.pathname.startsWith(rule.path)']],
   ORIGIN: ['ASSERT_GRANT_ORIGIN', ['daemon/grants.ts', 'return url.origin === rule.origin && (', 'return (']],
+  // GRANT-ORIGIN: a grant or a zone on one subdomain silently covers its siblings (the last two labels match), or the
+  // card stops naming the sibling it leaves out.
+  SIBLING: ['ASSERT_GRANT_NO_WIDENING', ['daemon/grants.ts', 'return url.origin === rule.origin && (',
+    "return url.protocol === new URL(rule.origin).protocol && url.hostname.split('.').slice(-2).join('.') === new URL(rule.origin).hostname.split('.').slice(-2).join('.') && ("]],
+  ZONE_SIBLING: ['ASSERT_GRANT_NO_WIDENING', ['daemon/grants.ts', '(policy.zones?.sites ?? []).includes(target.origin) && grantableAddress(target)',
+    "(policy.zones?.sites ?? []).some(site => new URL(site).hostname.split('.').slice(-2).join('.') === target.hostname.split('.').slice(-2).join('.')) && grantableAddress(target)"]],
+  ORIGIN_HINT: ['ASSERT_GRANT_ORIGIN_HINT', ['daemon/grant-origin.ts', 'lines.push(`Covers only ${own.host}; ${named} ${siblings.length === 1 ? \'is\' : \'are\'} not included.`);', '']],
   PERMISSION: ['ASSERT_GRANT_PERMISSION', ['daemon/grants.ts',
     'grant.rules.some(rule => rule.permission === needed && covers(rule, target))', 'grant.rules.some(rule => covers(rule, target))']],
   MIXED: ['ASSERT_GRANT_MIXED', ['daemon/grants.ts', 'for (const verb of protections(policy).verbs) {', 'for (const verb of [] as string[]) {']],

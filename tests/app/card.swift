@@ -417,6 +417,47 @@ import AppKit
                 check(choices == ["grant", "deny"], "grant-\(theme)-\(Int(width)): the buttons keep their decisions")
             }
         }
+        // GRANT-ORIGIN: a lasting choice says the exact site it covers, and the line naming a sibling it leaves out.
+        var scopedGrant: JSONObject = ["id": "grantscope", "kind": "grant", "caller": "pi", "reason": "session grant",
+            "detail": "post on app.example.com\nupload on app.example.com/settings\nfor 1 hour",
+            "scope": ["covers": ["https://app.example.com", "https://app.example.com/settings"],
+                      "hint": "Covers only app.example.com; www.example.com is not included."],
+            "expiresAt": Date().addingTimeInterval(540).timeIntervalSince1970 * 1000]
+        let zoneUpload: JSONObject = ["id": "zonescope", "kind": "upload", "detail": "avatar.png (1 KB)", "caller": "pi", "tab": 7,
+            "url": "https://www.example.com/profile", "site": "https://www.example.com", "rememberable": true, "reason": "upload of a local file",
+            "scope": ["covers": ["https://www.example.com"], "hint": "Covers only www.example.com; app.example.com is not included."],
+            "expiresAt": Date().addingTimeInterval(540).timeIntervalSince1970 * 1000]
+        for (theme, appearance) in [("light", NSAppearance(named: .aqua)!), ("dark", NSAppearance(named: .darkAqua)!)] {
+            for width: CGFloat in [528, 408] {
+                let grantCard = ApprovalCard(Approval(scopedGrant)!, enabled: true) { _ in }
+                _ = try render(grantCard, width: width, name: "grant-scope-\(theme)-\(Int(width))", appearance: appearance)
+                let grantTexts = descendants(grantCard).compactMap { $0 as? NSTextField }
+                check(grantTexts.map(\.stringValue).contains("Covers  https://app.example.com, https://app.example.com/settings")
+                      && grantTexts.map(\.stringValue).contains("Covers only app.example.com; www.example.com is not included."),
+                      "grant-scope-\(theme)-\(Int(width)): the exact scope and the sibling it leaves out are visible")
+                check(grantTexts.allSatisfy { fits($0, within: grantCard) }, "grant-scope-\(theme)-\(Int(width)): the scope lines fit")
+                var zoned = 0
+                let uploadCard = ApprovalCard(Approval(zoneUpload)!, enabled: true, zone: { zoned += 1 }) { _ in }
+                _ = try render(uploadCard, width: width, name: "zone-scope-\(theme)-\(Int(width))", appearance: appearance)
+                let uploadTexts = descendants(uploadCard).compactMap { $0 as? NSTextField }.map(\.stringValue)
+                let zoneButton = descendants(uploadCard).compactMap { $0 as? PanelButton }.first { $0.title.hasPrefix("Test zone") }
+                check(zoneButton?.title == "Test zone: always allow on www.example.com",
+                      "zone-scope-\(theme)-\(Int(width)): the zone button names the exact host, www. kept")
+                check(uploadTexts.contains("Covers  https://www.example.com")
+                      && uploadTexts.contains("Covers only www.example.com; app.example.com is not included."),
+                      "zone-scope-\(theme)-\(Int(width)): Always allow and the zone say what they cover")
+                zoneButton?.performClick(nil)
+                check(zoned == 1, "zone-scope-\(theme)-\(Int(width)): the zone button keeps its action")
+            }
+        }
+        // A one-time action (nothing lasting is offered) shows no scope line, and no scope means no line.
+        let once = ApprovalCard(Approval(["id": "oncescope", "kind": "click", "detail": "Pay now", "caller": "pi", "tab": 7, "reason": "verb:pay",
+            "url": "https://www.example.com/cart", "scope": ["covers": ["https://www.example.com"]],
+            "expiresAt": Date().addingTimeInterval(540).timeIntervalSince1970 * 1000])!, enabled: true) { _ in }
+        check(!descendants(once).compactMap { $0 as? NSTextField }.contains { $0.stringValue.hasPrefix("Covers") }, "a one-time payment card shows no scope")
+        scopedGrant["scope"] = nil
+        check(!descendants(ApprovalCard(Approval(scopedGrant)!, enabled: true) { _ in }).compactMap { $0 as? NSTextField }.contains { $0.stringValue.hasPrefix("Covers") },
+              "a card without a scope from the broker shows none")
         let activeGrants = [
             SessionGrant(["id": "g1", "caller": "codex", "label": "Update the profile",
                 "rules": ["upload https://github.com/settings", "post https://www.linkedin.com/company"],

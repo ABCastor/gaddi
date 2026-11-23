@@ -35,7 +35,7 @@ for (const line of fs.readFileSync(new URL('./public-suffix-list.dat', import.me
   const domain = domainToASCII(rule.replace(/^!|^\*\./, ''));
   if (domain) kind.add(domain);
 }
-function registrable(host: string): string | undefined {
+export function registrable(host: string): string | undefined {
   if (isIP(host) || host.startsWith('[')) return undefined;
   const labels = host.split('.');
   let suffix = 0;

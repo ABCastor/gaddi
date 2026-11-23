@@ -30,6 +30,9 @@ export function isApproval(a: unknown): a is PublicApproval {
  return isRecord(a) && ['id','kind','caller','url','detail','reason','status','createdAt','expiresAt'].every(k => typeof a[k] === 'string')
   && (a.tab === null || typeof a.tab === 'number') && ['resolvedAt','by','decidedAt','usedAt','imagePath','targetSelector','digest'].every(k => a[k] === undefined || typeof a[k] === 'string')
   && (a.remote === undefined || a.remote === true)
+  // GRANT-ORIGIN: the exact scope a grant from this card covers, and the plain line naming siblings it leaves out.
+  && (a.scope === undefined || isRecord(a.scope) && Array.isArray(a.scope.covers) && a.scope.covers.every(site => typeof site === 'string')
+    && (a.scope.hint === undefined || typeof a.scope.hint === 'string'))
   && (a.box === undefined || isRecord(a.box) && ['x','y','width','height'].every(k => isRecord(a.box) && typeof a.box[k] === 'number' && Number.isFinite(a.box[k])));
 }
 function isGrantView(g: unknown): g is PublicGrant {

@@ -246,6 +246,12 @@ enum ApprovalWords {
         let source = "on \(host(approval.url))"
         return destination(approval).map { "\(source), which leads to \($0)" } ?? source
     }
+    /// GRANT-ORIGIN: a whole site as it is covered: host and port exactly (www. kept), with http:// when it is not https.
+    static func site(_ origin: String) -> String {
+        guard let url = URL(string: origin), let host = url.host else { return origin }
+        let port = url.port.map { ":\($0)" } ?? ""
+        return (url.scheme == "https" ? "" : "\(url.scheme ?? "http")://") + host + port
+    }
     static func host(_ text: String) -> String {
         guard let url = URL(string: text), let host = url.host else { return text }
         let port = url.port.map { ":\($0)" } ?? ""
@@ -323,6 +329,19 @@ final class ApprovalCard: NSStackView {
         facts.append(approval.why.map { fact("Why", "“\($0)” (the agent’s words)") } ?? fact("Why", "the agent gave no reason", quiet: true))
         if approval.kind == "eval" { facts.append(fact("Script", approval.detail)) }
         if let allows = approval.allows { facts.append(fact("If you approve", allows)) }
+        // GRANT-ORIGIN: a choice that lasts (a session grant, Always allow, a test zone) says the exact site it covers,
+        // and the broker's line naming a sibling it leaves out, so a later request there is no surprise.
+        let lasting = approval.kind == "grant" || approval.canRemember || zone != nil && !approval.zoneSites.isEmpty
+        if lasting && !approval.covers.isEmpty {
+            facts.append(fact("Covers", approval.covers.joined(separator: ", ")))
+            if let hint = approval.originHint {
+                let line = NSTextField(wrappingLabelWithString: hint)
+                line.font = Typeface.interface(13); line.textColor = Palette.inkSoft; line.isSelectable = true
+                line.lineBreakMode = .byWordWrapping; line.maximumNumberOfLines = 0
+                line.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
+                facts.append(line)
+            }
+        }
         let because = NSTextField(wrappingLabelWithString: ApprovalWords.reason(approval.reason))
         because.font = Typeface.interface(13); because.textColor = Palette.inkSoft
         because.setAccessibilityHelp(approval.reason)
@@ -358,7 +377,8 @@ final class ApprovalCard: NSStackView {
             row.widthAnchor.constraint(equalTo: widthAnchor).isActive = true
         }
         if let zone, !approval.zoneSites.isEmpty {
-            let sites = approval.zoneSites.map(ApprovalWords.host)
+            // The exact site, never shortened: a zone on www.example.com is not one on example.com.
+            let sites = approval.zoneSites.map(ApprovalWords.site)
             let named = sites.count == 1 ? sites[0] : "these \(sites.count) sites"
             let button = PanelButton("Test zone: always allow on \(named)", kind: .quiet, symbol: "checkmark.shield") { zone() }
             button.isEnabled = enabled

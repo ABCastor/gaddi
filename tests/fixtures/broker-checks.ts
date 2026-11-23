@@ -1777,6 +1777,48 @@ async function sessionGrant(c: Client, b: Bridge) {
     }
   });
 
+  // GRANT-ORIGIN: a grant card says the exact scope it covers, and names the sibling the chat was working on that it leaves out.
+  await check('ASSERT_GRANT_ORIGIN_HINT', async () => {
+    const session = await liveSession();
+    await on('https://www.example.com/shop?q=PRIVATE_QUERY', async () => assert.equal(await outcome(click(session)), 'allowed', 'the chat works on www.example.com'));
+    const card = await asked(await ask(session, ['post https://app.example.com/', 'upload https://app.example.com/settings'], 60));
+    assert.deepEqual(card.scope, { covers: ['https://app.example.com', 'https://app.example.com/settings'],
+      hint: 'Covers only app.example.com; www.example.com is not included.' }, 'the card shows the exact scope and the sibling left out');
+    assert.ok(!JSON.stringify(card.scope).includes('PRIVATE_QUERY'), 'the hint names hosts only');
+    const plain = await asked(await ask(await liveSession(), ['post https://www.example.com/'], 60));
+    assert.deepEqual(plain.scope, { covers: ['https://www.example.com'] }, 'no sibling worked on: no hint line');
+    // A held upload's card covers the tab's exact origin (its Always allow and Test zone choices) and names the sibling.
+    let held: (PublicApproval & { site?: string }) | undefined;
+    await on('https://app.example.com/upload', async () => { held = await pending(c, (await upload(session)).error!); });
+    assert.ok(held);
+    assert.equal(held.site, 'https://app.example.com', 'Always allow covers the exact origin');
+    assert.deepEqual(held.scope, { covers: ['https://app.example.com'], hint: 'Covers only app.example.com; www.example.com is not included.' }, 'and the card says so');
+  });
+
+  // GRANT-ORIGIN: a grant, a zone or a remembered site on one subdomain never covers its sibling; the sibling raises its own card.
+  await check('ASSERT_GRANT_NO_WIDENING', async () => {
+    const { session } = await freshGrant(['post https://a.example.com/', 'upload https://a.example.com/']);
+    await named('Post', async () => {
+      await on('https://a.example.com/board', async () => assert.equal(await outcome(click(session)), 'allowed', 'the granted site runs'));
+      for (const url of ['https://b.example.com/board', 'https://example.com/board', 'https://www.example.com/board', 'https://x.a.example.com/board'])
+        await on(url, async () => assert.equal(await outcome(click(session)), 'held', `a sibling is not covered: ${url}`));
+    });
+    await on('https://b.example.com/board', async () => assert.equal(await outcome(upload(session)), 'held', 'an upload on the sibling is held'));
+    const sibling = await ask(session, ['post https://b.example.com/'], 60);
+    const siblingCard = await asked(sibling);
+    assert.deepEqual(siblingCard.scope?.covers, ['https://b.example.com'], 'the sibling asks with its own card');
+    assert.match(siblingCard.scope?.hint ?? '', /^Covers only b\.example\.com; .*a\.example\.com/, 'which says the first site is not part of it');
+    assert.equal(siblingCard.detail.split('\n')[0], 'post on b.example.com', 'the card lists only the sibling');
+    const zone = 'https://a.example.com', zoneTs = Date.now();
+    await result(c, 'zones.add', { site: zone, proof: { ts: zoneTs, sig: crypto.sign('sha256', Buffer.from(`zones.add|${zone}|${zoneTs}`), privateKey).toString('base64') } });
+    try {
+      await named('Delete', async () => {
+        await on('https://a.example.com/board', async () => assert.equal(await outcome(click(undefined)), 'allowed', 'the zone covers its own site'));
+        await on('https://b.example.com/board', async () => assert.equal(await outcome(click(undefined)), 'held', 'never its sibling'));
+      });
+    } finally { await result(c, 'zones.remove', { site: zone }); }
+  });
+
   await check('ASSERT_GRANT_PERMISSION', async () => {
     const posting = await freshGrant([`post ${SHOP}`]), deleting = await freshGrant([`delete ${SHOP}`]);
     assert.equal(await outcome(upload(posting.session)), 'held', 'a post grant does not cover an upload');
