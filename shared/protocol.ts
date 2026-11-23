@@ -136,7 +136,9 @@ export interface ApprovalCapture { data: string; mimeType: string; width: number
 export interface SigninProbe { url: string; signature: string; username?: string; usernameConfirmation?: string; password?: string; confirmation?: string; passwordPresent?: boolean; otp?: string; challenge?: boolean;
   // Sign-up only: the button that sends the form, pressed by the broker as an ordinary gated click.
   submit?: string }
-export interface SigninResult { outcome: 'signed_in' | 'filled' | 'submitted' | 'needs_you' | 'no_login' | 'choose' | 'failed'; site: string; item_title?: string; step?: string; reason?: string }
+export interface SigninResult { outcome: 'signed_in' | 'filled' | 'submitted' | 'needs_you' | 'no_login' | 'choose' | 'failed'; site: string; item_title?: string; step?: string; reason?: string;
+  // OP-DIAGNOSTICS: a fixed `<step>:<kind>` and whole milliseconds, never op output or a credential.
+  category?: string; elapsed_ms?: number }
 export interface PageResults {
   downloadArm: { armed: boolean };
   downloadPoll: { ready: boolean; bytes?: number; chunks?: number; error?: string };

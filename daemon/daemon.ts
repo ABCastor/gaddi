@@ -28,7 +28,7 @@ import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
 import { loadPolicy, setSigninRemember, setSendRemember, setUploadRemember, setZone, setSandbox, zoneSite, sendRule, uploadSite, checkRememberedSend, checkRememberedUpload, checkNavigation, checkClick, checkNames, checkPress, checkType, checkEval, checkUpload, checkSignin, hostOf, UPLOAD_HOLD } from './policy.ts';
-import { signinSite, listLogins, chooseLogin, runSignin, createLogin, getPassword, PASSWORD_UNAVAILABLE } from './signin.ts';
+import { signinSite, listLogins, chooseLogin, runSignin, createLogin, getPassword, opDiagnostic, PASSWORD_UNAVAILABLE } from './signin.ts';
 import { createSigninSecrets } from './signin-secrets.ts';
 import { redactURLs, redactURLText } from '../shared/url-redaction.ts';
 import { downloadTarget, saveDownload, checkDownload, DOWNLOAD_LIMIT } from './downloads.ts';
@@ -462,8 +462,10 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       if (creating) item = { id: 'new', title: String((params.create as Record<string, unknown>).title), urls: [site] };
       else {
         let logins;
+        const listed = Date.now();
         try { logins = await listLogins(); }
-        catch { return finish({ outcome: 'needs_you', site, step: '1password', reason: PASSWORD_UNAVAILABLE }); }
+        catch (error) { return finish({ outcome: 'needs_you', site, step: '1password', reason: PASSWORD_UNAVAILABLE,
+          ...opDiagnostic('1password', error, Date.now() - listed, 'list-malformed') }); }
         const selection = chooseLogin(logins, site, params.item);
         if (selection.outcome !== 'selected') return finish(selection);
         item = selection.item;
@@ -1354,7 +1356,9 @@ async function handle(input: unknown, conn: Socket) {
   // An upload records the file's name and size, never its folder or content.
   if (!(typeof method === 'string' && nonAuditedMethods.has(method))) {
     if (method === 'signin') audit({ ts: new Date().toISOString(), site: meta.signin?.site ?? '',
-      item_title: meta.signin?.item_title ?? '', outcome: meta.signin?.outcome ?? 'failed' });
+      item_title: meta.signin?.item_title ?? '', outcome: meta.signin?.outcome ?? 'failed',
+      // OP-DIAGNOSTICS: a 1Password failure adds its step, fixed category and elapsed ms, never a value.
+      ...(meta.signin?.category ? { step: meta.signin.step, category: meta.signin.category, elapsed_ms: meta.signin.elapsed_ms } : {}) });
     else audit({ ts: new Date().toISOString(), caller: meta.caller,
       ...(typeof params.harness === 'string' ? { harness: params.harness } : {}), method, tab: meta.tab,
       url: cleanURL(meta.url), ...(meta.tabs ? { tabs: meta.tabs } : {}), ...(meta.upload ? { upload: meta.upload } : {}),
