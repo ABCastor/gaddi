@@ -94,7 +94,9 @@ const TOOLS: ToolDefinition[] = [
   tool('open', 'Open background URL in Gaddi; foreground selects it.', { url: S, group: S, foreground: B, approval, why }, ['url'], 'open', pageJSON),
   tool('goto', 'Navigate a tab to a URL.', { tab, url: S, approval, why }, ['url'], 'goto', pageJSON),
   tool('back', 'Go back in a tab.', { tab }, [], 'back', pageJSON),
-  tool('click', 'Click selector/at:{x,y}; version guards stale; download:path saves blob to Downloads/temp (20MB).', { tab, version, selector: S, at, frameId, download: S, approval, why }),
+  // DRAG-HOLD: a drag (at to `to`) and a press-and-hold (holdMs) are options of click, not tools of their own: the 26-tool
+  // list is at its token budget, and a drag or hold is judged and bound as the click on its start (and drop) target.
+  tool('click', 'Click selector/at:{x,y}; to:{x,y} drags from at; holdMs holds; download:path saves blob (20MB).', { tab, version, selector: S, at, to: at, holdMs: { type: 'integer' }, frameId, download: S, approval, why }),
   tool('type', 'Replace text; mode:append adds, preserving chips/mentions. secret: 1Password item fills a password.', { tab, version, selector: S, text: S, secret: S, mode: { ...S, enum: ['replace', 'append'] }, frameId, approval, why }, ['selector']),
   tool('signin', '1Password. create:{title,username,vault}: new login; signup:true fills existing; submit:true sends.', { tab, item: S, signup: B, submit: B, create: { type: 'object', properties: { title: S, username: S, vault: S }, required: ['title','username','vault'], additionalProperties: false }, approval, why }),
   tool('press', 'Press key; frameId requires focus in that document.', { tab, version, key: S, frameId, approval, why }, ['key']),

@@ -117,6 +117,10 @@ try {
   assert.match(listed.tools.find(t => t.name === 'browser_type')!.description!, /secret: 1Password item fills a password/, 'ASSERT_SECRET_FILL_SCHEMA');
   assert.deepEqual(schema('grant').properties.standing, { type: 'boolean' }, 'ASSERT_STANDING_SCHEMA');
   assert.deepEqual(schema('click').properties.download,{type:'string'},'ASSERT_DOWNLOAD_SCHEMA');
+  // DRAG-HOLD: a drag and a press-and-hold are options of click (the broker bounds them).
+  assert.deepEqual(schema('click').properties.to, { type: 'object' }, 'ASSERT_DRAG_HOLD_SCHEMA');
+  assert.deepEqual(schema('click').properties.holdMs, { type: 'integer' }, 'ASSERT_DRAG_HOLD_SCHEMA');
+  assert.match(listed.tools.find(t => t.name === 'browser_click')!.description!, /to:\{x,y\} drags from at; holdMs holds/, 'ASSERT_DRAG_HOLD_SCHEMA');
   const create=schema('signin').properties.create;assert.ok(isRecord(create)&&isRecord(create.properties));
   assert.deepEqual(Object.keys(create.properties).sort(),['title','username','vault'],'ASSERT_CREATE_NO_SECRET_FIELD');
   assert.deepEqual(create.required,['title','username','vault']);

@@ -15,6 +15,8 @@ interface CallMeta { caller: string; tab: unknown; url: unknown; tabs?: { tab: u
   // The viewport point a click was aimed at, and the embedded document it fell inside. Structured,
   // already cleaned, and the only record of where a point click landed.
   point?: { x: number; y: number; frame?: string };
+  // DRAG-HOLD: where a drag let go, and how long the button stayed down.
+  to?: { x: number; y: number }; holdMs?: number;
   // The document a screenshot cropped to, so the audit says which document was pictured.
   shot?: { frameId: number; url?: string };
   decision?: { approval: string; kind?: string; verb?: string }; remoteKey?: string;
@@ -53,6 +55,10 @@ const statePath = process.env.GADDI_STATE || path.join(home, 'state.json');
 const TEXT_LIMIT = 20000, HTML_LIMIT = 5 * 1024 * 1024;
 // EVAL-READONLY: the longest script the owner is asked to approve; the card shows all of it.
 const EVAL_WRITE_LIMIT = 2000;
+// DRAG-HOLD: the longest a held button stays down (a drag moves through the same time), well inside an action's deadline.
+const HOLD_MS_MAX = 10000;
+// A drop target named like a bin deletes what lands on it, so a drag onto it is a delete.
+const dropsInBin = (name: string) => /\b(?:trash|bin|recycle bin|wastebasket|cestino)\b/i.test(name);
 const AGENT_GROUP_PREFIX = '● ';
 const AUDIT_MAX_BYTES = 10 * 1024 * 1024;
 const log = (...args: unknown[]) => console.error(new Date().toISOString(), '[gaddi]', ...redactURLs(args));
@@ -476,6 +482,18 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
     if (args.frameId !== undefined) throw new Error('at is a point in the tab, so it takes no frameId: give at, or frameId with a selector');
     args.at = at;
   }
+  // DRAG-HOLD: a click that keeps the button down. A drag goes from the point `at` to the point `to` (both in the tab's
+  // viewport, as a screenshot shows them: a reference would be scrolled into view and move the other point); `holdMs`
+  // keeps the button down that long, and a drag moves through that time.
+  if (method !== 'click' && (params.to !== undefined || params.holdMs !== undefined)) throw new Error('to and holdMs apply only to click');
+  const to = method === 'click' && params.to !== undefined ? pointParam(params.to) : undefined;
+  if (to && !at) throw new Error('a drag goes from one point to another: give at:{x,y} for its start with to:{x,y}');
+  if (params.holdMs !== undefined && (typeof params.holdMs !== 'number' || !Number.isSafeInteger(params.holdMs) || params.holdMs < 1 || params.holdMs > HOLD_MS_MAX))
+    throw new Error(`holdMs must be a whole number of milliseconds from 1 to ${HOLD_MS_MAX}`);
+  const holdMs = method === 'click' ? params.holdMs : undefined;
+  if ((to || holdMs) && params.download !== undefined) throw new Error('download applies to a plain click, not a drag or hold');
+  if (to) args.to = to;
+  if (holdMs) args.holdMs = holdMs;
   if (method === 'signin') {
     let site = '';
     // OWNER-NEEDED: every sign-in answer passes here, so a needs_you the owner must act on is noticed (once per tab and
@@ -583,6 +601,25 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       const committed = gateNames(info.committed ?? undefined, 'committed');
       const commit = info.blind === true ? { check: { outcome: 'allow' } as PolicyCheck, held: [] } : judgeNames(committed, { commit: true }, scopeURL);
       check = strictest(check, commit.check);
+      // DRAG-HOLD invariant: a drag is judged on what it picks up (the click above) and on where it lets go: the control
+      // under the end point is judged as a click on it would be, on its own document and on the tab, and a drop target
+      // named like a bin ("Trash", "Bin", "Cestino") is a delete. Both are bound, so the approved drag drops there or not
+      // at all. A drop into another document than the start, or one Gaddi cannot inspect, waits for the owner.
+      let drop: { name: string; frame: { id: number; origin: string; document: string } } | undefined;
+      if (to) {
+        const dropped = await request('describe', { ...args, at: to });
+        if (!isRecord(dropped) || typeof dropped.name !== 'string' || typeof dropped.origin !== 'string' || typeof dropped.documentId !== 'string')
+          throw new Error('chrome.describe must return the name, origin and documentId of the drop point');
+        const dropURL = actingURL(dropped.frameUrl, pageURL);
+        const frameOf = { id: typeof dropped.frameId === 'number' ? dropped.frameId : 0, origin: String(dropped.origin), document: String(dropped.documentId) };
+        drop = { name: dropped.name, frame: frameOf };
+        const startFrame = { id: typeof info.frameId === 'number' ? info.frameId : 0, document: String(info.documentId) };
+        const dropCheck = dropped.blind === true ? HOLD('drop inside an embedded document Gaddi cannot inspect')
+          : frameOf.id !== startFrame.id || frameOf.document !== startFrame.document ? HOLD('drag from one document into another')
+          : strictest(strictest(checkClick(policy, hostOf(dropURL), dropped.name), checkClick(policy, hostOf(pageURL), dropped.name)),
+            dropsInBin(dropped.name) ? HOLD('verb:delete') : { outcome: 'allow' });
+        check = strictest(check, dropCheck);
+      }
       const destination = info.href ? new URL(info.href, scopeURL).href : '';
       const generated = download && /^(?:blob:|filesystem:)/.test(destination);
       if (generated && new URL(destination.replace(/^filesystem:/, '')).origin !== new URL(scopeURL).origin)
@@ -591,11 +628,16 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       if (check.outcome === 'allow' && scopeURL !== pageURL) check = checkNavigation(policy, navigationURL(scopeURL));
       check = checkRememberedSend(policy, scopeURL, method, check, info.name, destination);
       // A grant reads every name the click acts on, so a granted "delete" never carries an ungranted choice with it.
-      check = grantCheck(check, { kind: 'click', name: [info.name, ...commit.held].join(' ; '), destination }, scopeURL);
+      check = grantCheck(check, { kind: 'click', name: [info.name, ...commit.held, ...(drop ? [drop.name] : [])].join(' ; '), destination }, scopeURL);
       detail = `${cleanDetail(info.name)}${commit.held.length ? `, with ${quoted(commit.held)} chosen` : ''}`
         + `${at ? ` at ${at.x},${at.y}` : ''}${scopeURL !== pageURL ? ` in ${cleanURL(scopeURL)}` : ''}`
         + `${info.href ? ' -> ' + cleanURL(destination) : ''}`;
+      // DRAG-HOLD: the card says it is a drag or a hold, where it lets go and for how long.
+      if (to && drop) detail = `drag ${detail} to ${cleanDetail(drop.name) || 'the page'} at ${to.x},${to.y}${holdMs ? ` over ${holdMs} ms` : ''}`;
+      else if (holdMs) detail = `hold ${detail} for ${holdMs} ms`;
       if (at) meta.point = { x: at.x, y: at.y, ...(scopeURL !== pageURL ? { frame: cleanURL(scopeURL) } : {}) };
+      if (to) meta.to = { x: to.x, y: to.y };
+      if (holdMs) meta.holdMs = holdMs;
       // FRAME-BIND: a point click is bound to the document it landed in: Chrome's frame id (0 is the tab itself), that
       // document's own origin and Chrome's document id. A selector click inside a frame is bound to that frame's origin.
       if (at && (typeof info.origin !== 'string' || typeof info.documentId !== 'string')) throw new Error('chrome.describe must return origin and documentId for a point');
@@ -605,7 +647,7 @@ async function browserCall(method: string, params: IncomingParams, meta: CallMet
       const transaction = transactionFact(info.transaction, info.blind !== true);
       // Bind the resolved accessible name and destination too, so a changed button requires new approval.
       args._description = { name: info.name, href: info.href, ...(Array.isArray(info.committed) ? { committed } : {}), ...frame,
-        ...(transaction ? { transaction } : {}) };
+        ...(transaction ? { transaction } : {}), ...(drop ? { drop } : {}) };
     } else if (params.secret !== undefined) {
       // SECRET-FILL: the password of one 1Password login goes from op straight into one password field of the site that
       // login belongs to. The agent names the item; it never sees, sends or receives the value. The same rule as a
@@ -1456,6 +1498,7 @@ async function handle(input: unknown, conn: Socket) {
       ...(meta.sandbox ? { sandbox: true } : {}),
       ...(meta.allowance ? { allowance: meta.allowance } : {}),
       ...(meta.point ? { point: meta.point } : {}),
+      ...(meta.to ? { to: meta.to } : {}), ...(meta.holdMs ? { holdMs: meta.holdMs } : {}),
       ...(meta.shot ? { shot: meta.shot } : {}),
       ...(meta.reason ? { reason: meta.reason } : {}),
       // A decision from another device names who, which request and what was decided: never its signature or nonce.

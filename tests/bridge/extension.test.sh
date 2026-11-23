@@ -210,6 +210,18 @@ for pair in tx-check:ASSERT_TX_FINAL_CHECK tx-churn:ASSERT_TX_CHURN frame-check:
   echo "FALSIFIED binding: the $mode mutation fails $assertion"
 done
 
+# DRAG-HOLD: the HTML5 drag interception, the button held through a drag, the wait of a hold and the drop target's last
+# check, each removed in a disposable copy, fail their check by name.
+for pair in intercept:ASSERT_DRAG_DROP buttons:ASSERT_DRAG_SELECTS_TEXT wait:ASSERT_HOLD_DURATION drop-check:ASSERT_DROP_FINAL_CHECK; do
+  mode=${pair%%:*} assertion=${pair#*:}
+  LOG=tests/.state/logs/bridge-gesture-$mode-falsified.log
+  if GADDI_GESTURES_ONLY=1 GADDI_BRIDGE_BREAK_GESTURE=$mode node tests/bridge/extension.ts >"$LOG" 2>&1; then
+    echo "FAIL the $mode gesture mutation did not fail $assertion"; exit 1
+  fi
+  if ! rg -q "AssertionError.*$assertion" "$LOG"; then cat "$LOG"; echo "FAIL $mode gesture falsification failed for an unrelated reason"; exit 1; fi
+  echo "FALSIFIED gestures: the $mode mutation fails $assertion"
+done
+
 LOG=tests/.state/logs/bridge-hscroll-falsified.log
 if GADDI_BRIDGE_BREAK_HSCROLL=1 node tests/bridge/extension.ts >"$LOG" 2>&1; then
   echo 'FAIL horizontal scroll mutation passed'; exit 1

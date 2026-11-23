@@ -28,6 +28,9 @@ const usage = `usage: gaddi [--json] [--tab <id>] [--approval <id>] [--why <purp
   close <id> [id...] | show <id> | group <task> <id> [id...]
   click [tab] <selector> | click [tab] --at x,y  (the point a screenshot shows, in the tab's own viewport;
       trusted input on what is really there, through a banner and inside an embedded page)
+  drag [tab] <x,y> <x,y> [--hold-ms N] | hold [tab] <selector|x,y> <ms>  (the button held down: a drag from one point to
+      the other, over N ms, or a press held that long; judged as a click on what it presses and where it lets go;
+      also click --at x,y --to x,y and click ... --hold-ms N)
   type [tab] <selector> <text> [--mode replace|append] | type [tab] <password-field> --secret <1Password item>
       (the item's password goes from 1Password into the field; never typed as text, never shown)
   press [tab] <key> | select [tab] <selector> <value> | upload [tab] <selector> <path>
@@ -53,7 +56,17 @@ let json = false, fullPage = false, foreground = false, visible = false;
 let approval: string | undefined, tab: number | undefined, group: string | undefined, item: string | undefined, why: string | undefined;
 let mode: 'replace' | 'append' | undefined;
 let signup = false, submit = false, write = false, create: BrokerParams['create'], download: string | undefined, fillItem: string | undefined;
-let at: { x: number; y: number } | undefined, frame: number | undefined;
+let at: { x: number; y: number } | undefined, frame: number | undefined, to: { x: number; y: number } | undefined, holdMs: number | undefined;
+// A viewport point as x,y: the place a screenshot shows.
+const point = (value: string, flag: string) => {
+  const parts = value.split(',').map(part => Number(part.trim()));
+  if (parts.length !== 2 || parts.some(part => !Number.isFinite(part) || part < 0)) die(`${flag} needs viewport coordinates as x,y`, 2);
+  return { x: parts[0], y: parts[1] };
+};
+const duration = (value: string | undefined, flag: string) => {
+  if (!/^\d+$/.test(value || '') || !Number.isSafeInteger(Number(value))) die(`${flag} needs whole milliseconds`, 2);
+  return Number(value);
+};
 let zoom: { x: number; y: number; width: number; height: number } | undefined;
 const wheel: { dx?: number; dy?: number } = {};
 for (let i = 0; i < argv.length; i++) {
@@ -88,6 +101,8 @@ for (let i = 0; i < argv.length; i++) {
     if (parts.length !== 2 || parts.some(part => !Number.isFinite(part) || part < 0)) die('--at needs viewport coordinates as x,y', 2);
     at = { x: parts[0], y: parts[1] };
   }
+  else if (arg === '--to') to = point(argv[++i] || '', '--to');
+  else if (arg === '--hold-ms') holdMs = duration(argv[++i], '--hold-ms');
   else if (arg === '--frame') {
     const value = argv[++i] || '';
     if (!/^\d+$/.test(value) || !Number.isSafeInteger(Number(value)) || Number(value) < 1) die('--frame needs a frame id from look', 2);
@@ -116,6 +131,8 @@ if (fillItem !== undefined && (cmd !== 'type' || mode)) die('--secret applies on
 if (download !== undefined && cmd !== 'click') die('--download applies only to click',2);
 if (write && cmd !== 'eval') die('--write applies only to eval', 2);
 if (at && cmd !== 'click') die('--at applies only to click', 2);
+if (to && cmd !== 'click') die('--to applies only to click (or use drag)', 2);
+if (holdMs !== undefined && !['click', 'drag'].includes(cmd)) die('--hold-ms applies only to click and drag', 2);
 if (at && frame !== undefined) die('--at is a point in the tab, so it takes no --frame', 2);
 // The daemon decides what a frame means; the CLI must not narrow the surface it offers, or the
 // same capability exists through MCP and not from a shell.
@@ -134,12 +151,14 @@ if (signup) params.signup = true;
 if (create) params.create = create;
 if (download !== undefined) params.download = download;
 if (at) params.at = at;
+if (to) params.to = to;
+if (holdMs !== undefined) params.holdMs = holdMs;
 if (frame !== undefined) params.frameId = frame;
 if (process.env.GADDI_HARNESS) params.harness = process.env.GADDI_HARNESS;
 if (approval) params.approval = approval;
 if (why) params.why = why;
 if (process.env.GADDI_CHAT || process.env.GADDI_PROJECT) params.context = { chat: process.env.GADDI_CHAT, project: process.env.GADDI_PROJECT };
-const tabCommands = ['look', 'read', 'html', 'screenshot', 'goto', 'back', 'click', 'hover', 'type', 'press', 'scroll', 'select', 'upload', 'eval', 'emulate', 'wait', 'signin'];
+const tabCommands = ['look', 'read', 'html', 'screenshot', 'goto', 'back', 'click', 'drag', 'hold', 'hover', 'type', 'press', 'scroll', 'select', 'upload', 'eval', 'emulate', 'wait', 'signin'];
 if (tabCommands.includes(cmd)) {
   // A lone numeric scroll argument is a distance; use --tab to remove ambiguity.
   if (tab === undefined && /^\d+$/.test(args[0] || '') && (args.length > 1 || ['look', 'read', 'html', 'screenshot', 'back', 'signin'].includes(cmd))) tab = Number(args.shift());
@@ -170,6 +189,15 @@ switch (cmd) {
   case 'open': params.url = take('URL'); params.foreground = foreground; if (group !== undefined) params.group = group; break;
   case 'goto': params.url = take('URL'); break;
   case 'click': if (at) { if (args.length) die('click: --at takes no selector', 2); } else params.selector = take('selector'); break;
+  // DRAG-HOLD: both are clicks that keep the button down; the broker judges and binds them as clicks.
+  case 'drag': method = 'click'; params.at = point(take('start x,y'), 'drag'); params.to = point(take('end x,y'), 'drag'); break;
+  case 'hold': {
+    method = 'click';
+    const target = take('selector or x,y');
+    if (/^\d+(?:\.\d+)?,\d+(?:\.\d+)?$/.test(target)) params.at = point(target, 'hold'); else params.selector = target;
+    params.holdMs = duration(take('milliseconds'), 'hold');
+    break;
+  }
   case 'hover': params.selector = take('selector'); break;
   case 'type': params.selector = take('selector');
     if (fillItem !== undefined) { if (args.length) die('type --secret takes no text', 2); params.secret = fillItem; break; }

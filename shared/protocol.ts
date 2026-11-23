@@ -21,6 +21,9 @@ export interface ChromeParams {
   // middle) or cannot be written (inside another origin's page). It is never translated
   // into a frame's coordinates; the extension resolves which document it falls in.
   at?: { x: number; y: number };
+  // DRAG-HOLD: a click that keeps the button down. `to` drags from `at` to this point (both in the tab's viewport);
+  // `holdMs` is how long the button stays down (a drag moves through that time). The broker bounds both.
+  to?: { x: number; y: number }; holdMs?: number;
   // A region of an embedded document to see close up, in that document's own pixels: the answer to
   // a picture a model cannot read at the size it is drawn.
   zoom?: { x: number; y: number; width: number; height: number };
@@ -101,7 +104,9 @@ export interface CheckedDescription { name?: string; href?: string; submitName?:
   transaction?: string;
   // FRAME-BIND: the document a point click lands in (Chrome frame id, 0 for the tab itself; its origin; Chrome's
   // document id), and the origin of the embedded document a selector click acts in.
-  frame?: { id: number; origin: string; document: string }; origin?: string }
+  frame?: { id: number; origin: string; document: string }; origin?: string;
+  // DRAG-HOLD: the control a drag's end point falls on, in its document, as the gate judged it.
+  drop?: { name: string; frame: { id: number; origin: string; document: string } } }
 // The gate facts beyond a control's own name (policy.ts): SELECT-CHOICE `chosen` is the option a select's value picks;
 // COMMIT-CHOICES `committed` (a button), `enterCommits` and `spaceCommits` (a key) are the choices that are on where it
 // acts; KEY-CHOICE `keyChoices` is everything a key on the focused element could pick and `spaceName` what Space presses.
@@ -253,7 +258,8 @@ export interface BrokerResults {
   close: CloseResult;
   screenshot: ScreenshotResult;
   // opened: a tab the page asked for during a background click, opened behind the user's work.
-  click: InputResult & { clicked: boolean; opened?: { tab: number; url: string }[] };
+  // DRAG-HOLD: a drag says how it went: the pointer's own path, or an HTML5 drag carried to the drop point.
+  click: InputResult & { clicked: boolean; opened?: { tab: number; url: string }[]; dragged?: 'pointer' | 'html5' };
   type: InputResult & { typed: boolean };
   press: InputResult & { pressed: boolean; opened?: { tab: number; url: string }[] };
   select: InputResult & { selected: boolean };

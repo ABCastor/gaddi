@@ -25,7 +25,7 @@ export interface ChromeResults {
   'chrome.eval': { value: unknown };
   'chrome.sandbox': { sandbox: number };
   'chrome.emulate': { emulated: boolean };
-  'chrome.click': { clicked: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string };
+  'chrome.click': { clicked: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string; dragged?: 'pointer' | 'html5' };
   'chrome.hover': { hovered: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string };
   'chrome.type': { typed: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string };
   'chrome.press': { pressed: boolean; changed: boolean; url: string; navigating?: boolean; version?: string; note?: string };

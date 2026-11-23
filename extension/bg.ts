@@ -502,6 +502,8 @@ async function resolvePoint(tab: number, at: { x: number; y: number }, check: Ch
 const NEW_CONTEXT_MS = 10000, NEW_CONTEXT_WAIT_MS = 500;
 // How long a click on a choice waits for a page that answers late (afterInput patientMs).
 const CHOICE_PATIENCE_MS = 1200;
+// DRAG-HOLD: a drag without a duration takes 300 ms, in steps of about one frame (10 to 200 of them).
+const DRAG_MS = 300, DRAG_STEPS_MIN = 10, DRAG_STEPS_MAX = 200;
 // A frame that never answers (still loading, or a busy renderer) must not hold up the input.
 const bounded = <T>(work: Promise<T>, fallback: T) => {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1400,6 +1402,45 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
       handed = halves.every(half => half.status === 'fulfilled' || !unsent(half.reason));
       throw failed.reason;
     };
+    // DRAG-HOLD: a press that keeps the button down, as a person's own pointer: down at the start, then either a wait of
+    // holdMs or a path to the end point in small steps with the button held, then up. Invariant: it is the same trusted
+    // input as a click (Input.dispatchMouseEvent on the point the gates judged), never a synthesised page event. A native
+    // HTML5 drag the page starts is intercepted by Chrome (Input.setInterceptDrags) and carried to the end point with
+    // Input.dispatchDragEvent, because a real drag session would wait for the operating system's own pointer.
+    const gesture = async (send: CDPSend, start: { x: number; y: number }, end: { x: number; y: number } | undefined, holdMs: number): Promise<'pointer' | 'html5'> => {
+      let data: Protocol.Input.DragData | undefined;
+      const intercepted = (source: chrome.debugger.Debuggee, method: string, event?: object) => {
+        if (source.tabId === tab && method === 'Input.dragIntercepted' && event) data = (event as Protocol.Input.dragInterceptedPayload).data;
+      };
+      if (end) { chrome.debugger.onEvent.addListener(intercepted); await send('Input.setInterceptDrags', { enabled: true }); }
+      try {
+        if (background) caught = await catchNewContexts(tab);
+        await send('Input.dispatchMouseEvent', { type: 'mousePressed', ...start, button: 'left', buttons: 1, clickCount: 1 });
+        let last = start;
+        if (!end) await new Promise(resolve => setTimeout(resolve, holdMs));
+        else {
+          const duration = holdMs || DRAG_MS, steps = Math.max(DRAG_STEPS_MIN, Math.min(DRAG_STEPS_MAX, Math.round(duration / 16)));
+          let entered = false;
+          for (let step = 1; step <= steps; step++) {
+            last = { x: start.x + (end.x - start.x) * step / steps, y: start.y + (end.y - start.y) * step / steps };
+            if (data) {
+              await send('Input.dispatchDragEvent', { type: entered ? 'dragOver' : 'dragEnter', ...last, data });
+              entered = true;
+            } else await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...last, button: 'left', buttons: 1 });
+            await new Promise(resolve => setTimeout(resolve, duration / steps));
+          }
+          if (data) await send('Input.dispatchDragEvent', { type: 'drop', ...end, data });
+          last = end;
+        }
+        await send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...last, button: 'left', buttons: 0, clickCount: 1 });
+        return data ? 'html5' : 'pointer';
+      } finally {
+        if (end) {
+          chrome.debugger.onEvent.removeListener(intercepted);
+          await send('Input.setInterceptDrags', { enabled: false }).catch(() => {});
+        }
+      }
+    };
     const handedNote = async (error: unknown) => {
       if (!handed || !isForeignFrameError(error)) throw error;
       route.note = "Another extension's frame opened as the click went in and Chrome stopped Gaddi's debugger after both press and release were sent; look to confirm the result";
@@ -1423,15 +1464,23 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
         || checked.href !== undefined && target.target.href !== checked.href
         || checked.committed !== undefined && JSON.stringify(target.target.committed ?? null) !== JSON.stringify(checked.committed)))
         throw new Error('What sits at that point changed since it was checked; look again');
+      // DRAG-HOLD invariant: a drag's end point still falls on the drop target the gate judged, in the same document.
+      if (params.to && checked?.drop) {
+        const drop = await resolvePoint(tab, params.to, check);
+        if (drop.blind || (drop.frameId ?? 0) !== checked.drop.frame.id || drop.target.origin !== checked.drop.frame.origin
+          || drop.target.documentId !== checked.drop.frame.document || drop.target.name !== checked.drop.name /* DROP_CHECK_TEST_POINT */)
+          throw new Error('What sits at the drop point changed since it was checked; look again');
+      }
       const before = await onPage(tab, 'snapshot', params, check);
       await send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at });
-      await press(send, at);
+      const dragged = params.to || params.holdMs ? await gesture(send, at, params.to, params.holdMs ?? 0) : await press(send, at);
       const observed = await afterInput(tab, before, result.url, scope);
       // A point inside an embedded document changes that document, not the tab's own page.
       const nestedBefore = target.frameId === undefined ? undefined : target.target.signature;
       const nestedAfter = nestedBefore === undefined ? undefined
         : await onPage(tab, 'snapshot', { frameId: target.frameId }, check).then(after => after.signature).catch(() => undefined);
-      return opened({ ...result, clicked: true, ...observed, ...(nestedAfter !== undefined && nestedAfter !== nestedBefore ? { changed: true } : {}) });
+      return opened({ ...result, clicked: true, ...observed, ...(nestedAfter !== undefined && nestedAfter !== nestedBefore ? { changed: true } : {}),
+        ...(params.to && dragged ? { dragged } : {}) });
     }).catch(handedNote);
     if (action === 'click' || action === 'hover') return trusted(async send => {
       const measured = await onPage(tab, action === 'hover' ? 'hoverPoint' : 'clickPoint', params, check);
@@ -1454,7 +1503,9 @@ async function dispatchAction({ method, params = {} }: ChromeRequest, scope: Dea
           const { x, y } = await onPage(tab, 'clickCheck', params, check);
           Object.assign(point, { x: x + offset.x, y: y + offset.y });
         }
-        await press(send, point);
+        // DRAG-HOLD: a hold by reference presses the control's centre for holdMs (a drag always names two points).
+        if (params.holdMs) await gesture(send, point, undefined, params.holdMs);
+        else await press(send, point);
       }
       return opened({ ...result, [action === 'click' ? 'clicked' : 'hovered']: true,
         ...await afterInput(tab, measured, result.url, scope, false, params.frameId, patience) });

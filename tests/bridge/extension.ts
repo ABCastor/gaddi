@@ -42,6 +42,7 @@ import { frameChecks } from './frames.ts';
 import { choiceChecks } from './choices.ts';
 import { bindingChecks } from './binding.ts';
 import { sandboxBandChecks } from './sandbox-band.ts';
+import { gestureChecks } from './gestures.ts';
 
 const repo = fileURLToPath(new URL('../..', import.meta.url));
 const root = path.join(repo, 'tests/.state-bridge');
@@ -116,6 +117,18 @@ try {
     const source = fs.readFileSync(contentFile, 'utf8');
     assert.ok(source.includes(marker), `${mode} gate-fact mutation point exists`);
     fs.writeFileSync(contentFile, source.replace(marker, `${marker} return [];`));
+  }
+  // DRAG-HOLD: the interception that carries an HTML5 drag, the button held through a stroke, and the wait of a hold.
+  for (const [mode, marker, replacement] of [
+    ['intercept', "send('Input.setInterceptDrags', { enabled: true })", "send('Input.setInterceptDrags', { enabled: false })"],
+    ['buttons', "type: 'mouseMoved', ...last, button: 'left', buttons: 1", "type: 'mouseMoved', ...last"],
+    ['wait', 'setTimeout(resolve, holdMs)', 'setTimeout(resolve, 0)'],
+    ['drop-check', 'if (params.to && checked?.drop) {', 'if (false) {'],
+  ] as const) {
+    if (process.env.GADDI_BRIDGE_BREAK_GESTURE !== mode) continue;
+    const file = path.join(extension, 'dist/extension/bg.js'), source = fs.readFileSync(file, 'utf8');
+    assert.ok(source.includes(marker), `${mode} gesture mutation point exists`);
+    fs.writeFileSync(file, source.replace(marker, replacement));
   }
   // TX-BIND and FRAME-BIND: each last check before a press, and the churn the digest leaves out, must be able to fail.
   for (const [mode, file, marker, replacement] of [
@@ -271,7 +284,7 @@ try {
       return;
     }
     const file = (req.url?.split(/[?#]/)[0] || '').replace(/^\//, '');
-    const filename = ['autonomy.html', 'foreign.html', 'upload.html', 'version.html', 'approval.html', 'state.html', 'actions.html', 'hscroll.html', 'frames.html', 'choices.html', 'binding.html', 'input.html', 'popups.html', 'busy.html', 'bands.html', 'next.html'].includes(file)
+    const filename = ['autonomy.html', 'foreign.html', 'upload.html', 'version.html', 'approval.html', 'state.html', 'actions.html', 'hscroll.html', 'frames.html', 'choices.html', 'binding.html', 'input.html', 'popups.html', 'busy.html', 'bands.html', 'next.html', 'gestures.html'].includes(file)
       ? file : req.url === '/' ? 'index.html' : null;
     if (!filename) { res.writeHead(404); res.end(); return; }
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
@@ -768,6 +781,8 @@ try {
       await choiceChecks({ context, daemon, url, pass });
     } else if (process.env.GADDI_BINDING_ONLY === '1') {
       await bindingChecks({ context, daemon, url, frames: payFrames, pass });
+    } else if (process.env.GADDI_GESTURES_ONLY === '1') {
+      await gestureChecks({ context, daemon, url, pass });
     } else {
     await approvalPicture({ context, daemon, url, pass, captureDirectory: path.join(repo, 'tests/.state/context-captures-native') });
     await typeReplacement({ context, daemon, url, pass });
@@ -787,6 +802,7 @@ try {
     await choiceChecks({ context, daemon, url, pass });
     await bindingChecks({ context, daemon, url, frames: payFrames, pass });
     await sandboxBandChecks({ context, daemon, url, pass });
+    await gestureChecks({ context, daemon, url, pass });
     }
     await browser.close();
     context = undefined;

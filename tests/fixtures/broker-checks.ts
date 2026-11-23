@@ -131,6 +131,15 @@ const POINTS: Record<string, { selector: string; name?: string; role?: string; t
   '17,17': { selector: '#service-type', name: 'Pay Monthly Mobile', role: 'radio', tag: 'input', choice: true },
   '18,18': { selector: '#pay-ten', name: 'Pay £10', role: 'button', tag: 'button' },
   '19,19': { selector: '#wipe', name: 'Delete all my files', role: 'checkbox', tag: 'input', choice: true },
+  // DRAG-HOLD: a card to pick up, drop targets (a plain area, a bin, a Delete zone, an area in another document) and
+  // hold-to-confirm buttons.
+  '30,30': { selector: '#card', name: 'Card A', role: 'generic', tag: 'div' },
+  '31,31': { selector: '#bin', name: 'Trash', role: 'region', tag: 'div' },
+  '32,32': { selector: '#delete-zone', name: 'Delete', role: 'region', tag: 'div' },
+  '33,33': { selector: '#area', name: 'Drop here', role: 'region', tag: 'div' },
+  '34,34': { selector: '#frame-area', name: 'Drop here', frameUrl: 'https://unseen.example/embed/board' },
+  '35,35': { selector: '#confirm', name: 'Hold to confirm', role: 'button', tag: 'button' },
+  '36,36': { selector: '#hold-pay', name: 'Hold to pay', role: 'button', tag: 'button' },
 };
 // Independent expected broker policy: callers cannot override the user's choice.
 const defaultBrowser = { window: scenario === 'sessions' && mode !== 'own' ? 'shared' : 'own', show: 'attention' } as const;
@@ -156,6 +165,8 @@ async function fakeBridge() {
     // KEY-EFFECT: what the focused element is (tag, role), so a key can land in a field or outside one, and the buttons
     // in the form or dialog around a focused text field (what Cmd+Enter there would press).
     describeTag: undefined as string | undefined, describeRole: undefined as string | undefined, composer: undefined as string[] | undefined,
+    // DRAG-HOLD: a page that renames what sits at a point (a drop target swapped after approval).
+    pointNames: {} as Record<string, string>,
     // What Chrome says an extension is (remote approval checks: an extension operation is never answered remotely).
     extension: undefined as Record<string, unknown> | undefined,
     capture: 'none' as 'none' | 'image' | 'error' | 'missing-box' | 'hang', captureWidth: 8, captureHeight: 8 };
@@ -202,7 +213,7 @@ async function fakeBridge() {
           const names: Record<string, string> = { '#pay': 'Procedi al pagamento', '#confirm': 'Confirm order', '#del': 'Delete', '#send': 'Send', '#plain': 'Read more' };
           const description: ElementDescription & GateFacts & { role: string; password: boolean; disabled: boolean; choice: boolean;
             frameId?: number; frameUrl?: string; blind?: boolean } = {
-            name: at?.name ?? control.describeName ?? (names[s] || (s.startsWith('a[href=') ? 'Pay' : 'Read more')),
+            name: control.pointNames[s] ?? at?.name ?? control.describeName ?? (names[s] || (s.startsWith('a[href=') ? 'Pay' : 'Read more')),
             tag: ['#password', '#current', '#sensitive'].includes(s) ? 'input' : at?.tag ?? control.describeTag ?? 'button',
             type: s === '#password' ? 'password' : 'text', autocomplete: s === '#current' ? 'current-password' : '',
             href: control.describeHref ?? (s === '#checkout-link' ? '/checkout?token=PRIVATE_LINK_QUERY' : s === '#read-link' ? '/article?token=PRIVATE_LINK_QUERY' : ''), submitName: control.focusSubmit,
@@ -393,6 +404,86 @@ async function clickVerbs(c: Client, b: Bridge) {
   await result(c, 'goto', { url: 'https://never-seen.example/read' }); pass('URL-holds-retained-new-hosts-allowed');
   b.control.omitHref = true; await rejected(c, 'click', { selector: '#plain' }, 'error'); b.control.omitHref = false;
   b.control.omitSubmit = true; await rejected(c, 'press', { key: 'Return' }, 'error'); pass('missing-gate-metadata-fails-closed');
+}
+// DRAG-HOLD: a drag is judged on what it picks up and where it lets go; a hold on what it presses. Both are bound.
+async function dragHold(c: Client, b: Bridge) {
+  const clicks = () => b.calls.filter(m => m.method === 'chrome.click');
+  const drag = (to: { x: number; y: number }, extra: IncomingParams = {}) => c.call('click', { tab: 7, at: { x: 30, y: 30 }, to, ...extra });
+  // A drag onto an ordinary area runs, with both points and the drop target it was judged on.
+  const plain = await drag({ x: 33, y: 33 });
+  assert.equal(plain.error, undefined, `ASSERT_DRAG_RUNS: ${JSON.stringify(plain.error)}`);
+  const sent = clicks().at(-1)!;
+  assert.deepEqual([sent.params.at, sent.params.to, sent.params.holdMs], [{ x: 30, y: 30 }, { x: 33, y: 33 }, undefined], 'ASSERT_DRAG_RUNS: both points forwarded');
+  const audited = JSON.parse(fs.readFileSync(path.join(home, 'audit.jsonl'), 'utf8').trim().split('\n').at(-1)!);
+  assert.deepEqual([audited.point, audited.to], [{ x: 30, y: 30 }, { x: 33, y: 33 }], 'ASSERT_DRAG_AUDIT: the audit records where it started and let go');
+  pass('a-drag-onto-an-ordinary-area-runs-and-is-audited');
+  // The drop target is judged as a click on it: a Delete zone, a bin, and a pay button under the end point ask.
+  const before = clicks().length;
+  for (const [to, reason] of [[{ x: 32, y: 32 }, /verb:delete/], [{ x: 31, y: 31 }, /verb:delete/], [{ x: 120, y: 240 }, /verb:/]] as const) {
+    const reply = await drag(to);
+    assert.equal(reply.error?.code, 'held', `ASSERT_DROP_JUDGED: drop at ${to.x},${to.y}: ${JSON.stringify(reply)}`);
+    assert.match(reply.error!.message, reason, 'ASSERT_DROP_JUDGED: held under the drop target verb');
+  }
+  assert.equal(clicks().length, before, 'ASSERT_DROP_JUDGED: no held drag reached Chrome');
+  const binCard = await pending(c, (await drag({ x: 31, y: 31 }, { holdMs: 800 })).error!);
+  assert.equal(binCard.detail, 'drag Card A at 30,30 to Trash at 31,31 over 800 ms', 'ASSERT_DROP_CARD');
+  assert.equal(binCard.reason, 'verb:delete', 'ASSERT_DROP_BIN: a bin is a delete');
+  pass('the-drop-target-is-judged-a-bin-is-a-delete');
+  // A drop into another document waits for the owner.
+  const across = await drag({ x: 34, y: 34 });
+  assert.match(across.error?.message ?? '', /one document into another/, `ASSERT_DROP_OTHER_DOCUMENT: ${JSON.stringify(across)}`);
+  pass('a-drag-into-another-document-asks');
+  // The approval binds the drop target: approved onto the bin, it is refused once something else sits there.
+  await result(c, 'approval.grant', { id: binCard.id, proof: proof(binCard) });
+  b.control.pointNames['#bin'] = 'Archive';
+  const swapped = await drag({ x: 31, y: 31 }, { holdMs: 800, approval: binCard.id });
+  assert.equal(swapped.error?.code, 'approval-mismatch', `ASSERT_DROP_BOUND: ${JSON.stringify(swapped)}`);
+  b.control.pointNames = {};
+  assert.equal((await drag({ x: 31, y: 31 }, { holdMs: 900, approval: binCard.id })).error?.code, 'approval-mismatch', 'ASSERT_DROP_BOUND: the duration is part of the action');
+  await result(c, 'click', { tab: 7, at: { x: 30, y: 30 }, to: { x: 31, y: 31 }, holdMs: 800, approval: binCard.id });
+  assert.deepEqual(clicks().at(-1)!.params.checkedDescription?.drop, { name: 'Trash', frame: { id: 0, origin: 'https://unseen.example', document: 'doc-top' } },
+    'ASSERT_DROP_BOUND: the extension gets the drop target to check before the press');
+  pass('a-drag-approval-binds-its-drop-target-and-duration');
+  // A test zone treats a drop into its bin as the delete it is.
+  const zone = 'https://unseen.example', zoneTs = Date.now();
+  await result(c, 'zones.add', { site: zone, proof: { ts: zoneTs, sig: crypto.sign('sha256', Buffer.from(`zones.add|${zone}|${zoneTs}`), privateKey).toString('base64') } });
+  try {
+    assert.equal((await drag({ x: 31, y: 31 })).error, undefined, 'ASSERT_DROP_ZONE: a zone waives the bin');
+    assert.equal((await drag({ x: 120, y: 240 })).error?.code, 'held', 'ASSERT_DROP_ZONE: never a payment');
+  } finally { await result(c, 'zones.remove', { site: zone }); }
+  pass('a-test-zone-waives-a-drop-into-its-bin-not-a-payment');
+  // Press and hold: judged on what it presses, the duration forwarded and audited.
+  const holds = clicks().length;
+  await result(c, 'click', { tab: 7, at: { x: 35, y: 35 }, holdMs: 2000 });
+  assert.deepEqual([clicks().at(-1)!.params.at, clicks().at(-1)!.params.holdMs], [{ x: 35, y: 35 }, 2000], 'ASSERT_HOLD_RUNS');
+  await result(c, 'click', { tab: 7, selector: '#plain', holdMs: 1500 });
+  assert.equal(clicks().at(-1)!.params.holdMs, 1500, 'ASSERT_HOLD_RUNS: by reference too');
+  const holdPay = await c.call('click', { tab: 7, at: { x: 36, y: 36 }, holdMs: 2000 });
+  assert.equal(holdPay.error?.code, 'held', `ASSERT_HOLD_JUDGED: ${JSON.stringify(holdPay)}`);
+  assert.equal((await pending(c, holdPay.error!)).detail, 'hold Hold to pay at 36,36 for 2000 ms', 'ASSERT_HOLD_CARD');
+  assert.equal((await c.call('click', { tab: 7, selector: '#del', holdMs: 1000 })).error?.code, 'held', 'ASSERT_HOLD_JUDGED: by reference');
+  assert.equal(clicks().length, holds + 2, 'ASSERT_HOLD_JUDGED: held holds never reached Chrome');
+  pass('a-hold-is-judged-on-what-it-presses');
+  // Shapes are refused before any page is asked.
+  for (const params of [{ to: { x: 1, y: 1 }, selector: '#plain' }, { at: { x: 30, y: 30 }, holdMs: 0 }, { at: { x: 30, y: 30 }, holdMs: 10001 },
+    { at: { x: 30, y: 30 }, holdMs: 1.5 }, { at: { x: 30, y: 30 }, to: { x: -1, y: 0 } }, { at: { x: 30, y: 30 }, to: { x: 33, y: 33 }, download: '/tmp/x.zip' }]) {
+    const marker = b.calls.length;
+    assert.equal((await c.call('click', { tab: 7, ...params })).error?.code, 'error', `ASSERT_GESTURE_SHAPE: ${JSON.stringify(params)}`);
+    assert.ok(!b.calls.slice(marker).some(call => ['chrome.describe', 'chrome.click'].includes(call.method)), `ASSERT_GESTURE_SHAPE: ${JSON.stringify(params)} never reaches the page`);
+  }
+  assert.equal((await c.call('press', { tab: 7, key: 'a', holdMs: 500 })).error?.code, 'error', 'ASSERT_GESTURE_SHAPE: only a click holds');
+  pass('gesture-shapes-refused-before-any-chrome-call');
+  // The command line says the same: gaddi drag and gaddi hold are clicks that keep the button down.
+  await runCLI(['drag', '--tab', '7', '30,30', '33,33', '--hold-ms', '500']);
+  assert.deepEqual([clicks().at(-1)!.params.at, clicks().at(-1)!.params.to, clicks().at(-1)!.params.holdMs], [{ x: 30, y: 30 }, { x: 33, y: 33 }, 500], 'ASSERT_GESTURE_CLI: drag');
+  await runCLI(['hold', '--tab', '7', '35,35', '1200']);
+  assert.deepEqual([clicks().at(-1)!.params.at, clicks().at(-1)!.params.holdMs], [{ x: 35, y: 35 }, 1200], 'ASSERT_GESTURE_CLI: hold at a point');
+  await runCLI(['hold', '--tab', '7', '#plain', '900']);
+  assert.equal(clicks().at(-1)!.params.holdMs, 900, 'ASSERT_GESTURE_CLI: hold a reference');
+  await runCLI(['click', '--tab', '7', '--at', '30,30', '--to', '33,33']);
+  assert.deepEqual(clicks().at(-1)!.params.to, { x: 33, y: 33 }, 'ASSERT_GESTURE_CLI: click --to');
+  await runCLI(['press', '--tab', '7', 'a', '--hold-ms', '5'], 2);
+  pass('gaddi-drag-and-hold-are-gated-clicks');
 }
 // SELECT-CHOICE, COMMIT-CHOICES and KEY-CHOICE: a native select, a form's chosen instructions and a key on a focused
 // control are judged as the click on that choice would be. Each block's first assertion names what a mutation breaks.
@@ -2735,6 +2826,7 @@ try {
   const c = client(); await result(c, 'status'); const b = await fakeBridge();
   if (scenario === 'click-verbs') await clickVerbs(c, b);
   else if (scenario === 'choice-gates') await choiceGates(c, b);
+  else if (scenario === 'drag-hold') await dragHold(c, b);
   else if (scenario === 'password') await passwords(c, b);
   else if (scenario === 'eval-overlay') await evalOverlay(c, b);
   else if (scenario === 'eval-write') await evalWrite(c, b);

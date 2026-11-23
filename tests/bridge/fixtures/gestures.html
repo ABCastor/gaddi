@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Gestures fixture</title>
+<style>
+  body { margin: 0; font: 20px/1.6 monospace; }
+  #text { position: absolute; left: 20px; top: 10px; margin: 0; white-space: nowrap; }
+  #pad { position: absolute; left: 20px; top: 60px; border: 1px solid #333; touch-action: none; }
+  #confirm { position: absolute; left: 440px; top: 60px; width: 200px; height: 48px; }
+  #card { position: absolute; left: 440px; top: 130px; width: 100px; height: 48px; background: #9cf; }
+  #bin { position: absolute; left: 560px; top: 130px; width: 120px; height: 80px; background: #fcc; }
+  #slider { position: absolute; left: 20px; top: 255px; width: 300px; height: 40px; background: #eee; }
+  #knob { position: absolute; left: 0; top: 0; width: 40px; height: 40px; background: #36c; }
+</style>
+<p id="text">The quick brown fox jumps over the lazy dog</p>
+<canvas id="pad" width="400" height="180"></canvas>
+<button id="confirm" type="button">Hold to confirm</button>
+<div id="card" draggable="true">Card A</div>
+<div id="bin" aria-label="Drop here">Drop here</div>
+<div id="slider" aria-label="Slide to verify"><div id="knob"></div></div>
+<script>
+  // Every pointer event the canvas sees, in order: a stroke is one press, moves with the button down, one release.
+  window.strokes = [];
+  const pad = document.querySelector('#pad');
+  for (const type of ['mousedown', 'mousemove', 'mouseup']) pad.addEventListener(type, event => {
+    if (type === 'mousemove' && event.buttons === 0) return;
+    window.strokes.push({ type, x: event.offsetX, y: event.offsetY, buttons: event.buttons, trusted: event.isTrusted, t: performance.now() });
+  });
+  // A button that confirms only when held for 1.5 s: releasing earlier cancels it.
+  window.confirmed = 0; window.hold = [];
+  const confirm = document.querySelector('#confirm');
+  let timer;
+  confirm.addEventListener('mousedown', event => {
+    window.hold.push({ type: 'down', t: performance.now(), trusted: event.isTrusted });
+    timer = setTimeout(() => { window.confirmed++; confirm.textContent = 'Confirmed'; }, 1500);
+  });
+  confirm.addEventListener('mouseup', event => { window.hold.push({ type: 'up', t: performance.now(), trusted: event.isTrusted }); clearTimeout(timer); });
+  // HTML5 drag and drop: the card carries its name; the bin records what was dropped on it.
+  window.dropped = [];
+  document.querySelector('#card').addEventListener('dragstart', event => event.dataTransfer.setData('text/plain', 'Card A'));
+  const bin = document.querySelector('#bin');
+  bin.addEventListener('dragover', event => event.preventDefault());
+  bin.addEventListener('drop', event => { event.preventDefault(); window.dropped.push(event.dataTransfer.getData('text/plain')); });
+  // A slider moved by its knob, as a drag puzzle draws one: it records where the knob was let go.
+  window.slid = null;
+  const knob = document.querySelector('#knob'), slider = document.querySelector('#slider');
+  let grab = null;
+  knob.addEventListener('mousedown', event => { grab = event.clientX - knob.offsetLeft; });
+  addEventListener('mousemove', event => { if (grab !== null) knob.style.left = Math.max(0, Math.min(260, event.clientX - grab)) + 'px'; });
+  addEventListener('mouseup', () => { if (grab !== null) window.slid = knob.offsetLeft; grab = null; });
+</script>
