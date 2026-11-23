@@ -18,7 +18,7 @@ const transport={async request(method:string,raw:object={}){
   else if(method==='chrome.signinProbe')result={url,signature:phase,username:'@username',password:'@password',confirmation:'@confirmation'};
   else if(method==='chrome.signinType'){filled.set(params.signin!.kind!,params.text!);result={typed:true};}
   else if(method==='chrome.signinSubmit')throw new Error('Signup must not use a privileged submit');
-  else if(method==='chrome.describe')result={name:url.includes('delete')?'Delete export':url.includes('download')?'Export ZIP':'Create account',tag:'BUTTON',type:'submit',autocomplete:'',href:'',selector:params.selector,password:false,disabled:false,submitName:'',matched:[],committed:null,keyChoices:[],spaceName:''};
+  else if(method==='chrome.describe')result={name:url.includes('delete')?'Delete export':url.includes('download')?'Export ZIP':'Create account',tag:'BUTTON',type:'submit',autocomplete:'',href:'',selector:params.selector,password:false,disabled:false,submitName:'',matched:[],committed:null,keyChoices:[],spaceName:'',transaction:''};
   else if(method==='chrome.approvalCapture')result={};
   else if(method==='chrome.click'){
     if(!url.includes('download')){assert.equal(filled.get('username'),'fixture-user');assert.equal(filled.get('password'),'fixture-password');assert.equal(filled.get('confirmation'),'fixture-password');phase='complete';}

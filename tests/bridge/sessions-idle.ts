@@ -76,6 +76,8 @@ function fixture() {
     signinSecrets: { redact: (value: unknown) => value },
     // OWNER-NEEDED bookkeeping (daemon/owner-needed.ts, tested by tests/signin/owner-needed.test.sh): no live notices here.
     ownerNotices: { size: () => 0, present() {}, closed() {}, reattached() {}, signin() {} },
+    // GRANT-ORIGIN's per-chat site list (display only, tested by tests/gates/session-grant.test.sh) and its session key.
+    noteSite: () => {}, grantSession: () => undefined,
     // A reattach also tells Chrome recovery the extension is back (daemon/chrome-heal.ts).
     chromeHeal: { attached: () => {}, ensure: async () => null, status: () => ({}) },
   });

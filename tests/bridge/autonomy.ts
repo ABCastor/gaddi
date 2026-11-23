@@ -60,6 +60,8 @@ class FakeElement {
     if (['email', 'number'].includes(this.type)) throw new Error('InvalidStateError');
     this.start = start; this.end = end;
   }
+  // TX-BIND's describe walks the control's ancestors for a form-like container; a real element answers this.
+  querySelectorAll(selector: string): FakeElement[] { return this.children.flatMap(child => [...(child.matches(selector) ? [child] : []), ...child.querySelectorAll(selector)]); }
   contains(node: FakeElement): boolean { return this === node || this.children.some(child => child.contains(node)); }
   remove() {
     this.removed = true; this.isConnected = false;
